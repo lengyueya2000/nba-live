@@ -8,6 +8,12 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -27,6 +33,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,33 +43,44 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -76,6 +94,7 @@ import androidx.media3.ui.PlayerView
 import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.ui.AspectMode
@@ -116,6 +135,11 @@ fun PlayerScreen(
     keepScreenOn: Boolean = true,
     onAspectChange: (AspectMode) -> Unit = {},
     onKeepScreenOnChange: (Boolean) -> Unit = {},
+    /** 重连：重新解析当前线路（直播地址带时效签名，过期后需要换新地址） */
+    onReconnect: () -> Unit = {},
+    /** 正在直播的其他场次（"同时在播"面板数据源） */
+    liveMatches: List<Match> = emptyList(),
+    onLiveMatchClick: (Match) -> Unit = {},
     fullscreen: Boolean = false,
     inPip: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
@@ -124,8 +148,16 @@ fun PlayerScreen(
 ) {
     val videoOnly = fullscreen || inPip
 
+    // "同时在播"右侧面板
+    var showLivePanel by remember { mutableStateOf(false) }
+    // 播放源 / 播放线路 选择面板（不用 DropdownMenu：Popup 会被视频 SurfaceView 盖住）
+    var picker by remember { mutableStateOf<PickerKind?>(null) }
+    // 视频播放器句柄：自定义控制栏要读播放状态、要能暂停/继续
+    val videoHandle = remember(streamUrl) { VideoPlayerHandle() }
+
+    Box(modifier = modifier.fillMaxSize()) {
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
             .then(if (videoOnly) Modifier else Modifier.verticalScroll(rememberScrollState()))
             .then(if (videoOnly) Modifier else Modifier.padding(bottom = 24.dp)),
@@ -146,6 +178,7 @@ fun PlayerScreen(
                         streamUrl = streamUrl,
                         referer = streamReferer,
                         aspectMode = aspectMode,
+                        handle = videoHandle,
                         onError = onPlaybackError,
                     )
                 }
@@ -219,6 +252,90 @@ fun PlayerScreen(
                         description = if (fullscreen) "退出全屏" else "全屏",
                         onClick = onToggleFullscreen,
                     )
+                }
+            }
+
+            // 缓冲指示：原生控制条已关闭，自己给一个转圈
+            if (streamUrl != null && videoHandle.isBuffering && !inPip) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(34.dp),
+                )
+            }
+
+            // 底部自定义控制栏：只在**全屏播放**时显示。
+            // 布局参考 yingshi 播放器：左侧圆形半透明图标按钮（播放/重连），
+            // 右侧白描边功能胶囊（画面/源/线路/同时在播），一眼能读、按得准。
+            // 关键：不再使用 Media3 原生控制条 —— 它自带快进/后退/进度条，
+            // 直播流上误触会跳离直播边缘，而且不支持"重连/换源"这类直播操作。
+            if (fullscreen && !inPip) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f)),
+                            ),
+                        )
+                        .padding(horizontal = Space.lg, vertical = Space.md),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // 左：播放控制
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+                            // 播放 / 暂停：仅直连 ExoPlayer 可控（网页线路由源站页面自己管）
+                            if (streamUrl != null) {
+                                PlayerIconButton(
+                                    icon = if (videoHandle.isPlaying) Icons.Filled.Pause
+                                    else Icons.Filled.PlayArrow,
+                                    description = if (videoHandle.isPlaying) "暂停" else "播放",
+                                    onClick = { videoHandle.togglePlay() },
+                                )
+                            }
+                            PlayerIconButton(
+                                icon = Icons.Filled.Refresh,
+                                description = "重连",
+                                onClick = onReconnect,
+                            )
+                        }
+                        // 右：功能胶囊
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // 画面自适应：三档循环
+                            PlayerChip(
+                                label = "画面 ${aspectMode.label}",
+                                onClick = {
+                                    val next = AspectMode.entries[
+                                        (aspectMode.ordinal + 1) % AspectMode.entries.size,
+                                    ]
+                                    onAspectChange(next)
+                                },
+                            )
+                            if (signals.isNotEmpty()) {
+                                PlayerChip(
+                                    label = "源 ${signals.getOrNull(selectedIndex)?.provider?.displayName ?: "-"}",
+                                    onClick = { picker = PickerKind.SOURCE },
+                                )
+                                PlayerChip(
+                                    label = "线路 ${selectedIndex + 1}/${signals.size}",
+                                    onClick = { picker = PickerKind.LINE },
+                                )
+                            }
+                            PlayerChip(
+                                label = "同时在播 ${liveMatches.count { it.id != match?.id }}",
+                                onClick = { showLivePanel = true },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -375,45 +492,6 @@ fun PlayerScreen(
             }
         }
 
-        // ---------- 当前线路信息 ----------
-        if (signals.isNotEmpty()) {
-            val current = signals.getOrNull(selectedIndex)
-            if (current != null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Space.lg)
-                        .padding(top = Space.md)
-                        .clip(RoundedCornerShape(Radius.card))
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = Space.lg, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "当前线路",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SportDark.Txt3,
-                        maxLines = 1,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Icon(
-                        if (current.isDirectHls) Icons.Filled.PlayArrow else Icons.Filled.Language,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.width(Space.xs))
-                    Text(
-                        text = "${current.provider.displayName} · " +
-                            if (streamUrl != null) "直连 HLS" else "网页播放",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                    )
-                }
-            }
-        }
-
         // ---------- 画面设置 ----------
         if (streamUrl != null) {
             Column(
@@ -523,6 +601,315 @@ fun PlayerScreen(
             }
         }
         } // end if (!videoOnly)
+    } // end Column
+
+    // ---------- 同时在播：右侧滑出面板 ----------
+    // 全屏/画中画下也可用：换场次不必先退出全屏
+    if (!inPip) {
+        // 遮罩
+        AnimatedVisibility(
+            visible = showLivePanel,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable { showLivePanel = false },
+            )
+        }
+        AnimatedVisibility(
+            visible = showLivePanel,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it },
+            modifier = Modifier.align(Alignment.CenterEnd),
+        ) {
+            LiveNowPanel(
+                matches = liveMatches,
+                currentMatchId = match?.id,
+                onSelect = {
+                    showLivePanel = false
+                    onLiveMatchClick(it)
+                },
+                onClose = { showLivePanel = false },
+            )
+        }
+    }
+
+    // ---------- 播放源 / 播放线路 选择面板 ----------
+    // 参考 yingshi 播放器：右侧竖排浮层。
+    // 不用 DropdownMenu —— 它是独立 Popup 窗口，会被 PlayerView 的
+    // SurfaceView 图层盖住（实测点不动也看不见）。
+    if (picker != null) {
+        val kind = picker
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.45f))
+                .clickable { picker = null },
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .fillMaxWidth(0.36f)
+                .widthIn(max = 300.dp)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.97f))
+                .padding(horizontal = Space.md, vertical = Space.md),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (kind == PickerKind.SOURCE) "播放源" else "播放线路",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.weight(1f))
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .clickable { picker = null },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "关闭",
+                        modifier = Modifier.size(16.dp),
+                        tint = Color.White.copy(alpha = 0.6f),
+                    )
+                }
+            }
+            Spacer(Modifier.height(Space.sm))
+            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+            Spacer(Modifier.height(Space.xs))
+            if (kind == PickerKind.SOURCE) {
+                val currentProvider = signals.getOrNull(selectedIndex)?.provider
+                val providers = signals.map { it.provider }.distinct()
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(providers, key = { it.name }) { p ->
+                        PickerRow(
+                            label = p.displayName,
+                            sub = "${signals.count { it.provider == p }} 条线路",
+                            selected = p == currentProvider,
+                            onClick = {
+                                picker = null
+                                val idx = signals.indexOfFirst { it.provider == p }
+                                if (idx >= 0) onSignalSelected(idx)
+                            },
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    itemsIndexed(signals, key = { _, s -> s.id }) { index, s ->
+                        PickerRow(
+                            label = s.label,
+                            sub = "源站 ${s.provider.displayName}",
+                            selected = index == selectedIndex,
+                            onClick = {
+                                picker = null
+                                onSignalSelected(index)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    } // end Box
+}
+
+/** 选择面板类型 */
+private enum class PickerKind { SOURCE, LINE }
+
+/** 选择面板的一行：标题 + 副标题 + 选中勾（选中行整行高亮） */
+@Composable
+private fun PickerRow(
+    label: String,
+    sub: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .clip(RoundedCornerShape(Radius.btn))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                else Color.Transparent,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = Space.md, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = label,
+                color = if (selected) MaterialTheme.colorScheme.primary else Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = sub,
+                color = Color.White.copy(alpha = 0.45f),
+                fontSize = 10.sp,
+                maxLines = 1,
+            )
+        }
+        if (selected) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
+}
+
+/**
+ * "同时在播"面板：右侧竖排列表，上下滑动选择要看的场次。
+ * 只展示状态为直播中的场次，点一下直接切过去播。
+ */
+@Composable
+private fun LiveNowPanel(
+    matches: List<Match>,
+    currentMatchId: String?,
+    onSelect: (Match) -> Unit,
+    onClose: () -> Unit,
+) {
+    val others = matches.filter { it.id != currentMatchId }
+    Column(
+        modifier = Modifier
+            .fillMaxHeight()
+            .fillMaxWidth(0.78f)
+            .widthIn(max = 320.dp)
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(vertical = Space.md),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Space.lg),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.LiveTv,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(Space.sm))
+            Text(
+                text = "同时在播",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            Spacer(Modifier.weight(1f))
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onClose),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "关闭",
+                    modifier = Modifier.size(16.dp),
+                    tint = SportDark.Txt3,
+                )
+            }
+        }
+        Spacer(Modifier.height(Space.xs))
+        Text(
+            text = if (others.isEmpty()) "暂无其他正在直播的场次" else "共 ${others.size} 场正在直播",
+            style = MaterialTheme.typography.labelSmall,
+            color = SportDark.Txt3,
+            modifier = Modifier.padding(horizontal = Space.lg),
+        )
+        Spacer(Modifier.height(Space.sm))
+        HorizontalDivider(color = SportDark.Line)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                horizontal = Space.md,
+                vertical = Space.sm,
+            ),
+            verticalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            items(others, key = { it.id }) { m ->
+                LiveNowRow(match = m, onClick = { onSelect(m) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveNowRow(match: Match, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radius.card))
+            .background(MaterialTheme.colorScheme.background)
+            .clickable(onClick = onClick)
+            .padding(Space.md),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusChip(status = match.status)
+            Spacer(Modifier.width(Space.xs))
+            LeagueChip(
+                text = match.leagueRawName.ifBlank { match.league.displayName },
+                league = match.league,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = match.timeLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = SportDark.Txt3,
+                maxLines = 1,
+            )
+        }
+        Spacer(Modifier.height(Space.sm))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TeamLogo(match.homeLogo, match.homeTeam, size = 26.dp)
+            Spacer(Modifier.width(Space.xs))
+            Text(
+                text = match.homeTeam,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "vs",
+                style = MaterialTheme.typography.labelSmall,
+                color = SportDark.Txt3,
+            )
+            Text(
+                text = match.awayTeam,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            )
+            Spacer(Modifier.width(Space.xs))
+            TeamLogo(match.awayLogo, match.awayTeam, size = 26.dp)
+        }
     }
 }
 
@@ -548,6 +935,82 @@ private fun VideoControlButton(
             tint = Color.White,
         )
     }
+}
+
+/**
+ * 播放器句柄：把 ExoPlayer 的播放状态暴露给外层自定义控制栏。
+ * 用 Compose 快照状态，播放器回调改值后控制栏自动重组。
+ */
+private class VideoPlayerHandle {
+    var player: Player? by mutableStateOf(null)
+    var isPlaying: Boolean by mutableStateOf(false)
+    var isBuffering: Boolean by mutableStateOf(false)
+
+    fun attach(p: Player) {
+        player = p
+        isPlaying = p.isPlaying
+        isBuffering = p.playbackState == Player.STATE_BUFFERING
+    }
+
+    fun detach() {
+        player = null
+        isPlaying = false
+        isBuffering = false
+    }
+
+    fun togglePlay() {
+        val p = player ?: return
+        if (p.isPlaying) p.pause() else p.play()
+    }
+}
+
+/**
+ * 圆形半透明图标按钮。
+ * 参考 yingshi 播放器：40dp 圆、白色 10% 底、20dp 白色图标，
+ * 压在任意画面上都看得清，也不会像"图标+小字"那样把字挤成省略号。
+ */
+@Composable
+private fun PlayerIconButton(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.10f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = description,
+            tint = Color.White,
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
+/**
+ * 功能胶囊：白描边 + 白字。
+ * 参考 yingshi 播放器的 Chip —— 文字本身就是标签，
+ * 不用图标，读起来更快（"线路 2/3" 比一个列表图标直观）。
+ */
+@Composable
+private fun PlayerChip(label: String, onClick: () -> Unit) {
+    Text(
+        text = label,
+        color = Color.White,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(Radius.btn))
+            .border(1.dp, Color.White.copy(alpha = 0.26f), RoundedCornerShape(Radius.btn))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    )
 }
 
 @Composable
@@ -615,6 +1078,7 @@ private fun VideoSurface(
     streamUrl: String,
     referer: String?,
     aspectMode: AspectMode,
+    handle: VideoPlayerHandle,
     onError: () -> Unit,
 ) {
     val reportedRef = remember { mutableSetOf<String>() }
@@ -683,15 +1147,27 @@ private fun VideoSurface(
                         onErrorState.value()
                     }
                 }
+
+                // 自定义控制栏要读播放/缓冲状态
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    handle.isPlaying = isPlaying
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    handle.isBuffering = playbackState == Player.STATE_BUFFERING
+                }
             })
 
+            // 关键：关闭 Media3 原生控制条。
+            // 直播流不需要快进/后退/拖动进度条，原生控制条在直播上表现为
+            // "可拖到任意历史位置"，误触就跳离直播边缘、画面直接卡住。
+            // 控制交给底部的自定义控制栏（暂停/重连/画面/换源/换线路/同时在播）。
             PlayerView(ctx).apply {
-                useController = true
-                controllerShowTimeoutMs = 3000
-                setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                useController = false
                 resizeMode = aspectMode.resizeMode
                 this.player = player
                 playerView = this
+                handle.attach(player)
             }
         },
         update = { view ->
@@ -707,6 +1183,7 @@ private fun VideoSurface(
             }
         },
         onRelease = { view ->
+            handle.detach()
             view.player?.release()
             view.player = null
         },

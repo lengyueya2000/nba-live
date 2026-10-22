@@ -207,10 +207,6 @@ fun MatchDetailScreen(
         ) {
             InfoRow(label = "数据源", value = "JRS / JRKAN 双源")
             InfoRow(
-                label = "播放方式",
-                value = if (signals.any { it.isDirectHls }) "直连 HLS (m3u8)" else "网页播放",
-            )
-            InfoRow(
                 label = "信号数",
                 value = "${signals.size} 条",
             )
@@ -319,7 +315,7 @@ private fun SignalRow(
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                text = "${playModeOf(source)} · 源站 ${source.provider.displayName}",
+                text = "源站 ${source.provider.displayName}",
                 style = MaterialTheme.typography.labelSmall,
                 color = SportDark.Txt3,
                 maxLines = 1,
@@ -328,31 +324,6 @@ private fun SignalRow(
         }
 
         Spacer(Modifier.width(Space.sm))
-
-        // 播放方式徽章（真实信息，不编造可用性）
-        val badgeColor = if (source.isDirectHls) SportDark.Ok else SportDark.Warn
-        Row(
-            modifier = Modifier
-                .height(24.dp)
-                .clip(RoundedCornerShape(Radius.chipLg))
-                .background(badgeColor.copy(alpha = 0.14f))
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Icon(
-                imageVector = if (source.isDirectHls) Icons.Filled.CheckCircle else Icons.Filled.Language,
-                contentDescription = null,
-                modifier = Modifier.size(11.dp),
-                tint = badgeColor,
-            )
-            Text(
-                text = playModeOf(source),
-                color = badgeColor,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-            )
-        }
 
         Icon(
             Icons.AutoMirrored.Filled.ArrowForwardIos,
@@ -387,13 +358,6 @@ private fun InfoRow(label: String, value: String) {
         )
     }
 }
-
-/**
- * 播放方式：JRKAN 线路可静态解析出 m3u8 直连；
- * JRS 线路的播放页用 XXTEA 加密，需要 WebView 承载。
- */
-private fun playModeOf(source: StreamSource): String =
-    if (source.isDirectHls) "直连 HLS" else "网页播放"
 
 private fun Match.displayTime(): String {
     // 直播中的行没有具体开赛时间（startAtMillis 只是当天 00:00 的分组兜底），

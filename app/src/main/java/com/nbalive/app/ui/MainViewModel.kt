@@ -94,6 +94,7 @@ class MainViewModel(
      */
     private var playJob: Job? = null
     private var detailJob: Job? = null
+    private var loadJob: Job? = null
 
     init {
         refresh()
@@ -171,6 +172,54 @@ class MainViewModel(
             it.copy(selectedIndex = index, resolving = true, errorMessage = null)
         }
         play(index)
+    }
+
+    /**
+     * 重连：按当前线路重新解析并播放。
+     * 直播地址带时效签名，过期后画面卡住/黑屏，重连可拿新地址；
+     * 同时清除该线路的失败记录（用户主动重连 = 再给一次机会）。
+     */
+    fun reconnect() {
+        val state = _playerState.value
+        if (state.signals.isEmpty()) return
+        state.signals.getOrNull(state.selectedIndex)?.let { failedSources.remove(it.pageUrl) }
+        play(state.selectedIndex)
+    }
+
+    /**
+     * "同时在播"面板：直接切到另一场正在直播的比赛。
+     * 先拉该场线路，拉完自动播第一条；同时把详情页状态同步过去，
+     * 这样用户从播放页返回看到的是刚切过来的这场，而不是上一场。
+     */
+    fun playMatch(match: Match) {
+        playJob?.cancel()
+        loadJob?.cancel()
+        failedSources.clear()
+        _route.value = Route.PLAYER
+        _detailState.value = MatchDetailUiState(match = match, loadingSignals = true)
+        _playerState.value = PlayerUiState(match = match, resolving = true)
+        loadJob = viewModelScope.launch {
+            val detail = repository.loadSignals(match)
+            // 详情页带回来的开赛时间可用于校正列表里滞后的"直播中"
+            val fixed = detail.correction
+                ?.let { c -> match.copy(status = c.status, startAtMillis = c.startAtMillis) }
+                ?: match
+            fun fix(m: Match): Match = if (m.id == match.id) fixed else m
+            _listState.update { st -> st.copy(matches = st.matches.map(::fix)) }
+            _detailState.value = MatchDetailUiState(
+                match = fixed,
+                signals = detail.signals,
+                loadingSignals = false,
+            )
+            _playerState.update { it.copy(match = fixed, signals = detail.signals) }
+            if (detail.signals.isEmpty()) {
+                _playerState.update {
+                    it.copy(resolving = false, errorMessage = "该赛事暂无可用线路")
+                }
+            } else {
+                play(0)
+            }
+        }
     }
 
     /**
@@ -303,6 +352,7 @@ class MainViewModel(
         when (_route.value) {
             Route.PLAYER -> {
                 playJob?.cancel()
+                loadJob?.cancel()
                 _route.value = Route.DETAIL
                 _playerState.update {
                     it.copy(streamUrl = null, streamReferer = null, webFallbackUrl = null, resolving = false)

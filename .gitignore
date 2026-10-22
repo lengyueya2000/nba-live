@@ -21,3 +21,6 @@ design/_shared/out/
 design/_shared/out-selftest/
 design/_shared/probe/
 node_modules/
+
+# 真机/模拟器测试截图（本地留存，不入库）
+design/app-run/

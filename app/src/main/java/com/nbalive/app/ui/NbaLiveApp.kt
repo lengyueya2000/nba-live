@@ -63,6 +63,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.MainActivity
+import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.screens.MatchDetailScreen
 import com.nbalive.app.ui.screens.MatchListScreen
 import com.nbalive.app.ui.screens.PlayerScreen
@@ -165,7 +166,11 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     selectedLeague = listState.selectedLeague,
                     counts = listState.counts,
                     onLeagueSelected = viewModel::selectLeague,
-                    onMatchClick = viewModel::openDetail,
+                    // 点比赛直接全屏自动播放，不再先跳详情页选线路
+                    onMatchClick = { m ->
+                        fullscreen = true
+                        viewModel.playMatch(m)
+                    },
                     onRetry = viewModel::refresh,
                 )
 
@@ -188,7 +193,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     onSignalSelected = viewModel::selectSignal,
                     otherMatches = listState.matches,
                     onOtherMatchClick = { m ->
-                        viewModel.openDetail(m)
+                        viewModel.playMatch(m)
                     },
                     onPlaybackError = viewModel::onPlaybackFailed,
                     onStreamSniffed = viewModel::onStreamSniffed,
@@ -197,6 +202,9 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     keepScreenOn = keepScreenOn,
                     onAspectChange = { PlayerPrefs.setAspect(context, it) },
                     onKeepScreenOnChange = { PlayerPrefs.setKeepScreenOn(context, it) },
+                    onReconnect = viewModel::reconnect,
+                    liveMatches = listState.matches.filter { it.status == MatchStatus.LIVE },
+                    onLiveMatchClick = viewModel::playMatch,
                     fullscreen = fullscreen,
                     inPip = inPip,
                     onToggleFullscreen = { fullscreen = !fullscreen },
