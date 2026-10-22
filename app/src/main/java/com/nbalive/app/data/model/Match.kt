@@ -92,10 +92,6 @@ data class StreamSource(
     val provider: Provider,
     /** 播放页地址（还需进一步解析出 m3u8） */
     val pageUrl: String,
-    /** 解析出的直连 m3u8（若已解析成功） */
-    val streamUrl: String? = null,
-    /** 解析出 m3u8 后请求所需的 Referer */
-    val referer: String? = null,
 )
 
 /** 数据源站点 */

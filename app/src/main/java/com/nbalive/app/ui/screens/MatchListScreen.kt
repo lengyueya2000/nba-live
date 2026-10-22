@@ -79,11 +79,12 @@ private fun groupByDay(matches: List<Match>, today: LocalDate): List<DayGroup> {
 
 /** 只取展示用的 HH:mm */
 private fun Match.hhmm(): String {
-    // 直播中的行没有具体开赛时间（startAtMillis 只是当天 00:00 的分组兜底），
-    // 直接展示源站文案，避免界面上出现假的"00:00"
-    if (status == MatchStatus.LIVE) return timeLabel
+    // LIVE 行：校正后 startAtMillis 是详情页回填的真实开赛时间，直接显示；
+    // 未校正的 JRS"直播中"行 startAtMillis 只是 parseDateTime 的当天 00:00 兜底，
+    // 这种假 00:00 不能上屏（真 00:00 开赛的篮球赛不存在），退回源站文案。
     startAtMillis?.let {
         val t = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
+        if (status == MatchStatus.LIVE && t.hour == 0 && t.minute == 0) return timeLabel
         return "%02d:%02d".format(t.hour, t.minute)
     }
     return timeLabel.substringAfterLast(' ').ifBlank { timeLabel }

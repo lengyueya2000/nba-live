@@ -237,12 +237,4 @@ class MatchRepository(
 
             resolved
         }
-
-    /** 按联赛过滤。 */
-    fun filter(matches: List<Match>, league: League): List<Match> = when (league) {
-        League.ALL -> matches
-        League.NBA -> matches.filter { it.league == League.NBA }
-        League.CBA -> matches.filter { it.league == League.CBA }
-        League.OTHER -> matches.filter { it.league == League.OTHER }
-    }
 }

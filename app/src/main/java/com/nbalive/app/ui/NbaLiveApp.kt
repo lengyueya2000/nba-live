@@ -105,7 +105,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     val versionName = remember(context) {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "1.2.0"
+        }.getOrNull() ?: "—"
     }
 
     // ---------- 播放偏好：画面模式 / 屏幕常亮 ----------
@@ -253,7 +253,8 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     streamUrl = playerState.streamUrl,
                     streamReferer = playerState.streamReferer,
                     webFallbackUrl = playerState.webFallbackUrl,
-                    errorMessage = null, // 提示已通过 Snackbar 呈现
+                    // 非全屏时常驻提示卡（全屏下卡片不渲染，由 Snackbar 负责）
+                    errorMessage = playerState.errorMessage,
                     onSignalSelected = viewModel::selectSignal,
                     otherMatches = listState.matches,
                     onOtherMatchClick = { m ->

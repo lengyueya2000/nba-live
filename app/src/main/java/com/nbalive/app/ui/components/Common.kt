@@ -10,11 +10,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -30,7 +28,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -174,6 +171,8 @@ fun SignalBadge(count: Int, modifier: Modifier = Modifier) {
 /**
  * 赛事状态标签（设计稿 .st）。
  * 直播中 = 红橙渐变；未开赛 = 蓝调；已结束 = 中性。
+ * 全部取主题派生色：浅色主题下半透明深底会近乎隐形，写死的 SportDark 色板
+ * 又会在白页上压出深色砖，所以这里跟随 colorScheme。
  */
 @Composable
 fun StatusChip(
@@ -184,14 +183,24 @@ fun StatusChip(
     val (bg, fg, border) = when (status) {
         MatchStatus.LIVE -> Triple<Brush, Color, Color>(GradLive, Color.White, Color.Transparent)
         MatchStatus.UPCOMING -> Triple(
-            Brush.linearGradient(listOf(Color(0x293B82F6), Color(0x293B82F6))),
-            Color(0xFF7FB2FF),
-            Color(0x473B82F6),
+            Brush.linearGradient(
+                listOf(
+                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
+                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
+                ),
+            ),
+            MaterialTheme.colorScheme.secondary,
+            MaterialTheme.colorScheme.secondary.copy(alpha = 0.30f),
         )
         MatchStatus.FINISHED -> Triple(
-            Brush.linearGradient(listOf(SportDark.Card3, SportDark.Card3)),
-            SportDark.Txt3,
-            SportDark.Line,
+            Brush.linearGradient(
+                listOf(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            ),
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            MaterialTheme.colorScheme.outlineVariant,
         )
     }
     val label = when (status) {
@@ -240,39 +249,3 @@ fun LiveDot(size: Dp = 6.dp) {
             .background(Color.White),
     )
 }
-
-/** 通用图标 + 文案的小胶囊（用于"直连 HLS"等元信息） */
-@Composable
-fun MetaPill(
-    icon: ImageVector,
-    text: String,
-    modifier: Modifier = Modifier,
-    tint: Color = SportDark.Txt2,
-) {
-    Row(
-        modifier = modifier
-            .height(26.dp)
-            .clip(RoundedCornerShape(Radius.pill))
-            .background(Color(0x1FFFFFFF))
-            .padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(12.dp), tint = tint)
-        Text(
-            text = text,
-            color = tint,
-            fontWeight = FontWeight.ExtraBold,
-            fontSize = 10.sp,
-            maxLines = 1,
-        )
-    }
-}
-
-/** 竖向间隔小工具 */
-@Composable
-fun VSpace(h: Dp) = Spacer(Modifier.height(h))
-
-/** 横向间隔小工具 */
-@Composable
-fun HSpace(w: Dp) = Spacer(Modifier.width(w))

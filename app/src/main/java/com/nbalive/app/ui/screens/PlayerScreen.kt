@@ -56,7 +56,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
-import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
@@ -91,10 +90,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
-import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.model.Match
-import com.nbalive.app.data.model.MatchStatus
-import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.ui.AspectMode
@@ -154,6 +150,19 @@ fun PlayerScreen(
     var picker by remember { mutableStateOf<PickerKind?>(null) }
     // 视频播放器句柄：自定义控制栏要读播放状态、要能暂停/继续
     val videoHandle = remember(streamUrl) { VideoPlayerHandle() }
+
+    // 全屏时界面默认干净：所有浮层（顶部信息、右上按钮、底部控制栏）隐藏，
+    // 单击画面显示、再单击隐藏。非全屏时始终显示。
+    // 沉浸式只适用于 ExoPlayer 直连路径：网页线路的触摸要留给源站播放器自己。
+    val immersive = fullscreen && !inPip && streamUrl != null
+    var controlsVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(fullscreen, streamUrl) {
+        if (fullscreen && streamUrl != null) controlsVisible = false
+    }
+    // 打开任一选择面板时强制露出控制栏，避免面板还开着栏却消失了
+    LaunchedEffect(picker, showLivePanel) {
+        if (picker != null || showLivePanel) controlsVisible = true
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
     Column(
@@ -218,8 +227,19 @@ fun PlayerScreen(
                 }
             }
 
+            // 全屏时单击画面：显示/隐藏全部浮层。
+            // 放在所有浮层之前（z 序在按钮之下），点按钮不会误触此层。
+            // 仅直连路径：网页线路的触摸必须留给源站播放器。
+            if (immersive) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable { controlsVisible = !controlsVisible },
+                )
+            }
+
             // 视频区顶部浮层：直播态 + 联赛（画中画里不显示，避免遮挡画面）
-            if (match != null && !inPip) {
+            if (match != null && !inPip && (!fullscreen || controlsVisible)) {
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopStart)
@@ -235,7 +255,7 @@ fun PlayerScreen(
             }
 
             // 右上角：画中画 / 全屏（画中画窗口内不再显示按钮）
-            if (!inPip) {
+            if (!inPip && (!fullscreen || controlsVisible)) {
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -271,7 +291,7 @@ fun PlayerScreen(
             // 右侧白描边功能胶囊（画面/源/线路/同时在播），一眼能读、按得准。
             // 关键：不再使用 Media3 原生控制条 —— 它自带快进/后退/进度条，
             // 直播流上误触会跳离直播边缘，而且不支持"重连/换源"这类直播操作。
-            if (fullscreen && !inPip) {
+            if (fullscreen && !inPip && controlsVisible) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -664,7 +684,7 @@ fun PlayerScreen(
             ) {
                 Text(
                     text = if (kind == PickerKind.SOURCE) "播放源" else "播放线路",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -681,12 +701,12 @@ fun PlayerScreen(
                         Icons.Filled.Close,
                         contentDescription = "关闭",
                         modifier = Modifier.size(16.dp),
-                        tint = Color.White.copy(alpha = 0.6f),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
             Spacer(Modifier.height(Space.sm))
-            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Spacer(Modifier.height(Space.xs))
             if (kind == PickerKind.SOURCE) {
                 val currentProvider = signals.getOrNull(selectedIndex)?.provider
@@ -752,7 +772,8 @@ private fun PickerRow(
         Column(Modifier.weight(1f)) {
             Text(
                 text = label,
-                color = if (selected) MaterialTheme.colorScheme.primary else Color.White,
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -761,7 +782,7 @@ private fun PickerRow(
             Spacer(Modifier.height(2.dp))
             Text(
                 text = sub,
-                color = Color.White.copy(alpha = 0.45f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 10.sp,
                 maxLines = 1,
             )

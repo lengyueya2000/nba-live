@@ -20,10 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -38,9 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
-import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
-import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
@@ -363,12 +357,13 @@ private fun InfoRow(label: String, value: String) {
 }
 
 private fun Match.displayTime(): String {
-    // 直播中的行没有具体开赛时间（startAtMillis 只是当天 00:00 的分组兜底），
-    // 展示源站文案，避免出现假的"00:00"
-    if (status == MatchStatus.LIVE && !Regex("""\d{1,2}:\d{2}""").containsMatchIn(timeLabel)) return timeLabel
+    // 与列表页 hhmm() 同规则：校正后的 LIVE 有真实开赛时间就显示它；
+    // 未校正的 JRS"直播中"行 startAtMillis 只是当天 00:00 兜底，展示源站文案，避免出现假的"00:00"
     startAtMillis?.let {
         val t = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
-        return "%02d-%02d %02d:%02d".format(t.monthValue, t.dayOfMonth, t.hour, t.minute)
+        if (!(status == MatchStatus.LIVE && t.hour == 0 && t.minute == 0)) {
+            return "%02d-%02d %02d:%02d".format(t.monthValue, t.dayOfMonth, t.hour, t.minute)
+        }
     }
     return timeLabel
 }

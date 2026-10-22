@@ -5,11 +5,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
-import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.repository.MatchRepository
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,8 +40,6 @@ data class MatchListUiState(
             League.CBA to matches.count { it.league == League.CBA },
             League.OTHER to matches.count { it.league == League.OTHER },
         )
-
-    val liveCount: Int get() = matches.count { it.status == MatchStatus.LIVE }
 }
 
 data class MatchDetailUiState(
@@ -127,25 +125,6 @@ class MainViewModel(
     }
 
     // ---------- 详情 ----------
-
-    fun openDetail(match: Match) {
-        _route.value = Route.DETAIL
-        _detailState.value = MatchDetailUiState(match = match, loadingSignals = true)
-        detailJob?.cancel()
-        detailJob = viewModelScope.launch {
-            val detail = repository.loadSignals(match)
-            // 源站列表的"直播中"可能滞后（实测结束 3 小时仍标直播中）：
-            // 用详情页的计划开赛时间校正状态并回填真实开赛时间，同步回列表
-            val c = detail.correction
-            if (c != null && (c.status != match.status || c.startAtMillis != match.startAtMillis)) {
-                fun fix(m: Match): Match =
-                    if (m.id == match.id) m.copy(status = c.status, startAtMillis = c.startAtMillis) else m
-                _detailState.update { it.copy(match = fix(it.match ?: match)) }
-                _listState.update { st -> st.copy(matches = st.matches.map(::fix)) }
-            }
-            _detailState.update { it.copy(signals = detail.signals, loadingSignals = false) }
-        }
-    }
 
     /**
      * 详情页「更多 -> 刷新线路」：重新拉一次该场次的信号列表。
@@ -272,6 +251,10 @@ class MainViewModel(
 
             for ((offset, candidate) in ordered.withIndex()) {
                 val resolved = repository.resolveStream(candidate)
+                // 解析是挂起点：期间用户可能已切线路（本协程被 cancel）。
+                // 取消发生在挂起返回之后时，剩余同步代码仍会跑完，
+                // 所以写终态前必须再确认自己还是"最新的那个"。
+                if (!isActive) return@launch
                 if (resolved != null) {
                     val idx = state.signals.indexOfFirst { it.pageUrl == candidate.pageUrl }
                     _playerState.update {
@@ -295,6 +278,7 @@ class MainViewModel(
             // 走 WebView 承载。注意区分两种情况：
             //  - 本来就没有直连候选（JRS / 加密线路）：这是该线路的正常播放方式，不打扰用户
             //  - 有直连候选但全部解析失败：才提示"直连不可用"
+            if (!isActive) return@launch
             val hadDirectCandidates = ordered.isNotEmpty()
             val fallback = state.signals[start]
             _playerState.update {
