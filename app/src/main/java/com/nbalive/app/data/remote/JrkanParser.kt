@@ -160,7 +160,15 @@ class JrkanParser {
         return raw.trim().ifBlank { "线路${index + 1}" }
     }
 
-    /** "10-21 19:35" -> epoch millis。时间串没有年份：在 ±6 个月窗口内取最近的一次。 */
+    /**
+     * "10-21 19:35" -> epoch millis。时间串没有年份：在 ±6 个月窗口内取最近的一次。
+     *
+     * ⚠️ 两个方向都要判：
+     * 只看"未来超过 6 个月"是不够的——例如今天 2026-10-22，源站给出 "01-05"，
+     * 按今年算得到 2026-01-05（已经过去 9 个多月），真实日期却是 2027-01-05（未来）。
+     * 那样会把 1~6 月的赛事归到去年，跨源合并键（用 LocalDate）对不上，
+     * 同一场比赛在两个源下就合不起来，信号数也被腰斩。
+     */
     private fun parseDateTime(raw: String): Long? {
         val m = Regex("""(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})""").find(raw) ?: return null
         val month = m.groupValues[1].toIntOrNull() ?: return null
@@ -169,8 +177,9 @@ class JrkanParser {
         val minute = m.groupValues[4].toIntOrNull() ?: return null
         val now = java.time.LocalDate.now()
         return runCatching {
-            // 先试今年；若结果落在"未来超过 6 个月"，说明是去年的日期（跨年）
             var date = java.time.LocalDate.of(now.year, month, day)
+            // 在 ±6 个月窗口内取最近的一次：过去太久 -> 顺延一年，未来太久 -> 倒退一年
+            if (date.isBefore(now.minusMonths(6))) date = date.plusYears(1)
             if (date.isAfter(now.plusMonths(6))) date = date.minusYears(1)
             date.atTime(hour, minute)
                 .atZone(java.time.ZoneId.systemDefault())

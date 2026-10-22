@@ -7,10 +7,13 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -38,11 +41,12 @@ import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.theme.GradCba
 import com.nbalive.app.ui.theme.GradLive
 import com.nbalive.app.ui.theme.GradNba
 import com.nbalive.app.ui.theme.Radius
-import com.nbalive.app.ui.theme.SportDark
+import com.nbalive.app.ui.theme.Space
 
 /**
  * 队徽：白底圆形 + contain 适配（设计稿 .logo），加载失败回退队名首字色块。
@@ -59,12 +63,12 @@ fun TeamLogo(
             modifier = Modifier
                 .size(size)
                 .clip(CircleShape)
-                .background(SportDark.Card3),
+                .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = teamName.take(1),
-                color = SportDark.Txt,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Black,
                 fontSize = (size.value / 2.4f).sp,
             )
@@ -228,6 +232,55 @@ fun StatusChip(
             fontSize = 10.5.sp,
             maxLines = 1,
         )
+    }
+}
+
+/**
+ * 画面模式三档选择器（自适应 / 铺满裁切 / 拉伸铺满）。
+ *
+ * 「我的」页与播放器用的是同一控件，之前两份逐字复制，
+ * 改配色时只改到一半（浅色主题下未选中项描边不可见）。
+ */
+@Composable
+fun AspectModeSelector(
+    aspectMode: AspectMode,
+    onAspectChange: (AspectMode) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(Space.sm),
+    ) {
+        AspectMode.entries.forEach { mode ->
+            val active = mode == aspectMode
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(Radius.btn))
+                    .background(
+                        if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                        else MaterialTheme.colorScheme.background,
+                    )
+                    .border(
+                        1.dp,
+                        // 未选中项的描边必须跟随主题：写死半透明白色在浅色页面上等于没有描边
+                        if (active) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outlineVariant,
+                        RoundedCornerShape(Radius.btn),
+                    )
+                    .clickable { onAspectChange(mode) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = mode.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (active) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 

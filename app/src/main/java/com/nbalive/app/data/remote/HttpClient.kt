@@ -20,10 +20,30 @@ class HttpClient(
     val client: OkHttpClient = defaultClient(),
 ) {
     /**
+     * 试探用客户端：连接超时更短。
+     *
+     * 播放地址有多个候选（反混淆版 / 原文版），要挨个试。
+     * 第一个候选若是坏域名，用默认 15s 连接超时会把"换个地址"拖成十几秒等待。
+     * newBuilder() 会复用同一个连接池与调度器，只是把超时改短。
+     */
+    private val probeClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /**
      * 挂起 GET。协程取消时同步取消底层 Call——
      * 否则用户快速切线路时，被放弃的解析请求会占着 IO 线程和 socket 到超时为止。
+     *
+     * @param fastFail 候选地址试探用：连接/读取超时更短
      */
-    suspend fun get(url: String, referer: String? = null): String? = suspendCancellableCoroutine { cont ->
+    suspend fun get(
+        url: String,
+        referer: String? = null,
+        fastFail: Boolean = false,
+    ): String? = suspendCancellableCoroutine { cont ->
         val builder = Request.Builder().url(url).get()
         builder.header("User-Agent", USER_AGENT)
         builder.header("Accept", "*/*")
@@ -31,7 +51,7 @@ class HttpClient(
         if (!referer.isNullOrBlank()) {
             builder.header("Referer", referer)
         }
-        val call = client.newCall(builder.build())
+        val call = (if (fastFail) probeClient else client).newCall(builder.build())
         cont.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {

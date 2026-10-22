@@ -8,8 +8,10 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -23,6 +25,17 @@ import androidx.core.view.WindowCompat
  *
  * 来源：design/sportcard/index.html 的 CSS 变量，一一对应，
  * 保证 Compose 实现与设计稿像素级一致。
+ *
+ * ⚠️ Composable 里**不要**直接引用 [SportDark] / [SportLight]：
+ * 那是浅色主题下"深色砖/隐形文字"的来源（Common.kt 的 StatusChip 踩过这个坑）。
+ * 统一按语义槽位取色：
+ *
+ * | 语义 | 槽位 |
+ * |---|---|
+ * | 三级文字（时间、次要说明） | `colorScheme.onSurfaceVariant` |
+ * | 分隔线 / 卡片描边 | `colorScheme.outlineVariant`（强调用 `outline`） |
+ * | 警告（无信号、故障切换提示） | `colorScheme.tertiary`（文字用 `onTertiary`） |
+ * | 卡面 / 次级容器 | `colorScheme.surface` / `surfaceVariant` |
  */
 
 // ---------- 暗色（默认） ----------
@@ -69,9 +82,48 @@ object SportLight {
 val GradLive = Brush.linearGradient(
     colors = listOf(Color(0xFFFF2E4D), Color(0xFFFF6B2C), Color(0xFFFF8A3D)),
 )
+
+/**
+ * 渐变：主 CTA（红→橙）。
+ *
+ * ⚠️ 这条渐变**不适合压白字**：#FF3B4E 处白字对比度 3.51:1、#FF7A2F 处只有 2.60:1，
+ * 达不到 WCAG AA 的 4.5:1（12sp 小字）。界面上要放白字的按钮请用 [accentBrush]。
+ */
 val GradRed = Brush.linearGradient(
     colors = listOf(Color(0xFFFF3B4E), Color(0xFFFF7A2F)),
 )
+
+/**
+ * 强调渐变（白字底色）：按主题主色生成，并逐档压暗到"白字可读"。
+ *
+ * 用来替换设计稿里的 [GradRed] —— 那条渐变压白字只有 2.6~3.5:1。
+ */
+@Composable
+fun accentBrush(): Brush {
+    val primary = MaterialTheme.colorScheme.primary
+    // remember：Brush 每次重建都会让使用它的节点失效，主题不变就该复用
+    return remember(primary) {
+        Brush.linearGradient(
+            colors = listOf(primary.whiteTextSafe(), primary.whiteTextSafe(0.75f)),
+        )
+    }
+}
+
+/**
+ * 把颜色压暗到"白字可读"：背景相对亮度 ≤ 0.1833 时，白字对比度 ≥ 4.5:1。
+ *
+ * @param scale 额外的整体缩放，用来生成渐变的第二档
+ */
+fun Color.whiteTextSafe(scale: Float = 1f): Color {
+    val maxLuminance = 0.1833f
+    var factor = scale
+    var color = Color(red * factor, green * factor, blue * factor, alpha)
+    while (factor > 0.2f && color.luminance() > maxLuminance) {
+        factor -= 0.05f
+        color = Color(red * factor, green * factor, blue * factor, alpha)
+    }
+    return color
+}
 val GradNba = Brush.linearGradient(
     colors = listOf(Color(0xFF2563EB), Color(0xFF60A5FA)),
 )
@@ -110,6 +162,12 @@ private val DarkColors = darkColorScheme(
     onSecondary = Color.White,
     secondaryContainer = Color(0xFF16243F),
     onSecondaryContainer = Color(0xFFBBD3FF),
+    // tertiary 承载"警告"语义（无信号提示、故障切换提示条）。
+    // 设计稿没有第三色板，用琥珀色占用 tertiary 槽位。
+    tertiary = SportDark.Warn,
+    onTertiary = Color(0xFF2B1A00),
+    tertiaryContainer = Color(0xFF3B2A00),
+    onTertiaryContainer = SportDark.Warn,
     background = SportDark.Bg,
     onBackground = SportDark.Txt,
     surface = SportDark.Card,
@@ -131,6 +189,10 @@ private val LightColors = lightColorScheme(
     onSecondary = Color.White,
     secondaryContainer = Color(0xFFDCE8FF),
     onSecondaryContainer = Color(0xFF10265C),
+    tertiary = SportLight.Warn,
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFFFEFC7),
+    onTertiaryContainer = Color(0xFF4A3200),
     background = SportLight.Bg,
     onBackground = SportLight.Txt,
     surface = SportLight.Card,

@@ -91,16 +91,18 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.nbalive.app.data.model.Match
+import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.ui.AspectMode
+import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
-import com.nbalive.app.ui.theme.GradRed
+import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.theme.Radius
+import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.Space
-import com.nbalive.app.ui.theme.SportDark
 
 
 /**
@@ -123,6 +125,8 @@ fun PlayerScreen(
     onSignalSelected: (Int) -> Unit,
     otherMatches: List<Match>,
     onOtherMatchClick: (Match) -> Unit,
+    /** Modifier 必须是第一个可选参数（Compose API 规范） */
+    modifier: Modifier = Modifier,
     onPlaybackError: () -> Unit = {},
     onStreamSniffed: (String, String?) -> Unit = { _, _ -> },
     /** 嗅探升级失败退回网页：不再弹"暂无信号"提示 */
@@ -140,7 +144,6 @@ fun PlayerScreen(
     inPip: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
     onEnterPip: () -> Unit = {},
-    modifier: Modifier = Modifier,
 ) {
     val videoOnly = fullscreen || inPip
 
@@ -248,7 +251,7 @@ fun PlayerScreen(
                 ) {
                     StatusChip(status = match.status)
                     LeagueChip(
-                        text = match.leagueRawName.ifBlank { match.league.displayName },
+                        text = match.leagueLabel(),
                         league = match.league,
                     )
                 }
@@ -341,12 +344,14 @@ fun PlayerScreen(
                                 },
                             )
                             if (signals.isNotEmpty()) {
+                                // 刷新线路后线路数会变，selectedIndex 可能越界 -> 显示"线路 5/3"
+                                val safeIndex = selectedIndex.coerceIn(0, signals.lastIndex)
                                 PlayerChip(
-                                    label = "源 ${signals.getOrNull(selectedIndex)?.provider?.displayName ?: "-"}",
+                                    label = "源 ${signals.getOrNull(safeIndex)?.provider?.displayName ?: "-"}",
                                     onClick = { picker = PickerKind.SOURCE },
                                 )
                                 PlayerChip(
-                                    label = "线路 ${selectedIndex + 1}/${signals.size}",
+                                    label = "线路 ${safeIndex + 1}/${signals.size}",
                                     onClick = { picker = PickerKind.LINE },
                                 )
                             }
@@ -387,7 +392,7 @@ fun PlayerScreen(
                     Spacer(Modifier.height(3.dp))
                     Text(
                         text = buildString {
-                            append(match.leagueRawName.ifBlank { match.league.displayName })
+                            append(match.leagueLabel())
                             append(" · ")
                             append(match.timeLabel)
                             if (signals.isNotEmpty()) {
@@ -395,7 +400,7 @@ fun PlayerScreen(
                             }
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = SportDark.Txt3,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -424,7 +429,7 @@ fun PlayerScreen(
                 Text(
                     text = "共 ${signals.size} 条线路",
                     style = MaterialTheme.typography.labelSmall,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
                 Spacer(Modifier.weight(1f))
@@ -455,7 +460,7 @@ fun PlayerScreen(
                             .height(52.dp)
                             .clip(RoundedCornerShape(Radius.btn))
                             .then(
-                                if (active) Modifier.background(GradRed)
+                                if (active) Modifier.background(accentBrush())
                                 else Modifier.background(Color.Transparent),
                             )
                             .clickable { onSignalSelected(index) },
@@ -474,7 +479,7 @@ fun PlayerScreen(
                             Text(
                                 text = source.provider.displayName,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (active) Color.White.copy(alpha = 0.8f) else SportDark.Txt3,
+                                color = if (active) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                             )
                         }
@@ -491,8 +496,12 @@ fun PlayerScreen(
                     .padding(horizontal = Space.lg)
                     .padding(top = Space.md)
                     .clip(RoundedCornerShape(Radius.card))
-                    .background(Color(0x1FFFC24B))
-                    .border(1.dp, Color(0x4DFFC24B), RoundedCornerShape(Radius.card))
+                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f))
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f),
+                        RoundedCornerShape(Radius.card),
+                    )
                     .padding(Space.md),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -500,13 +509,13 @@ fun PlayerScreen(
                     Icons.Filled.Warning,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
-                    tint = SportDark.Warn,
+                    tint = MaterialTheme.colorScheme.tertiary,
                 )
                 Spacer(Modifier.width(Space.sm))
                 Text(
                     text = errorMessage,
                     style = MaterialTheme.typography.bodySmall,
-                    color = SportDark.Warn,
+                    color = MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -526,39 +535,13 @@ fun PlayerScreen(
                 Text(
                     text = "画面",
                     style = MaterialTheme.typography.labelMedium,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(Space.sm))
-                Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-                    AspectMode.entries.forEach { mode ->
-                        val active = mode == aspectMode
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 40.dp)
-                                .clip(RoundedCornerShape(Radius.btn))
-                                .background(
-                                    if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                                    else MaterialTheme.colorScheme.background,
-                                )
-                                .border(
-                                    1.dp,
-                                    if (active) MaterialTheme.colorScheme.primary else SportDark.Line,
-                                    RoundedCornerShape(Radius.btn),
-                                )
-                                .clickable { onAspectChange(mode) },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = mode.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (active) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                            )
-                        }
-                    }
-                }
+                AspectModeSelector(
+                    aspectMode = aspectMode,
+                    onAspectChange = onAspectChange,
+                )
                 Spacer(Modifier.height(Space.sm))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -573,7 +556,7 @@ fun PlayerScreen(
                         Text(
                             text = if (keepScreenOn) "观赛期间不自动熄屏" else "跟随系统熄屏设置",
                             style = MaterialTheme.typography.labelSmall,
-                            color = SportDark.Txt3,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Switch(
@@ -588,7 +571,11 @@ fun PlayerScreen(
         }
 
         // ---------- 其他直播 ----------
-        val others = otherMatches.filter { it.id != match?.id }.take(4)
+        // 只列真正在直播的场次：otherMatches 是"全部赛事"，
+        // 直接拿来用会把未开赛/已结束的比赛摆进"其他直播"里
+        val others = otherMatches
+            .filter { it.id != match?.id && it.status == MatchStatus.LIVE }
+            .take(4)
         if (others.isNotEmpty()) {
             Row(
                 modifier = Modifier
@@ -607,7 +594,7 @@ fun PlayerScreen(
                 Text(
                     text = "今日赛事",
                     style = MaterialTheme.typography.labelSmall,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
             }
@@ -849,7 +836,7 @@ private fun LiveNowPanel(
                     Icons.Filled.Close,
                     contentDescription = "关闭",
                     modifier = Modifier.size(16.dp),
-                    tint = SportDark.Txt3,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -857,11 +844,11 @@ private fun LiveNowPanel(
         Text(
             text = if (others.isEmpty()) "暂无其他正在直播的场次" else "共 ${others.size} 场正在直播",
             style = MaterialTheme.typography.labelSmall,
-            color = SportDark.Txt3,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = Space.lg),
         )
         Spacer(Modifier.height(Space.sm))
-        HorizontalDivider(color = SportDark.Line)
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -891,14 +878,14 @@ private fun LiveNowRow(match: Match, onClick: () -> Unit) {
             StatusChip(status = match.status)
             Spacer(Modifier.width(Space.xs))
             LeagueChip(
-                text = match.leagueRawName.ifBlank { match.league.displayName },
+                text = match.leagueLabel(),
                 league = match.league,
             )
             Spacer(Modifier.weight(1f))
             Text(
                 text = match.timeLabel,
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }
@@ -917,7 +904,7 @@ private fun LiveNowRow(match: Match, onClick: () -> Unit) {
             Text(
                 text = "vs",
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
                 text = match.awayTeam,
@@ -941,20 +928,28 @@ private fun VideoControlButton(
     description: String,
     onClick: () -> Unit,
 ) {
+    // 触控区 48dp（无障碍最小值），视觉圆 34dp：
+    // 外层负责点击，内层负责画圆，两者分开才不会把圆撑大。
     Box(
         modifier = Modifier
-            .size(34.dp)
-            .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.45f))
+            .size(48.dp)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            icon,
-            contentDescription = description,
-            modifier = Modifier.size(19.dp),
-            tint = Color.White,
-        )
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.45f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = description,
+                modifier = Modifier.size(19.dp),
+                tint = Color.White,
+            )
+        }
     }
 }
 
@@ -996,20 +991,28 @@ private fun PlayerIconButton(
     description: String,
     onClick: () -> Unit,
 ) {
+    // 触控区 48dp（无障碍最小值），视觉圆 40dp：
+    // 外层负责点击，内层负责画圆，两者分开才不会把圆撑大。
     Box(
         modifier = Modifier
-            .size(40.dp)
-            .clip(CircleShape)
-            .background(Color.White.copy(alpha = 0.10f))
+            .size(48.dp)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            icon,
-            contentDescription = description,
-            tint = Color.White,
-            modifier = Modifier.size(20.dp),
-        )
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.10f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = description,
+                tint = Color.White,
+                modifier = Modifier.size(20.dp),
+            )
+        }
     }
 }
 
@@ -1046,14 +1049,14 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         LeagueChip(
-            text = match.leagueRawName.ifBlank { match.league.displayName },
+            text = match.leagueLabel(),
             league = match.league,
         )
         Spacer(Modifier.width(Space.sm))
         Text(
             text = match.timeLabel,
             style = MaterialTheme.typography.labelSmall,
-            color = SportDark.Txt3,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
         )
         Spacer(Modifier.weight(1f))
@@ -1070,7 +1073,7 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
         Text(
             text = "vs",
             style = MaterialTheme.typography.labelSmall,
-            color = SportDark.Txt3,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(Space.xs))
         Text(
@@ -1094,6 +1097,7 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
  * 调用方用 `key(streamUrl, referer)` 包住本组件：Referer 是烧在数据源工厂里的，
  * 换线路必须整体重建播放器，否则会出现"换了线路但 CDN 还拿旧 Referer -> 403"。
  */
+@androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 @Composable
 private fun VideoSurface(
     streamUrl: String,
@@ -1105,6 +1109,9 @@ private fun VideoSurface(
     val reportedRef = remember { mutableSetOf<String>() }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     val onErrorState = rememberUpdatedState(onError)
+    // 是否曾经进入过 READY：直播流正常也会周期性重缓冲（STATE_BUFFERING），
+    // 只看"当前不是 READY"会把健康线路误判成卡死。
+    var reachedReady by remember(streamUrl) { mutableStateOf(false) }
 
     // 后台暂停：按 Home 进小窗时 Activity 只是 PAUSED 不收此事件，播放不受影响；
     // 但被返回键划掉小窗、锁屏、切到别的 App（未进小窗）时会 ON_STOP，必须停播，
@@ -1126,7 +1133,10 @@ private fun VideoSurface(
     LaunchedEffect(streamUrl) {
         delay(15_000)
         val player = playerView?.player
-        if (player != null && player.playbackState != Player.STATE_READY &&
+        // 只有"从未就绪过"才算卡死：直播流正常重缓冲时状态就是 BUFFERING，
+        // 之前只看 !=STATE_READY，健康线路会被误杀并被永久拉黑（failedSources）
+        if (player != null && !reachedReady &&
+            player.playbackState != Player.STATE_READY &&
             reportedRef.add(streamUrl)
         ) {
             onErrorState.value()
@@ -1176,6 +1186,7 @@ private fun VideoSurface(
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     handle.isBuffering = playbackState == Player.STATE_BUFFERING
+                    if (playbackState == Player.STATE_READY) reachedReady = true
                 }
             })
 
@@ -1336,6 +1347,9 @@ private fun WebSurface(
                 view.webViewClient = WebViewClient()
                 view.clearHistory()
                 view.destroy()
+                // 必须置空：生命周期观察者还持有这个引用，
+                // 对已 destroy 的 WebView 调 pauseTimers() 会崩
+                webView = null
             },
             modifier = Modifier.fillMaxSize(),
         )
@@ -1353,7 +1367,7 @@ private fun WebSurface(
                     Icon(
                         Icons.Filled.Warning,
                         contentDescription = null,
-                        tint = SportDark.Warn,
+                        tint = MaterialTheme.colorScheme.tertiary,
                         modifier = Modifier.size(28.dp),
                     )
                     Spacer(Modifier.height(Space.sm))

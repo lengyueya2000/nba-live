@@ -93,6 +93,7 @@ class MainViewModel(
     private var playJob: Job? = null
     private var detailJob: Job? = null
     private var loadJob: Job? = null
+    private var refreshJob: Job? = null
 
     init {
         refresh()
@@ -101,7 +102,10 @@ class MainViewModel(
     // ---------- 列表 ----------
 
     fun refresh() {
-        viewModelScope.launch {
+        // 取消上一次：连点刷新会让多次 loadMatches 并发跑，
+        // 每次都要为直播中的场次并发拉详情页，对源站是成倍的请求量
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             _listState.update { it.copy(loading = true, error = null) }
             repository.loadMatches()
                 .onSuccess { matches ->
@@ -217,7 +221,10 @@ class MainViewModel(
                     it.copy(resolving = false, errorMessage = "该赛事暂无可用线路")
                 }
             } else {
-                play(0)
+                // 默认线路：优先选能直连的那条，省一次 WebView 往返。
+                // （用户手动点某条线路时仍然按用户的选择走，见 play()）
+                val preferred = detail.signals.indexOfFirst { it.isDirectHls }
+                play(if (preferred >= 0) preferred else 0)
             }
         }
     }
@@ -226,6 +233,12 @@ class MainViewModel(
      * 播放某条线路，并带**自动故障切换**：
      * 从当前线路开始依次尝试可直连的线路，第一个真正拉到清单的胜出；
      * 全部失败才降级为 WebView 承载源站播放页。
+     *
+     * ⚠️ "用户选中的那条"和"其它可直连线路"必须分开：
+     *  - 选中的是**直连**线路：解析它；它确实失败才自动切到别的直连线路（这是故障切换）
+     *  - 选中的是**只能网页播放**的线路：不自动切走。用户明确点了它，
+     *    之前却先播别的线路、再把用户选的那条报成"不可用"——
+     *    那不是故障切换，是把用户的选择吞了。这种情况直接交给 WebView 承载。
      */
     private fun play(index: Int) {
         playJob?.cancel()
@@ -236,6 +249,9 @@ class MainViewModel(
                 return@launch
             }
             val start = index.coerceIn(0, state.signals.lastIndex)
+            val chosen = state.signals[start]
+            // 之前已经确认这条播不了（被自动故障切换拉黑过）：不再重复尝试
+            val chosenUsable = chosen.pageUrl !in failedSources
 
             _playerState.update {
                 it.copy(resolving = true, streamUrl = null, streamReferer = null,
@@ -243,11 +259,16 @@ class MainViewModel(
                     errorMessage = null)
             }
 
-            // 候选顺序：当前线路优先，其余可直连线路依次兜底
+            // 候选顺序：用户选中的那条优先，其余可直连线路依次兜底。
+            // 选中的是网页线路时不生成任何候选——尊重用户的选择。
             val ordered = buildList {
-                add(state.signals[start])
-                state.signals.forEachIndexed { i, s -> if (i != start && s.isDirectHls) add(s) }
-            }.filter { it.isDirectHls && it.pageUrl !in failedSources }
+                if (chosen.isDirectHls) {
+                    if (chosenUsable) add(chosen)
+                    state.signals.forEachIndexed { i, s ->
+                        if (i != start && s.isDirectHls && s.pageUrl !in failedSources) add(s)
+                    }
+                }
+            }
 
             for ((offset, candidate) in ordered.withIndex()) {
                 val resolved = repository.resolveStream(candidate)
@@ -264,8 +285,10 @@ class MainViewModel(
                             streamUrl = resolved.m3u8Url,
                             streamReferer = resolved.referer,
                             webFallbackUrl = null,
-                            errorMessage = if (offset > 0) {
-                                "${state.signals[start].label} 不可用，已自动切换到 ${candidate.label}"
+                            // 只有"选中的那条确实失败过"才提示切换；
+                            // 否则用户会看到一条自己从没点过的线路被说成"不可用"
+                            errorMessage = if (offset > 0 || !chosenUsable) {
+                                "${chosen.label} 不可用，已自动切换到 ${candidate.label}"
                             } else {
                                 null
                             },
@@ -280,13 +303,16 @@ class MainViewModel(
             //  - 有直连候选但全部解析失败：才提示"直连不可用"
             if (!isActive) return@launch
             val hadDirectCandidates = ordered.isNotEmpty()
-            val fallback = state.signals[start]
             _playerState.update {
                 it.copy(
                     resolving = false,
                     streamUrl = null,
                     streamReferer = null,
-                    webFallbackUrl = fallback.pageUrl,
+                    // 兜底的网页承载对应的是"用户选中的那条"，
+                    // selectedIndex 必须跟着它走，
+                    // 否则"线路 N/M"显示的是另一条（playMatch 的默认线路可能不是第 0 条）
+                    selectedIndex = start,
+                    webFallbackUrl = chosen.pageUrl,
                     sniffedStream = false,
                     errorMessage = if (hadDirectCandidates) {
                         "所有直连线路均不可用，已切换为内嵌播放"

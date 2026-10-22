@@ -27,23 +27,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.Match
-import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
-import com.nbalive.app.ui.theme.GradRed
+import com.nbalive.app.ui.displayTime
+import com.nbalive.app.ui.leagueLabel
+import com.nbalive.app.ui.mmdd
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
-import com.nbalive.app.ui.theme.SportDark
-import java.time.Instant
-import java.time.ZoneId
 
 /**
  * 赛事详情：左右对阵大字号 + 信号列表 + 源站信息 + 底部 CTA。
@@ -73,7 +70,7 @@ fun MatchDetailScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             LeagueChip(
-                text = match.leagueRawName.ifBlank { match.league.displayName },
+                text = match.leagueLabel(),
                 league = match.league,
             )
             Spacer(Modifier.width(Space.sm))
@@ -89,7 +86,7 @@ fun MatchDetailScreen(
             Text(
                 text = if (loadingSignals) "加载中…" else "${signals.size} 条信号",
                 style = MaterialTheme.typography.labelMedium,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }
@@ -127,9 +124,9 @@ fun MatchDetailScreen(
                 }
                 Spacer(Modifier.height(Space.xs))
                 Text(
-                    text = match.mmddLabel(),
+                    text = match.mmdd(),
                     style = MaterialTheme.typography.labelSmall,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             VersusTeam(
@@ -154,7 +151,7 @@ fun MatchDetailScreen(
                 Text(
                     text = "正在获取信号列表…",
                     style = MaterialTheme.typography.bodySmall,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         } else if (signals.isEmpty()) {
@@ -167,7 +164,7 @@ fun MatchDetailScreen(
                 Text(
                     text = "该赛事暂无可用线路",
                     style = MaterialTheme.typography.bodySmall,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         } else {
@@ -179,7 +176,6 @@ fun MatchDetailScreen(
                     SignalRow(
                         index = index,
                         source = source,
-                        highlight = index == 0,
                         onClick = { onSignalClick(index) },
                     )
                 }
@@ -246,7 +242,7 @@ private fun SectionHeader(title: String, hint: String) {
         Text(
             text = hint,
             style = MaterialTheme.typography.labelSmall,
-            color = SportDark.Txt3,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
         )
         Spacer(Modifier.width(Space.md))
@@ -264,14 +260,12 @@ private fun SectionHeader(title: String, hint: String) {
 private fun SignalRow(
     index: Int,
     source: StreamSource,
-    highlight: Boolean,
     onClick: () -> Unit,
 ) {
-    // 选中行用主题色浅底，而不是写死的深色卡：浅色主题下写死深色会变成一块黑砖
-    val borderColor = if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-    else MaterialTheme.colorScheme.outlineVariant
-    val bg = if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-    else MaterialTheme.colorScheme.surface
+    // 详情页没有"当前选中线路"这个状态（选中发生在播放器里），
+    // 所以这里不做"高亮第一行"的假选中，全部用中性样式。
+    val borderColor = MaterialTheme.colorScheme.outlineVariant
+    val bg = MaterialTheme.colorScheme.surface
 
     Row(
         modifier = Modifier
@@ -279,7 +273,11 @@ private fun SignalRow(
             .clip(RoundedCornerShape(Radius.card))
             .background(bg)
             .border(1.dp, borderColor, RoundedCornerShape(Radius.card))
-            .clickable(onClick = onClick)
+            .clickable(
+                onClickLabel = "播放该线路",
+                role = Role.Button,
+                onClick = onClick,
+            )
             .padding(horizontal = Space.md, vertical = Space.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -287,15 +285,12 @@ private fun SignalRow(
             modifier = Modifier
                 .size(38.dp)
                 .clip(RoundedCornerShape(Radius.chipLg))
-                .then(
-                    if (highlight) Modifier.background(GradRed)
-                    else Modifier.background(MaterialTheme.colorScheme.surfaceVariant),
-                ),
+                .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = "${index + 1}",
-                color = if (highlight) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.titleMedium,
             )
         }
@@ -314,7 +309,7 @@ private fun SignalRow(
             Text(
                 text = "源站 ${source.provider.displayName}",
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -328,7 +323,7 @@ private fun SignalRow(
             modifier = Modifier
                 .padding(start = Space.xs)
                 .size(13.dp),
-            tint = SportDark.Txt3,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -342,7 +337,7 @@ private fun InfoRow(label: String, value: String) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodySmall,
-            color = SportDark.Txt3,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
         )
         Spacer(Modifier.weight(1f))
@@ -354,24 +349,4 @@ private fun InfoRow(label: String, value: String) {
             overflow = TextOverflow.Ellipsis,
         )
     }
-}
-
-private fun Match.displayTime(): String {
-    // 与列表页 hhmm() 同规则：校正后的 LIVE 有真实开赛时间就显示它；
-    // 未校正的 JRS"直播中"行 startAtMillis 只是当天 00:00 兜底，展示源站文案，避免出现假的"00:00"
-    startAtMillis?.let {
-        val t = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
-        if (!(status == MatchStatus.LIVE && t.hour == 0 && t.minute == 0)) {
-            return "%02d-%02d %02d:%02d".format(t.monthValue, t.dayOfMonth, t.hour, t.minute)
-        }
-    }
-    return timeLabel
-}
-
-private fun Match.mmddLabel(): String {
-    startAtMillis?.let {
-        val t = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
-        return "%02d-%02d".format(t.monthValue, t.dayOfMonth)
-    }
-    return timeLabel.substringBefore(' ').ifBlank { "" }
 }

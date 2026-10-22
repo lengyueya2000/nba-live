@@ -1,5 +1,6 @@
 package com.nbalive.app.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -11,12 +12,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -29,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -42,6 +47,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -49,9 +57,10 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
+import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
-import com.nbalive.app.ui.theme.SportDark
+import kotlinx.coroutines.CancellationException
 
 /**
  * 搜索页：在已加载的赛事里按球队 / 联赛名过滤。
@@ -67,9 +76,22 @@ fun SearchScreen(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    // 提到 when 外面：否则分支切换时列表状态被丢掉，换查询词会沿用旧滚动位置
+    val listState = rememberLazyListState()
 
     // 进来就聚焦输入框，省一次点击
-    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+    LaunchedEffect(Unit) {
+        try {
+            focusRequester.requestFocus()
+        } catch (e: CancellationException) {
+            // 协程被取消不是错误，照原样抛回去
+            throw e
+        } catch (e: IllegalStateException) {
+            // 输入框还没挂上时 requestFocus 会抛异常：记一笔，别再静默吞掉
+            Log.w("SearchScreen", "自动聚焦输入框失败", e)
+        }
+    }
 
     val results = remember(query, matches) {
         val q = query.trim()
@@ -80,6 +102,11 @@ fun SearchScreen(
                 m.leagueRawName.contains(q, ignoreCase = true) ||
                 m.league.displayName.contains(q, ignoreCase = true)
         }
+    }
+
+    // 换查询词就回到顶部，别停在上一轮的滚动位置
+    LaunchedEffect(query) {
+        if (results.isNotEmpty()) listState.scrollToItem(0)
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -93,7 +120,8 @@ fun SearchScreen(
         ) {
             Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    // 触摸目标补到 48dp
+                    .size(48.dp)
                     .clip(RoundedCornerShape(Radius.btn))
                     .background(MaterialTheme.colorScheme.surface)
                     .clickable(onClick = onClose),
@@ -112,14 +140,15 @@ fun SearchScreen(
                 onValueChange = { query = it },
                 modifier = Modifier
                     .weight(1f)
-                    .height(48.dp)
+                    // Material3 文本框默认 56dp：48dp 塞不下 48dp 的"清空"触摸目标
+                    .heightIn(min = 56.dp)
                     .focusRequester(focusRequester),
                 singleLine = true,
                 placeholder = {
                     Text(
                         text = "搜索球队 / 联赛",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = SportDark.Txt3,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 },
                 leadingIcon = {
@@ -127,23 +156,32 @@ fun SearchScreen(
                         Icons.Filled.Search,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
-                        tint = SportDark.Txt3,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
-                        Icon(
-                            Icons.Filled.Clear,
-                            contentDescription = "清空",
+                        Box(
                             modifier = Modifier
-                                .size(18.dp)
-                                .clickable { query = "" },
-                            tint = SportDark.Txt3,
-                        )
+                                // 图标只有 18dp，触摸目标补到 48dp
+                                .minimumInteractiveComponentSize()
+                                .clip(RoundedCornerShape(Radius.chip))
+                                .clickable { query = "" }
+                                .semantics { contentDescription = "清空" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Clear,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { }),
+                // 搜索键：收起键盘，别一直挡着结果列表
+                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
                 shape = RoundedCornerShape(Radius.btn),
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = MaterialTheme.colorScheme.surface,
@@ -161,6 +199,7 @@ fun SearchScreen(
             query.isBlank() -> HintState("输入球队名开始搜索，例如「湖人」")
             results.isEmpty() -> HintState("没有找到匹配的赛事")
             else -> LazyColumn(
+                state = listState,
                 contentPadding = PaddingValues(
                     start = Space.lg,
                     end = Space.lg,
@@ -168,7 +207,11 @@ fun SearchScreen(
                     bottom = Space.xxl,
                 ),
                 verticalArrangement = Arrangement.spacedBy(Space.sm),
-                modifier = Modifier.fillMaxSize(),
+                // 这一页是 Scaffold 的兄弟节点，拿不到 Scaffold 的 innerPadding；
+                // 开了 edge-to-edge 后不补 navigationBarsPadding，最后一行会被系统栏压住。
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding(),
             ) {
                 items(results, key = { it.id }) { match ->
                     SearchResultRow(match = match, onClick = { onMatchClick(match) })
@@ -184,7 +227,7 @@ private fun HintState(text: String) {
         Text(
             text = text,
             style = MaterialTheme.typography.bodyMedium,
-            color = SportDark.Txt3,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -203,7 +246,7 @@ private fun SearchResultRow(match: Match, onClick: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 LeagueChip(
-                    text = match.leagueRawName.ifBlank { match.league.displayName },
+                    text = match.leagueLabel(),
                     league = match.league,
                 )
                 Spacer(Modifier.width(Space.sm))
@@ -212,7 +255,7 @@ private fun SearchResultRow(match: Match, onClick: () -> Unit) {
                 Text(
                     text = match.timeLabel,
                     style = MaterialTheme.typography.labelSmall,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
             }
@@ -230,7 +273,7 @@ private fun SearchResultRow(match: Match, onClick: () -> Unit) {
                 Text(
                     text = " vs ",
                     style = MaterialTheme.typography.labelSmall,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
                     text = match.awayTeam,

@@ -51,9 +51,15 @@ enum class MatchStatus {
 
     companion object {
         fun fromSource(raw: String): MatchStatus = when {
-            // 顺序很重要："直播已结束" 同时含 "直播" 和 "结束"，必须先判结束
+            // 顺序很重要，判定必须从"确定"到"不确定"：
+            //  1) "直播已结束" 同时含 "直播" 和 "结束" -> 先判结束
+            //  2) "直播未开始" 含 "直播" 但没有 "结束" -> 若不先判未开始，
+            //     它会被下面的 "直播" 规则误判成直播中（实测源站会提前标）
             raw.contains("已结束") || raw.contains("完场") || raw.contains("结束") -> FINISHED
+            raw.contains("未开始") || raw.contains("未开赛") || raw.contains("未赛") -> UPCOMING
+            raw.contains("延期") || raw.contains("推迟") || raw.contains("待定") -> UPCOMING
             raw.contains("直播中") || raw.contains("直播") -> LIVE
+            raw.contains("开赛") -> LIVE
             else -> UPCOMING
         }
     }

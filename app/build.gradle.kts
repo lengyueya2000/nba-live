@@ -20,8 +20,8 @@ android {
         applicationId = "com.nbalive.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.2.1"
+        versionCode = 6
+        versionName = "1.2.2"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -38,7 +38,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 开启代码压缩 + 资源压缩：release 包不上传任何源码，
+            // 混淆能让"抓包就能拿到源站解析逻辑"的门槛高一点，也能显著减小体积。
+            // 依赖自带 consumer rules（Media3 / OkHttp / Coil / Kotlinx）。
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (keystoreProps.isNotEmpty()) {
                 signingConfig = signingConfigs.getByName("release")
@@ -57,17 +61,22 @@ android {
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
+    testOptions {
+        // 单元测试跑在 JVM 上，android.util.Log 等框架桩没有实现。
+        // 返回默认值而不是抛异常，数据层里的日志调用才不会让测试无法运行。
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
 
-    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
-    implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.activity:activity-compose:1.9.3")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")

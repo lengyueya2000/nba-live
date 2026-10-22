@@ -140,7 +140,17 @@ class JrsParser {
      * 同时回填真实开赛时间戳（列表页"直播中"的行没有 HH:mm，startAtMillis 只是 00:00 兜底）。
      * 无法判断时返回 null（不猜测、不误杀）。
      */
-    fun correctedStatus(match: Match, scheduledTime: String?): StatusCorrection? {
+    fun correctedStatus(match: Match, scheduledTime: String?): StatusCorrection? =
+        correctedStatus(match, scheduledTime, java.time.ZonedDateTime.now())
+
+    /**
+     * 可注入"当前时间"的重载，供单元测试把跨零点等时间相关的分支固定下来。
+     */
+    internal fun correctedStatus(
+        match: Match,
+        scheduledTime: String?,
+        now: java.time.ZonedDateTime,
+    ): StatusCorrection? {
         if (match.status != MatchStatus.LIVE || scheduledTime == null) return null
         val day = match.startAtMillis?.let {
             java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
@@ -148,17 +158,32 @@ class JrsParser {
         val hm = Regex("""(\d{1,2}):(\d{2})""").find(scheduledTime) ?: return null
         val hour = hm.groupValues[1].toIntOrNull() ?: return null
         val minute = hm.groupValues[2].toIntOrNull() ?: return null
-        val start = runCatching {
+        val base = runCatching {
             day.atTime(hour, minute).atZone(java.time.ZoneId.systemDefault())
         }.getOrNull() ?: return null
-        val startMillis = start.toInstant().toEpochMilli()
-        val now = java.time.ZonedDateTime.now()
-        val status = when {
+
+        fun statusAt(start: java.time.ZonedDateTime): MatchStatus = when {
             now.isAfter(start.plusHours(3).plusMinutes(30)) -> MatchStatus.FINISHED
             now.isBefore(start.minusMinutes(15)) -> MatchStatus.UPCOMING
             else -> MatchStatus.LIVE
         }
-        return StatusCorrection(status, startMillis)
+
+        // 跨零点的场次：源站可能把 00:30 的比赛归到"前一天"的分组，
+        // 按分组日期直接算会凭空"结束 24 小时前"，整场状态判错。
+        //
+        // 但要区分得靠"源站说直播中"这个前提：只有当**按次日算是直播中**时才改用次日。
+        // 否则"今天凌晨 01:28 开赛、已经过去 20 小时"这种正常情况会被误改成
+        // "明天凌晨开赛"，把一场早就结束的比赛判成未开赛。
+        var start = base
+        if (hour < 6) {
+            val nextDay = base.plusDays(1)
+            if (statusAt(base) == MatchStatus.FINISHED && statusAt(nextDay) == MatchStatus.LIVE) {
+                start = nextDay
+            }
+        }
+
+        val startMillis = start.toInstant().toEpochMilli()
+        return StatusCorrection(statusAt(start), startMillis)
     }
 
     /** 详情页校正结果：真实状态 + 真实开赛时间 */

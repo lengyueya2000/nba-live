@@ -190,14 +190,17 @@ body{
   height:26px;padding:0 10px;border-radius:9px;background:rgba(12,6,10,.30);
   font-size:11px;font-weight:800;display:inline-flex;align-items:center;gap:5px;
 }
+.lc-foot .chip-btn{border:0;font-family:inherit;color:#fff;cursor:pointer}
+.lc-foot .chip-btn:focus-visible{outline:2px solid #fff;outline-offset:2px}
 
 /* ---------- 网格赛事卡 ---------- */
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 16px}
 .mcard{
   position:relative;overflow:hidden;border-radius:22px;background:var(--card);
   border:1px solid var(--line);box-shadow:var(--shadow-1);padding:0 0 11px;
-  min-width:0;
+  min-width:0;cursor:pointer;
 }
+.mcard:focus-visible,.hcard:focus-visible{outline:2px solid var(--red);outline-offset:2px}
 .mcard .strip{height:5px;width:100%}
 .mcard .strip.nba{background:linear-gradient(90deg,#2563EB,#60A5FA)}
 .mcard .strip.cba{background:linear-gradient(90deg,#E11D48,#FB923C)}
@@ -259,7 +262,9 @@ body{
 .tab{
   flex:1 1 0;height:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
   color:var(--txt-3);border-radius:16px;
+  background:transparent;border:0;font-family:inherit;cursor:pointer;
 }
+.tab:focus-visible{outline:2px solid var(--red);outline-offset:-2px}
 .tab b{font-size:10.5px;font-weight:800;letter-spacing:.4px}
 .tab.on{color:var(--red)}
 .tab.on .tab-ic{
@@ -373,7 +378,7 @@ body{
 .hscroll::-webkit-scrollbar{height:0;width:0}
 .hcard{
   flex:0 0 168px;scroll-snap-align:start;background:var(--card);border:1px solid var(--line);
-  border-radius:20px;padding:11px 12px 12px;box-shadow:var(--shadow-1);overflow:hidden;
+  border-radius:20px;padding:11px 12px 12px;box-shadow:var(--shadow-1);overflow:hidden;cursor:pointer;
 }
 .hc-top{display:flex;align-items:center;gap:6px}
 .hc-time{display:flex;align-items:baseline;gap:5px;margin-top:8px}
@@ -435,22 +440,11 @@ body{
 .sig-row .m b{display:block;font-size:13.5px;font-weight:900;line-height:18px}
 .sig-row .m span{display:block;font-size:10.5px;color:var(--txt-3);font-weight:700;margin-top:3px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sig-note{margin:0;font-size:11px;line-height:17px;font-weight:600;color:var(--txt-3)}
+.sig-note code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;background:var(--card-2);border-radius:4px;padding:1px 4px}
 .sig-row.on{border-color:rgba(255,59,78,.55);background:linear-gradient(135deg,rgba(255,59,78,.14),rgba(255,138,61,.05))}
 .sig-row.on .idx{background:var(--grad-red);color:#fff}
-.sig-state{
-  flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;
-  border-radius:7px;font-size:10px;font-weight:800;white-space:nowrap;
-}
-.sig-state.ok{background:rgba(47,208,126,.16);color:#3FD98C;border:1px solid rgba(47,208,126,.3)}
-.sig-state.slow{background:rgba(255,194,75,.16);color:var(--warn);border:1px solid rgba(255,194,75,.3)}
-[data-theme="light"] .sig-state.ok{color:#0E9F5C}
-[data-theme="light"] .sig-state.slow{color:#B47708}
 .sig-row .chev{flex:0 0 auto;color:var(--txt-3)}
-.dt-cta{
-  position:absolute;left:16px;right:16px;bottom:100px;height:54px;border:0;border-radius:18px;
-  background:var(--grad-red);color:#fff;font-family:inherit;font-size:15px;font-weight:900;letter-spacing:.6px;
-  display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:var(--shadow-red);z-index:15;
-}
 .dt-cta{
   position:absolute;left:16px;right:16px;bottom:100px;height:54px;border:0;border-radius:18px;
   background:var(--grad-red);color:#fff;font-family:inherit;font-size:15px;font-weight:900;letter-spacing:.6px;
@@ -564,8 +558,25 @@ const T = {
   lakers  :{n:'湖人',  logo:null,c:'#552583'},
   blazers:{n:'开拓者',logo:null,c:'#E03A3E'}
 };
-const NDA = 'https://cdn.sportnanoapi.com/basketball/team/';
 const L = {nba:'NBA', cba:'CBA'};
+
+/* 播放方式（对应 app 的 StreamSource.isDirectHls）：
+   只有源站 /play/sm.html 链路能静态解析成 m3u8 直连；
+   JRS mgxl/pao 与 JRKAN wen/pao 是 XXTEA 加密 / 需令牌，只能由 WebView 承载。 */
+const PLAY = {
+  hls:{label:'直连 HLS', full:'直连 HLS (m3u8)'},
+  web:{label:'网页播放', full:'网页播放 (WebView)'}
+};
+
+/* 该场次的线路表：只展示真实已知信息（源站 + 播放方式），不编造分辨率与可用性 */
+const LINES = [
+  {id:1, label:'信号1', provider:'JRS',   play:'hls'},
+  {id:2, label:'信号2', provider:'JRS',   play:'web'},
+  {id:3, label:'信号3', provider:'JRKAN', play:'web'}
+];
+
+/* 运行时状态：联赛筛选 + 当前选中线路 */
+const state = {league:'', signal:1};
 
 /* ============================================================
    组件工厂
@@ -579,12 +590,16 @@ function logoHtml(key, size){
 }
 function icon(id, cls){ return `<svg class="ic ${cls||''}"><use href="#${id}"></use></svg>`; }
 
-function tabbar(active){
-  const items = [['list','i-grid','赛事'],['live','i-tv','直播'],['me','i-user','我的']];
-  return `<nav class="tabbar">${items.map(([k,ic,txt])=>`
-    <div class="tab ${k===active?'on':''}">
+function tabbar(active, listId){
+  const items = [
+    ['list','i-grid','赛事', listId||'01-list-dark'],
+    ['live','i-tv','直播','02-player-dark'],
+    ['me','i-user','我的','08-profile-dark']
+  ];
+  return `<nav class="tabbar" role="tablist">${items.map(([k,ic,txt,go])=>`
+    <button type="button" role="tab" aria-selected="${k===active}" class="tab ${k===active?'on':''}" data-go="${go}">
       <span class="tab-ic">${icon(ic,'ic-22')}</span><b>${txt}</b>
-    </div>`).join('')}</nav>`;
+    </button>`).join('')}</nav>`;
 }
 
 function topbar(){
@@ -601,18 +616,36 @@ function topbar(){
   </header>`;
 }
 
+/* 联赛筛选：计数由 GROUPS 实时统计，空串 = 全部 */
+function leagueCounts(){
+  const c = {all:0, nba:0, cba:0};
+  GROUPS.forEach(gr=>gr.items.forEach(g=>{
+    c.all++;
+    if(g.lg==='nba') c.nba++;
+    if(g.lg==='cba') c.cba++;
+  }));
+  return c;
+}
 function leagueSeg(on){
-  const segs = [['全部','5'],['NBA','2'],['CBA','3']];
-  return `<div class="seg" role="tablist">${segs.map(([t,n])=>
-    `<button class="seg-btn ${t===on?'is-on':''}">${t}<em>${n}</em></button>`).join('')}</div>`;
+  const c = leagueCounts();
+  const segs = [['全部','',c.all],['NBA','nba',c.nba],['CBA','cba',c.cba]];
+  return `<div class="seg" role="tablist">${segs.map(([t,key,n])=>`
+    <button type="button" role="tab" aria-selected="${key===on}" class="seg-btn ${key===on?'is-on':''}" data-lg="${key}">${t}<em>${n}</em></button>`).join('')}</div>`;
+}
+
+/* 信号条数：signalCount = -1 表示尚未解析出线路数，不能当数字展示 */
+function sigText(g){
+  const n = g && typeof g.sig === 'number' ? g.sig : -1;
+  return n < 0 ? '' : String(n);
 }
 
 /* 直播中的大卡 */
 function liveCard(g){
+  const sig = sigText(g);
   return `<article class="live-card">
     <div class="lc-top">
       <span class="lc-live"><i class="dot"></i>直播中</span>
-      <span class="lc-time num">${g.time} · 第2节 08:42</span>
+      <span class="lc-time num">${g.time} 开赛</span>
     </div>
     <div class="lc-body">
       <div class="lc-side">${logoHtml(g.h,'lg-46')}<b>${T[g.h].n}</b></div>
@@ -620,9 +653,9 @@ function liveCard(g){
       <div class="lc-side">${logoHtml(g.a,'lg-46')}<b>${T[g.a].n}</b></div>
     </div>
     <div class="lc-foot">
-      <span class="chip">${icon('i-signal','ic-16')}${g.sig} 条线路</span>
+      ${sig!==''?`<span class="chip">${icon('i-signal','ic-16')}${sig} 条线路</span>`:''}
       <span class="chip">${icon('i-stack','ic-16')}${g.src}</span>
-      <span class="chip" style="margin-left:auto">${icon('i-play','ic-16')}立即观看</span>
+      <button type="button" class="chip chip-btn" style="margin-left:auto" data-go="02-player-dark">${icon('i-play','ic-16')}立即观看</button>
     </div>
   </article>`;
 }
@@ -634,11 +667,12 @@ function miniCard(g){
     : g.status==='done'
       ? `<span class="st done">${icon('i-check','ic-16')}已结束</span>`
       : `<span class="st soon">${icon('i-cal','ic-16')}${g.date.slice(5)} 开赛</span>`;
-  return `<article class="mcard">
+  const sig = sigText(g);
+  return `<article class="mcard" role="button" tabindex="0" data-go="03-detail-dark">
     <div class="strip ${g.lg}"></div>
     <div class="mc-top">
       <span class="lg-chip ${g.lg}">${L[g.lg]}</span>
-      <span class="sig-badge">${icon('i-signal','ic-16')}${g.sig}</span>
+      ${sig!==''?`<span class="sig-badge">${icon('i-signal','ic-16')}${sig}</span>`:''}
     </div>
     <div class="mc-time"><b class="num">${g.time}</b><span class="num">${g.date}</span></div>
     <div class="mc-teams">
@@ -665,23 +699,47 @@ const GROUPS = [
   ]}
 ];
 
-function listBody(){
-  const live = GROUPS[0].items.find(g=>g.status==='live');
-  return `
+/* 联赛筛选：只保留 NBA / CBA（与 app 的 League.supported 一致），空串 = 全部 */
+function filterGroups(lg){
+  return GROUPS.map(gr=>({
+    title:gr.title, tag:gr.tag, hot:gr.hot,
+    items:gr.items.filter(g=>!lg||g.lg===lg)
+  })).filter(gr=>gr.items.length>0);
+}
+
+function listBody(lg){
+  lg = lg||'';
+  const groups = filterGroups(lg);
+  const all = groups.reduce((a,gr)=>a.concat(gr.items),[]);
+  const liveCount = all.filter(g=>g.status==='live').length;
+  const sigTotal = all.reduce((n,g)=>n+(g.sig<0?0:g.sig),0);
+  const live = all.filter(g=>g.status==='live')[0];
+  let html = `
   <div class="quick">
-    <div class="quick-i"><b class="num">5</b><span>今日赛事</span></div>
-    <div class="quick-i live"><b class="num">1</b><span>直播中</span></div>
-    <div class="quick-i"><b class="num">15</b><span>可用信号</span></div>
-  </div>
-  <div class="grp"><h2>${GROUPS[0].title}</h2><span class="tag hot">直播中</span><span class="line"></span><span class="tag">${GROUPS[0].tag}</span></div>
-  ${liveCard(live)}
-  <div class="grid2" style="margin-top:10px">
-    ${GROUPS[0].items.filter(g=>g.status!=='live').map(miniCard).join('')}
-  </div>
-  <div class="grp"><h2>${GROUPS[1].title}</h2><span class="line"></span><span class="tag">${GROUPS[1].tag}</span></div>
-  <div class="grid2">
-    ${GROUPS[1].items.map(miniCard).join('')}
+    <div class="quick-i"><b class="num">${all.length}</b><span>赛事</span></div>
+    <div class="quick-i live"><b class="num">${liveCount}</b><span>直播中</span></div>
+    <div class="quick-i"><b class="num">${sigTotal}</b><span>信号</span></div>
   </div>`;
+  if(!all.length){
+    return html + `<div class="state"><div class="state-ill">${icon('i-ball','ic-28')}</div>
+      <h2>该联赛暂无赛程</h2>
+      <p>当前筛选条件下没有赛事，切换到「全部」查看全部 NBA / CBA 场次。</p>
+      <button class="btn" type="button" data-lg="">${icon('i-refresh','ic-16')}查看全部赛事</button>
+    </div>`;
+  }
+  groups.forEach((gr, gi)=>{
+    html += `<div class="grp"><h2>${gr.title}</h2>${gr.hot?'<span class="tag hot">直播中</span>':''}<span class="line"></span><span class="tag">${gr.tag}</span></div>`;
+    if(gi===0 && live && gr.items.indexOf(live)>=0){
+      html += liveCard(live);
+      const rest = gr.items.filter(g=>g!==live);
+      if(rest.length){
+        html += `<div class="grid2" style="margin-top:10px">${rest.map(miniCard).join('')}</div>`;
+      }
+    } else {
+      html += `<div class="grid2">${gr.items.map(miniCard).join('')}</div>`;
+    }
+  });
+  return html;
 }
 
 function emptyBody(){
@@ -731,17 +789,53 @@ const SCREEN_ID = {
   list:'01-list-dark', empty:'05-empty-state', loading:'06-loading-state', error:'07-error-state'
 };
 function listScreen(variant){
+  const isList = variant==='list';
   const body = variant==='empty' ? emptyBody()
              : variant==='loading' ? loadBody()
              : variant==='error' ? errorBody()
-             : listBody();
+             : listBody(state.league);
   return `<section class="screen" data-screen="${SCREEN_ID[variant]}" data-variant="${variant}">
     ${topbar()}
-    ${leagueSeg('全部')}
-    <div class="scroll">${body}</div>
+    ${leagueSeg(state.league)}
+    <div class="scroll"${isList?' data-list-body':''}>${body}</div>
     ${tabbar('list')}
   </section>`;
 }
+
+/* ============================================================
+   屏 D：我的（对应 app 的 ProfileScreen）
+   ============================================================ */
+const profileHtml = `
+<section class="screen" data-screen="08-profile-dark">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">${icon('i-user','ic-22')}</span>
+      <div class="brand-txt"><b>我的</b><span>偏好与关于</span></div>
+    </div>
+    <span class="spacer"></span>
+    <button type="button" class="icon-btn theme-btn" aria-label="切换主题">
+      ${icon('i-moon','ic-22 ic-moon')}${icon('i-sun','ic-22 ic-sun')}
+    </button>
+  </header>
+  <div class="scroll">
+    <div class="grp"><h2>播放偏好</h2><span class="line"></span></div>
+    <div class="secondary">
+      <div class="sec-row"><span class="k">自动故障切换</span><span class="v">已开启 · 失败后自动顺延</span>${icon('i-check','ic-16')}</div>
+      <div class="sec-row"><span class="k">线路播放方式</span><span class="v">直连 HLS / WebView</span>${icon('i-stack','ic-16')}</div>
+    </div>
+    <div class="grp"><h2>外观</h2><span class="line"></span></div>
+    <div class="secondary">
+      <div class="sec-row"><span class="k">主题</span><span class="v">跟随系统 / 浅色 / 深色</span>${icon('i-sun','ic-16')}</div>
+    </div>
+    <div class="grp"><h2>关于</h2><span class="line"></span></div>
+    <div class="secondary">
+      <div class="sec-row"><span class="k">数据来源</span><span class="v">JRS / JRKAN</span>${icon('i-stack','ic-16')}</div>
+      <div class="sec-row"><span class="k">支持联赛</span><span class="v">NBA / CBA</span>${icon('i-ball','ic-16')}</div>
+    </div>
+    <p class="sig-note" style="margin:14px 16px">本应用仅聚合第三方公开线路，不存储、不转播任何赛事内容。</p>
+  </div>
+  ${tabbar('me')}
+</section>`;
 
 /* ============================================================
    屏 B：播放器
@@ -749,12 +843,12 @@ function listScreen(variant){
 const playerHtml = `
 <section class="screen" data-screen="02-player-dark">
   <header class="pl-top">
-    <button class="icon-btn" style="width:40px;height:40px;border-radius:14px" aria-label="返回">${icon('i-back','ic-22')}</button>
+    <button type="button" class="icon-btn" style="width:40px;height:40px;border-radius:14px" aria-label="返回赛事列表" data-go="01-list-dark">${icon('i-back','ic-22')}</button>
     <span class="pl-top-t">
       <b>青岛 vs 辽宁</b>
       <span>CBA · 今天 19:35</span>
     </span>
-    <button class="icon-btn" style="width:40px;height:40px;border-radius:14px" aria-label="更多">${icon('i-dots','ic-22')}</button>
+    <button type="button" class="icon-btn" style="width:40px;height:40px;border-radius:14px" aria-label="更多操作">${icon('i-dots','ic-22')}</button>
   </header>
   <div class="pl-video">
     <div class="pl-mark">
@@ -766,12 +860,12 @@ const playerHtml = `
       <span class="num">10-21</span>
     </div>
     <div class="pl-center">
-      <button class="pl-play">${icon('i-play','ic-28')}</button>
+      <button type="button" class="pl-play" aria-label="播放">${icon('i-play','ic-28')}</button>
     </div>
     <div class="pl-under">
       <div class="pl-under-t">
         <span>青岛 vs 辽宁</span>
-        <span class="num">08:42 / 48:00</span>
+        <span class="num">直播中 · 19:35 开赛</span>
       </div>
       <div class="pl-bar"><i></i></div>
       <div class="pl-ctrls">
@@ -796,25 +890,27 @@ const playerHtml = `
       </span>
     </div>
 
-    <div class="sec-title"><b>信号切换</b><span>共 3 条线路 · 当前 信号2</span><span class="line"></span></div>
-    <div class="seg seg-sig" role="tablist">
-      <button class="seg-btn"><b>信号1</b><em>高清 1080P</em></button>
-      <button class="seg-btn is-on"><b>信号2</b><em>高清 1080P</em></button>
-      <button class="seg-btn"><b>信号3</b><em>标清 720P</em></button>
+    <div class="sec-title"><b>信号切换</b><span>共 ${LINES.length} 条线路</span><span class="line"></span></div>
+    <div class="seg seg-sig" role="tablist" data-sig-bar>
+      ${LINES.map(l=>`
+        <button type="button" role="tab" aria-selected="${l.id===state.signal}" class="seg-btn ${l.id===state.signal?'is-on':''}" data-sig="${l.id}">
+          <b>${l.label}</b><em>${PLAY[l.play].label}</em>
+        </button>`).join('')}
     </div>
+    <p class="sig-note">只有源站 <code>/play/sm.html</code> 线路能直连 m3u8；其余加密线路由 App 内置 WebView 承载。</p>
 
     <div class="snack">
       ${icon('i-alert','ic-22')}
       <span class="snack-t">
         <b>信号1 播放失败，已自动切换</b>
-        <span>当前正在尝试 信号2（高清 1080P）· 可手动重试信号1</span>
+        <span>已顺延到下一条线路，可手动重试信号1</span>
       </span>
-      <button class="snack-act">重试</button>
+      <button class="snack-act" type="button">重试</button>
     </div>
 
     <div class="src-row">
-      <span class="k">当前源站</span>
-      <span class="v">JRS · 直连 HLS (m3u8)</span>
+      <span class="k">播放方式</span>
+      <span class="v" data-play-mode></span>
       ${icon('i-chev','ic-16')}
     </div>
 
@@ -824,20 +920,16 @@ const playerHtml = `
         {h:'zhejiang',a:'shandong',t:'19:35',st:'未开赛'},
         {h:'shenzhen',a:'guangsha',t:'19:35',st:'已结束'}
       ].map(g=>`
-        <div class="hcard">
+        <div class="hcard" role="button" tabindex="0" data-go="03-detail-dark">
           <div class="hc-top">
             <span class="lg-chip cba">CBA</span>
             <span class="sig-badge">${icon('i-signal','ic-16')}3</span>
           </div>
           <div class="hc-time"><b class="num">${g.t}</b><span class="num">10-21</span></div>
           <div class="hc-teams">
-            <span class="logo lg-40" style="--fb:${T[g.h].c}">
-              <img src="${T[g.h].logo}" alt="${T[g.h].n}" onerror="this.parentNode.classList.add('fail')"><span class="fb">${T[g.h].n[0]}</span>
-            </span>
+            ${logoHtml(g.h,'lg-40')}
             <span class="hc-vs">VS</span>
-            <span class="logo lg-40" style="--fb:${T[g.a].c}">
-              <img src="${T[g.a].logo}" alt="${T[g.a].n}" onerror="this.parentNode.classList.add('fail')"><span class="fb">${T[g.a].n[0]}</span>
-            </span>
+            ${logoHtml(g.a,'lg-40')}
           </div>
           <div class="hc-names">${T[g.h].n} vs ${T[g.a].n}</div>
           <div class="hc-foot"><span class="st ${g.st==='未开赛'?'soon':'done'}">${g.st}</span></div>
@@ -854,15 +946,15 @@ const detailHtml = `
 <section class="screen" data-screen="03-detail-dark">
   <div class="dt-head">
     <div class="dt-bar">
-      <button class="icon-btn" style="width:40px;height:40px;border-radius:14px">${icon('i-back','ic-22')}</button>
+      <button type="button" class="icon-btn" style="width:40px;height:40px;border-radius:14px" aria-label="返回赛事列表" data-go="01-list-dark">${icon('i-back','ic-22')}</button>
       <h1>赛事详情</h1>
-      <button class="icon-btn" style="width:40px;height:40px;border-radius:14px">${icon('i-dots','ic-22')}</button>
+      <button type="button" class="icon-btn" style="width:40px;height:40px;border-radius:14px" aria-label="更多操作">${icon('i-dots','ic-22')}</button>
     </div>
     <div class="dt-meta">
       <span class="lg-chip nba">NBA</span>
       <span class="t num">10-22 07:00</span>
       <span class="st soon">未开赛</span>
-      <span class="t" style="margin-left:auto">3 条信号</span>
+      <span class="t" style="margin-left:auto">${LINES.length} 条线路</span>
     </div>
     <div class="dt-vs">
       <div class="dt-side">${logoHtml('celtics','lg-72')}<b>凯尔特人</b></div>
@@ -873,44 +965,33 @@ const detailHtml = `
 
   <div class="dt-body">
     <div class="sec-title"><b>选择信号</b><span>点击进入播放器并选中该线路</span><span class="line"></span></div>
-    <div class="sig-list">
-      <div class="sig-row on">
-        <span class="idx">1</span>
-        <span class="m"><b>信号1 · 高清</b><span>1080P · HLS · 源站 JRS</span></span>
-        <span class="sig-state ok">${icon('i-check','ic-16')}可用</span>
-        ${icon('i-chev','ic-16 ic-16 chev')}
-      </div>
-      <div class="sig-row">
-        <span class="idx">2</span>
-        <span class="m"><b>信号2 · 标清</b><span>720P · HLS · 源站 JRKAN</span></span>
-        <span class="sig-state ok">${icon('i-check','ic-16')}可用</span>
-        ${icon('i-chev','ic-16 ic-16 chev')}
-      </div>
-      <div class="sig-row">
-        <span class="idx">3</span>
-        <span class="m"><b>信号3 · 备线</b><span>480P · HLS · 源站 JRS 备用</span></span>
-        <span class="sig-state slow">速度慢</span>
-        ${icon('i-chev','ic-16 ic-16 chev')}
-      </div>
+    <div class="sig-list" data-sig-list>
+      ${LINES.map(l=>`
+        <button type="button" class="sig-row ${l.id===state.signal?'on':''}" data-sig="${l.id}">
+          <span class="idx">${l.id}</span>
+          <span class="m"><b>${l.label}</b><span>${l.provider} · ${PLAY[l.play].full}</span></span>
+          ${icon('i-chev','ic-16 ic-16 chev')}
+        </button>`).join('')}
     </div>
+    <p class="sig-note">源站不提供画质与可用性数据，这里只展示真实已知信息：播放方式 + 源站。</p>
 
     <div class="sec-title"><b>其他源站信息</b><span class="line"></span></div>
     <div class="secondary">
       <div class="sec-row"><span class="k">源站</span><span class="v">JRS / JRKAN 双源</span>${icon('i-stack','ic-16')}</div>
       <div class="sec-row"><span class="k">更多信号外链</span><span class="v">jrkan.com 赛事页</span>${icon('i-link','ic-16')}</div>
-      <div class="sec-row"><span class="k">备用地址</span><span class="v">m3u8 主备地址已就绪</span>${icon('i-check','ic-16')}</div>
+      <div class="sec-row"><span class="k">备用源站</span><span class="v">jrszbt.com</span>${icon('i-check','ic-16')}</div>
     </div>
 
     <div class="sec-title"><b>赛事速览</b><span class="line"></span></div>
     <div class="tiles">
       <div class="tile"><span class="tile-k">开赛时间</span><b class="num">10-22 07:00</b></div>
-      <div class="tile"><span class="tile-k">可用信号</span><b class="num">3 条</b></div>
-      <div class="tile"><span class="tile-k">最高画质</span><b class="num">1080P</b></div>
-      <div class="tile"><span class="tile-k">播放协议</span><b>HLS / m3u8</b></div>
+      <div class="tile"><span class="tile-k">可用线路</span><b class="num">${LINES.length} 条</b></div>
+      <div class="tile"><span class="tile-k">源站</span><b>JRS / JRKAN</b></div>
+      <div class="tile"><span class="tile-k">播放方式</span><b>直连 HLS / 网页播放</b></div>
     </div>
   </div>
 
-  <button class="dt-cta">${icon('i-play','ic-16')}去观看 · 信号1</button>
+  <button type="button" class="dt-cta" data-go="02-player-dark">${icon('i-play','ic-16')}<span data-cta-label>去观看 · ${LINES[0].label}</span></button>
   ${tabbar('list')}
 </section>`;
 
@@ -924,7 +1005,8 @@ phone.innerHTML =
   detailHtml +
   listScreen('empty') +
   listScreen('loading') +
-  listScreen('error');
+  listScreen('error') +
+  profileHtml;
 
 // 浅色版列表：克隆 01-list-dark 并强制浅色主题
 const darkList = phone.querySelector('[data-screen="01-list-dark"]');
@@ -938,6 +1020,9 @@ function showScreen(id){
   phone.querySelectorAll('.screen').forEach(el=>{
     el.classList.toggle('active', el.getAttribute('data-screen')===id);
   });
+  const sc = phone.querySelector(`[data-screen="${id}"] .scroll`);
+  if(sc) sc.scrollTop = 0;
+  return id;
 }
 window.__SHOW_SCREEN = showScreen;
 
@@ -946,19 +1031,90 @@ function setTheme(theme){
 }
 window.__SET_THEME = setTheme;
 
+/* 联赛筛选：真正重新渲染列表，而不是只切一个 CSS 类 */
+function setLeague(lg){
+  state.league = lg || '';
+  document.querySelectorAll('.seg-btn[data-lg]').forEach(b=>{
+    const on = (b.getAttribute('data-lg')===state.league);
+    b.classList.toggle('is-on', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-list-body]').forEach(sc=>{
+    sc.innerHTML = listBody(state.league);
+  });
+  return state.league;
+}
+window.__SET_LEAGUE = setLeague;
+
+/* 选中线路：同步播放器分段控件、详情页线路行、CTA 文案与播放方式 */
+function selectSignal(id){
+  state.signal = Number(id);
+  document.querySelectorAll('.seg-btn[data-sig]').forEach(b=>{
+    const on = (Number(b.getAttribute('data-sig'))===state.signal);
+    b.classList.toggle('is-on', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('.sig-row').forEach(r=>{
+    r.classList.toggle('on', Number(r.getAttribute('data-sig'))===state.signal);
+  });
+  const line = LINES.find(l=>l.id===state.signal) || LINES[0];
+  document.querySelectorAll('[data-play-mode]').forEach(el=>{
+    el.textContent = `${line.provider} · ${PLAY[line.play].full}`;
+  });
+  document.querySelectorAll('[data-cta-label]').forEach(el=>{
+    el.textContent = `去观看 · ${line.label}`;
+  });
+  return state.signal;
+}
+window.__SELECT_SIGNAL = selectSignal;
+
 document.addEventListener('click', (e)=>{
-  const btn = e.target.closest('.theme-btn');
-  if(!btn) return;
-  const cur = document.documentElement.getAttribute('data-theme')==='light' ? 'dark' : 'light';
-  setTheme(cur);
+  const t = e.target;
+  if(!t || !t.closest) return;
+
+  const themeBtn = t.closest('.theme-btn');
+  if(themeBtn){
+    const cur = document.documentElement.getAttribute('data-theme')==='light' ? 'dark' : 'light';
+    setTheme(cur);
+    return;
+  }
+
+  /* 联赛筛选：重新渲染列表 */
+  const chip = t.closest('[data-lg]');
+  if(chip){
+    setLeague(chip.getAttribute('data-lg'));
+    return;
+  }
+
+  /* 底部导航 / CTA / 赛事卡：跳屏 */
+  const go = t.closest('[data-go]');
+  if(go){
+    showScreen(go.getAttribute('data-go'));
+    return;
+  }
+
+  /* 播放器分段控件：切线路 */
+  const sigBtn = t.closest('.seg-btn[data-sig]');
+  if(sigBtn){
+    selectSignal(sigBtn.getAttribute('data-sig'));
+    return;
+  }
+
+  /* 详情页线路行：选中并进入播放器 */
+  const sigRow = t.closest('.sig-row');
+  if(sigRow){
+    selectSignal(sigRow.getAttribute('data-sig'));
+    showScreen('02-player-dark');
+  }
 });
 
-// 分段控件交互
-document.addEventListener('click', (e)=>{
-  const b = e.target.closest('.seg-btn');
-  if(!b) return;
-  b.parentElement.querySelectorAll('.seg-btn').forEach(x=>x.classList.remove('is-on'));
-  b.classList.add('is-on');
+/* role="button" 的卡片支持键盘操作 */
+document.addEventListener('keydown', (e)=>{
+  if(e.key!=='Enter' && e.key!==' ') return;
+  const el = e.target && e.target.closest ? e.target.closest('[role="button"][data-go]') : null;
+  if(!el) return;
+  e.preventDefault();
+  showScreen(el.getAttribute('data-go'));
 });
 
 window.__SCREENS = [
@@ -968,9 +1124,11 @@ window.__SCREENS = [
   {id:'04-list-light', name:'04-list-light', selector:'[data-screen="04-list-light"]'},
   {id:'05-empty-state',name:'05-empty-state',selector:'[data-screen="05-empty-state"]'},
   {id:'06-loading-state',name:'06-loading-state',selector:'[data-screen="06-loading-state"]'},
-  {id:'07-error-state',name:'07-error-state',selector:'[data-screen="07-error-state"]'}
+  {id:'07-error-state',name:'07-error-state',selector:'[data-screen="07-error-state"]'},
+  {id:'08-profile-dark',name:'08-profile-dark',selector:'[data-screen="08-profile-dark"]'}
 ];
 
+selectSignal(state.signal);
 showScreen('01-list-dark');
 </script>
 </body>

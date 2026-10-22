@@ -195,7 +195,9 @@ html[data-theme="light"] .theme-btn .ic-moon{display:none}
 .card{
   position:relative;margin:0 16px 10px;padding:12px 14px;border-radius:20px;overflow:hidden;
   background:var(--surface);border:1px solid var(--line-soft);box-shadow:var(--shadow);
+  cursor:pointer;
 }
+.card:focus-visible{outline:2px solid var(--accent-2);outline-offset:2px}
 .card-art{position:absolute;inset:0;background:var(--art-list);z-index:0}
 .card > *:not(.card-art){position:relative;z-index:1}
 .card-head{display:flex;align-items:center;gap:8px}
@@ -444,14 +446,8 @@ html[data-theme="light"] .dt-hero::after,
 .sig-row .meta{flex:1 1 auto;min-width:0}
 .sig-row .meta b{display:block;font-size:14px;font-weight:800;line-height:18px;letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sig-row .meta span{display:block;font-size:12px;font-weight:700;color:var(--txt-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sig-state{
-  flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 9px;border-radius:12px;
-  font-size:12px;font-weight:800;white-space:nowrap;border:1px solid transparent;
-}
-.sig-state.ok{background:rgba(16,185,129,.14);color:#34D399;border-color:rgba(16,185,129,.34)}
-.sig-state.slow{background:rgba(245,158,11,.14);color:#FBBF24;border-color:rgba(245,158,11,.34)}
-html[data-theme="light"] .sig-state.ok,.screen[data-theme="light"] .sig-state.ok{color:#047857}
-html[data-theme="light"] .sig-state.slow,.screen[data-theme="light"] .sig-state.slow{color:#B45309}
+.sig-note{margin:8px 2px 0;font-size:12px;line-height:18px;font-weight:600;color:var(--txt-3)}
+.sig-note code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;background:var(--surface-2);border-radius:4px;padding:1px 4px}
 .sig-row.on{border-color:rgba(225,29,72,.55);background:linear-gradient(120deg,rgba(225,29,72,.14),rgba(225,29,72,.03))}
 .sig-row.on .idx{background:linear-gradient(140deg,#E11D48,#9F1239);color:#fff;box-shadow:0 4px 14px rgba(225,29,72,.36)}
 .sig-row .chev{flex:0 0 auto;color:var(--txt-3)}
@@ -571,21 +567,46 @@ const T = {
   liaoning:{n:'辽宁',  logo:'http://www.jrszb444.com/d/file/p/2019/07-22/acb1277db8452ad3271a65207209575.jpg',c:'#C8102E'},
   shenzhen:{n:'深圳',  logo:'http://www.jrszb444.com/d/file/p/2019/04-16/76af9384d3eb454a4d318ae371734d15.jpg',c:'#D32F2F'},
   guangsha:{n:'广厦',  logo:'http://www.jrszb444.com/d/file/p/2019/07-22/964df7d6987b40bff17f8b25cc0b1186.jpg',c:'#1D4ED8'},
-  lakers  :{n:'湖人',  logo:'',c:'#552583'},
-  blazers :{n:'开拓者',logo:'',c:'#E03A3E'}
+  lakers  :{n:'湖人',  logo:null,c:'#552583'},
+  blazers :{n:'开拓者',logo:null,c:'#E03A3E'}
 };
 const LEAGUE = {nba:'NBA', cba:'CBA'};
 
+/* 播放方式（对应 app 的 StreamSource.isDirectHls）：
+   只有源站 /play/sm.html 链路能静态解析成 m3u8 直连；
+   JRS mgxl/pao 与 JRKAN wen/pao 是 XXTEA 加密 / 需令牌，只能由 WebView 承载。 */
+const PLAY = {
+  hls:{label:'直连 HLS', full:'直连 HLS (m3u8)'},
+  web:{label:'网页播放', full:'网页播放 (WebView)'}
+};
+
+/* 该场次的线路表：只展示真实已知信息（源站 + 播放方式），不编造分辨率与可用性 */
+const LINES = [
+  {id:1, label:'信号1', provider:'JRS',   play:'hls', note:'源站 sm.html 直连'},
+  {id:2, label:'信号2', provider:'JRS',   play:'web', note:'加密线路，需 WebView'},
+  {id:3, label:'信号3', provider:'JRKAN', play:'web', note:'加密线路，需 WebView'}
+];
+
+/* 运行时状态：联赛筛选 + 当前选中线路 */
+const state = { league:'', signal:1 };
+
 function icon(id, cls){ return '<svg class="ic '+(cls||'')+'"><use href="#'+id+'"></use></svg>'; }
 
-/* 队徽：真实 URL + onerror 首字色块兜底 */
+/* 信号条数：signalCount = -1 表示尚未解析出线路数，不能当数字展示 */
+function sigText(g){
+  var n = g && typeof g.sig === 'number' ? g.sig : -1;
+  return n < 0 ? '' : String(n);
+}
+
+/* 队徽：真实 URL + onerror 首字色块兜底；没有 URL 时直接显示首字色块 */
 function logoHtml(key, size){
   const t = T[key];
-  const fb = '<span class="fb">'+t.n.charAt(0)+'</span>';
-  const img = t.logo
-    ? '<img src="'+t.logo+'" alt="'+t.n+'" onerror="this.parentNode.classList.add(\'fail\')">'
-    : '';
-  return '<span class="logo '+(size||'')+'" style="--fb:'+t.c+'">'+img+fb+'</span>';
+  if(!t.logo){
+    return '<span class="logo '+(size||'')+'" style="--fb:'+t.c+'">'+
+      '<span class="fb" style="display:flex;background:'+t.c+'">'+t.n.charAt(0)+'</span></span>';
+  }
+  const img = '<img src="'+t.logo+'" alt="'+t.n+'" onerror="this.parentNode.classList.add(\'fail\')">';
+  return '<span class="logo '+(size||'')+'" style="--fb:'+t.c+'">'+img+'<span class="fb">'+t.n.charAt(0)+'</span></span>';
 }
 
 /* ============================================================
@@ -607,15 +628,21 @@ function topbar(){
 
 function filters(on){
   const list = [['全部',''],['NBA','nba'],['CBA','cba']];
-  return '<div class="filters">'+list.map(function(x){
-    return '<button class="chip '+(x[1]===on?'on':'')+'" data-lg="'+(x[1]||'')+'">'+x[0]+'</button>';
+  return '<div class="filters" role="tablist">'+list.map(function(x){
+    const sel = (x[1]===on);
+    return '<button type="button" role="tab" aria-selected="'+sel+'" class="chip '+(sel?'on':'')+'" data-lg="'+(x[1]||'')+'">'+x[0]+'</button>';
   }).join('')+'</div>';
 }
 
-function tabbar(active){
-  const items = [['list','i-ticket','赛事'],['live','i-tv','直播'],['me','i-user','我的']];
-  return '<nav class="tabbar">'+items.map(function(it){
-    return '<button class="tab '+(it[0]===active?'on':'')+'" data-tab="'+it[0]+'">'+
+function tabbar(active, listId){
+  const items = [
+    ['list','i-ticket','赛事', listId || '01-list-dark'],
+    ['live','i-tv','直播','02-player-dark'],
+    ['me','i-user','我的','08-profile-dark']
+  ];
+  return '<nav class="tabbar" role="tablist">'+items.map(function(it){
+    const sel = (it[0]===active);
+    return '<button type="button" role="tab" aria-selected="'+sel+'" class="tab '+(sel?'on':'')+'" data-go="'+it[3]+'">'+
       '<span class="tab-ic">'+icon(it[1],'ic-22')+'</span><b>'+it[2]+'</b></button>';
   }).join('')+'</nav>';
 }
@@ -628,6 +655,7 @@ function sectionHead(title, tag){
 
 /* 海报式直播大卡 */
 function posterCard(g){
+  const sig = sigText(g);
   return '<article class="poster live">'+
     '<div class="poster-art"></div>'+
     '<div class="poster-top">'+
@@ -641,9 +669,9 @@ function posterCard(g){
       '<div class="p-team">'+logoHtml(g.a,'lg-52')+'<b>'+T[g.a].n+'</b></div>'+
     '</div>'+
     '<div class="poster-foot">'+
-      '<span class="pill">'+icon('i-signal','ic-14')+g.sig+' 条信号</span>'+
-      '<span class="pill">'+icon('i-film','ic-14')+'直连 HLS</span>'+
-      '<button class="enter-btn">'+icon('i-play','ic-14')+'进入直播</button>'+
+      (sig!==''?'<span class="pill">'+icon('i-signal','ic-14')+sig+' 条信号</span>':'')+
+      '<span class="pill">'+icon('i-film','ic-14')+'源站 '+g.src+'</span>'+
+      '<button type="button" class="enter-btn" data-go="02-player-dark">'+icon('i-play','ic-14')+'进入直播</button>'+
     '</div>'+
   '</article>';
 }
@@ -653,12 +681,13 @@ function matchCard(g){
   const st = g.st==='done'
     ? '<span class="status done">'+icon('i-check','ic-14')+'已结束</span>'
     : '<span class="status soon">'+icon('i-clock','ic-14')+'未开赛</span>';
-  return '<article class="card">'+
+  const sig = sigText(g);
+  return '<article class="card" role="button" tabindex="0" data-go="03-detail-dark">'+
     '<div class="card-art"></div>'+
     '<div class="card-head">'+
       '<span class="lg-chip '+g.lg+'">'+LEAGUE[g.lg]+'</span>'+
       '<span class="card-date num">'+g.date+'</span>'+
-      '<span class="sig-pill">'+icon('i-signal','ic-14')+g.sig+' 条信号</span>'+
+      (sig!==''?'<span class="sig-pill">'+icon('i-signal','ic-14')+sig+' 条信号</span>':'')+
     '</div>'+
     '<div class="card-match">'+
       '<div class="mt">'+logoHtml(g.h,'lg-36')+'<b>'+T[g.h].n+'</b></div>'+
@@ -687,12 +716,26 @@ const GROUPS = [
   ]}
 ];
 
-function listBody(){
-  let html = '<div class="list-body">'+posterCard(LIVE_GAME);
-  GROUPS.forEach(function(gr){
+/* 联赛筛选：只保留 NBA / CBA（与 app 的 League.supported 一致），空串 = 全部 */
+function filterGroups(lg){
+  return GROUPS.map(function(gr){
+    return {d:gr.d, tag:gr.tag, items:gr.items.filter(function(g){ return !lg || g.lg===lg; })};
+  }).filter(function(gr){ return gr.items.length>0; });
+}
+
+function listBody(lg){
+  lg = lg || '';
+  const showLive = !lg || lg===LIVE_GAME.lg;
+  let html = '<div class="list-body">'+(showLive?posterCard(LIVE_GAME):'');
+  filterGroups(lg).forEach(function(gr){
     html += sectionHead(gr.d, gr.tag);
     html += gr.items.map(matchCard).join('');
   });
+  const total = filterGroups(lg).reduce(function(n,gr){ return n+gr.items.length; },0);
+  if(!total){
+    html += '<div class="state-wrap"><div class="state-ill">'+icon('i-film','ic-28')+'</div>'+
+      '<h2>该联赛暂无赛程</h2><p>当前筛选条件下没有可播放的赛事，切换到「全部」查看全部 NBA / CBA 场次。</p></div>';
+  }
   return html+'</div>';
 }
 
@@ -744,7 +787,7 @@ const playerHtml =
   '<div class="pv-stage">'+
     '<div class="pv-art"></div>'+
     '<div class="pv-top">'+
-      '<button class="round-btn" aria-label="返回">'+icon('i-back','ic-22')+'</button>'+
+      '<button type="button" class="round-btn" aria-label="返回赛事列表" data-go="01-list-dark">'+icon('i-back','ic-22')+'</button>'+
       '<div class="pv-title"><b>青岛 vs 辽宁</b><span>CBA · 10-21 19:35</span></div>'+
       '<button class="round-btn" aria-label="更多">'+icon('i-stack','ic-22')+'</button>'+
     '</div>'+
@@ -752,9 +795,9 @@ const playerHtml =
       '<span class="live-mark"><i class="pulse"></i>直播中</span>'+
       '<span class="src">源站 JRS</span>'+
     '</div>'+
-    '<div class="pv-center"><button class="pv-play">'+icon('i-play','ic-28')+'</button></div>'+
+    '<div class="pv-center"><button type="button" class="pv-play" aria-label="播放">'+icon('i-play','ic-28')+'</button></div>'+
     '<div class="pv-bottom">'+
-      '<div class="pv-times"><span class="num">08:42</span><span class="num">48:00</span></div>'+
+      '<div class="pv-times"><span>直播中</span><span class="num">19:35 开赛</span></div>'+
       '<div class="pv-track"><i></i></div>'+
       '<div class="pv-ctrls">'+
         '<span class="pv-ic">'+icon('i-pause','ic-22')+'</span>'+
@@ -768,21 +811,24 @@ const playerHtml =
   '<div class="pv-panel">'+
     '<div class="pv-info">'+
       logoHtml('qingdao','lg-40')+
-      '<div class="mid"><b>青岛 vs 辽宁</b><span>直播中 · 19:35 · 共 3 条信号</span></div>'+
+      '<div class="mid"><b>青岛 vs 辽宁</b><span>直播中 · 19:35 · 共 3 条线路</span></div>'+
       logoHtml('liaoning','lg-40')+
     '</div>'+
-    '<div class="pv-title-row"><b>信号切换</b><span>共 3 条线路</span><span class="rule"></span></div>'+
-    '<div class="sig-bar" role="tablist">'+
-      '<button class="sig-opt"><b>信号1</b><span>高清 1080P</span></button>'+
-      '<button class="sig-opt on"><b>信号2</b><span>高清 1080P</span></button>'+
-      '<button class="sig-opt"><b>信号3</b><span>标清 720P</span></button>'+
+    '<div class="pv-title-row"><b>信号切换</b><span>共 '+LINES.length+' 条线路</span><span class="rule"></span></div>'+
+    '<div class="sig-bar" role="tablist" data-sig-bar>'+
+      LINES.map(function(l){
+        const sel = (l.id===state.signal);
+        return '<button type="button" role="tab" aria-selected="'+sel+'" class="sig-opt'+(sel?' on':'')+'" data-sig="'+l.id+'">'+
+          '<b>'+l.label+'</b><span>'+PLAY[l.play].label+'</span></button>';
+      }).join('')+
     '</div>'+
+    '<p class="sig-note">只有源站 <code>/play/sm.html</code> 线路能直连 m3u8；其余加密线路由 App 内置 WebView 承载。</p>'+
     '<div class="snackbar">'+
       icon('i-alert','ic-22')+
-      '<span class="snack-t"><b>信号1 播放失败，已自动切换</b><span>当前线路 信号2 · 高清 1080P</span></span>'+
-      '<button class="snack-btn">重试</button>'+
+      '<span class="snack-t"><b>信号1 播放失败，已自动切换</b><span>已顺延到下一条线路，可手动重试信号1</span></span>'+
+      '<button type="button" class="snack-btn">重试</button>'+
     '</div>'+
-    '<div class="info-row"><span class="k">源站</span><span class="v">JRS · 直连 HLS (m3u8)</span>'+icon('i-chev','ic-16')+'</div>'+
+    '<div class="info-row"><span class="k">播放方式</span><span class="v" data-play-mode></span>'+icon('i-chev','ic-16')+'</div>'+
     '<div class="info-row"><span class="k">自动故障切换</span><span class="v">已开启 · 失败后自动顺延</span>'+icon('i-check','ic-16')+'</div>'+
   '</div>'+
   tabbar('live')+
@@ -795,7 +841,7 @@ const detailHtml =
 '<section class="screen" data-screen="03-detail-dark">'+
   '<div class="dt-hero">'+
     '<div class="dt-top">'+
-      '<button class="round-btn" aria-label="返回">'+icon('i-back','ic-22')+'</button>'+
+      '<button type="button" class="round-btn" aria-label="返回赛事列表" data-go="01-list-dark">'+icon('i-back','ic-22')+'</button>'+
       '<h1>赛事详情</h1>'+
       '<button class="round-btn" aria-label="更多">'+icon('i-stack','ic-22')+'</button>'+
     '</div>'+
@@ -804,7 +850,7 @@ const detailHtml =
       '<span class="t num">10-22 07:00</span>'+
       '<span class="status soon">'+icon('i-clock','ic-14')+'未开赛</span>'+
       '<span class="sp"></span>'+
-      '<span class="t">3 条信号</span>'+
+      '<span class="t">'+LINES.length+' 条线路</span>'+
     '</div>'+
     '<div class="dt-match">'+
       '<div class="dt-team">'+logoHtml('celtics','lg-64')+'<b>凯尔特人</b></div>'+
@@ -814,19 +860,24 @@ const detailHtml =
   '</div>'+
   '<div class="dt-body">'+
     '<div class="pv-title-row"><b>选择信号</b><span>点击进入播放器并选中该线路</span><span class="rule"></span></div>'+
-    '<div class="sig-list">'+
-      '<button class="sig-row on"><span class="idx">1</span><span class="meta"><b>信号1 · 高清</b><span>1080P · HLS · 源站 JRS</span></span><span class="sig-state ok">'+icon('i-check','ic-14')+'可用</span>'+icon('i-chev','ic-16 chev')+'</button>'+
-      '<button class="sig-row"><span class="idx">2</span><span class="meta"><b>信号2 · 标清</b><span>720P · HLS · 源站 JRKAN</span></span><span class="sig-state ok">'+icon('i-check','ic-14')+'可用</span>'+icon('i-chev','ic-16 chev')+'</button>'+
-      '<button class="sig-row"><span class="idx">3</span><span class="meta"><b>信号3 · 备线</b><span>480P · HLS · 源站 JRS 备用</span></span><span class="sig-state slow">速度慢</span>'+icon('i-chev','ic-16 chev')+'</button>'+
+    '<div class="sig-list" data-sig-list>'+
+      LINES.map(function(l){
+        const sel = (l.id===state.signal);
+        return '<button type="button" class="sig-row'+(sel?' on':'')+'" data-sig="'+l.id+'">'+
+          '<span class="idx">'+l.id+'</span>'+
+          '<span class="meta"><b>'+l.label+'</b><span>'+l.provider+' · '+PLAY[l.play].full+'</span></span>'+
+          icon('i-chev','ic-16 chev')+'</button>';
+      }).join('')+
     '</div>'+
+    '<p class="sig-note">源站不提供画质与可用性数据，这里只展示真实已知信息：播放方式 + 源站。</p>'+
     '<div class="pv-title-row" style="margin-top:18px"><b>其他源站信息</b><span>次要信息</span><span class="rule"></span></div>'+
     '<div class="secondary">'+
       '<div class="sec-row"><span class="k">源站</span><span class="v">JRS / JRKAN 双源</span>'+icon('i-stack','ic-16')+'</div>'+
       '<div class="sec-row"><span class="k">更多信号外链</span><span class="v">jrkan.com 赛事页</span>'+icon('i-link','ic-16')+'</div>'+
-      '<div class="sec-row"><span class="k">备用地址</span><span class="v">m3u8 主备地址已就绪</span>'+icon('i-check','ic-16')+'</div>'+
+      '<div class="sec-row"><span class="k">备用源站</span><span class="v">jrszbt.com</span>'+icon('i-check','ic-16')+'</div>'+
     '</div>'+
   '</div>'+
-  '<button class="dt-cta">'+icon('i-play','ic-16')+'去观看 · 信号1</button>'+
+  '<button type="button" class="dt-cta" data-go="02-player-dark">'+icon('i-play','ic-16')+'<span data-cta-label>去观看 · '+LINES[0].label+'</span></button>'+
   tabbar('list')+
 '</section>';
 
@@ -834,18 +885,54 @@ const detailHtml =
    组装
    ============================================================ */
 function listScreen(id, variant, theme){
-  let body;
+  let body, isList = false;
   if(variant==='empty') body = emptyBody();
   else if(variant==='loading') body = loadBody();
   else if(variant==='error') body = errorBody();
-  else body = listBody();
+  else { body = listBody(state.league); isList = true; }
   const cls = 'screen' + (theme==='light'?' on':'');
-  return '<section class="'+cls+'" data-screen="'+id+'"'+(theme==='light'?' data-theme="light"':'')+'>'+
-    topbar()+filters('all')+
-    '<div class="scroll">'+body+'</div>'+
-    tabbar('list')+
+  const listId = (id==='04-list-light') ? '04-list-light' : '01-list-dark';
+  return '<section class="'+cls+'" data-screen="'+id+'" data-variant="'+variant+'"'+(theme==='light'?' data-theme="light"':'')+'>'+
+    topbar()+filters(state.league)+
+    '<div class="scroll"'+(isList?' data-list-body':'')+'>'+body+'</div>'+
+    tabbar('list', listId)+
   '</section>';
 }
+
+/* ============================================================
+   屏 D：我的（对应 app 的 ProfileScreen）
+   ============================================================ */
+const profileHtml =
+'<section class="screen" data-screen="08-profile-dark">'+
+  '<header class="topbar">'+
+    '<div class="brand">'+
+      '<span class="brand-mark">'+icon('i-user','ic-22')+'</span>'+
+      '<span class="brand-txt"><b>我的</b><span>偏好与关于</span></span>'+
+    '</div>'+
+    '<span class="sp"></span>'+
+    '<div class="top-actions">'+
+      '<button type="button" class="round-btn theme-btn" aria-label="切换主题">'+icon('i-moon','ic-22 ic-moon')+icon('i-sun','ic-22 ic-sun')+'</button>'+
+    '</div>'+
+  '</header>'+
+  '<div class="scroll">'+
+    '<div class="sec"><h2>播放偏好</h2><span class="rule"></span></div>'+
+    '<div class="secondary">'+
+      '<div class="sec-row"><span class="k">自动故障切换</span><span class="v">已开启 · 失败后自动顺延</span>'+icon('i-check','ic-16')+'</div>'+
+      '<div class="sec-row"><span class="k">线路播放方式</span><span class="v">直连 HLS / WebView</span>'+icon('i-film','ic-16')+'</div>'+
+    '</div>'+
+    '<div class="sec"><h2>外观</h2><span class="rule"></span></div>'+
+    '<div class="secondary">'+
+      '<div class="sec-row"><span class="k">主题</span><span class="v">跟随系统 / 浅色 / 深色</span>'+icon('i-sun','ic-16')+'</div>'+
+    '</div>'+
+    '<div class="sec"><h2>关于</h2><span class="rule"></span></div>'+
+    '<div class="secondary">'+
+      '<div class="sec-row"><span class="k">数据来源</span><span class="v">JRS / JRKAN</span>'+icon('i-stack','ic-16')+'</div>'+
+      '<div class="sec-row"><span class="k">支持联赛</span><span class="v">NBA / CBA</span>'+icon('i-ball','ic-16')+'</div>'+
+    '</div>'+
+    '<p class="sig-note" style="margin:14px 4px">本应用仅聚合第三方公开线路，不存储、不转播任何赛事内容。</p>'+
+  '</div>'+
+  tabbar('me')+
+'</section>';
 
 const phone = document.getElementById('phone');
 phone.innerHTML =
@@ -855,7 +942,8 @@ phone.innerHTML =
   listScreen('04-list-light','list','light')+
   listScreen('05-empty-state','empty')+
   listScreen('06-loading-state','loading')+
-  listScreen('07-error-state','error');
+  listScreen('07-error-state','error')+
+  profileHtml;
 
 /* 屏幕切换 */
 function showScreen(id){
@@ -863,6 +951,9 @@ function showScreen(id){
   for(var i=0;i<screens.length;i++){
     screens[i].classList.toggle('on', screens[i].getAttribute('data-screen')===id);
   }
+  var sc = phone.querySelector('[data-screen="'+id+'"] .scroll');
+  if(sc) sc.scrollTop = 0;
+  return id;
 }
 window.__SHOW_SCREEN = showScreen;
 
@@ -872,39 +963,91 @@ function setTheme(theme){
 }
 window.__SET_THEME = setTheme;
 
+/* 联赛筛选：真正重新渲染列表，而不是只切一个 CSS 类 */
+function setLeague(lg){
+  state.league = lg || '';
+  document.querySelectorAll('.chip[data-lg]').forEach(function(c){
+    var sel = (c.getAttribute('data-lg')===state.league);
+    c.classList.toggle('on', sel);
+    c.setAttribute('aria-selected', sel ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-list-body]').forEach(function(sc){
+    sc.innerHTML = listBody(state.league);
+  });
+  return state.league;
+}
+window.__SET_LEAGUE = setLeague;
+
+/* 选中线路：同步播放器信号条、详情页信号行、CTA 文案与播放方式 */
+function selectSignal(id){
+  state.signal = Number(id);
+  document.querySelectorAll('.sig-opt').forEach(function(b){
+    var on = (Number(b.getAttribute('data-sig'))===state.signal);
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('.sig-row').forEach(function(r){
+    r.classList.toggle('on', Number(r.getAttribute('data-sig'))===state.signal);
+  });
+  var line = LINES.filter(function(l){ return l.id===state.signal; })[0] || LINES[0];
+  document.querySelectorAll('[data-play-mode]').forEach(function(el){
+    el.textContent = line.provider+' · '+PLAY[line.play].full;
+  });
+  document.querySelectorAll('[data-cta-label]').forEach(function(el){
+    el.textContent = '去观看 · '+line.label;
+  });
+  return state.signal;
+}
+window.__SELECT_SIGNAL = selectSignal;
+
 /* 交互 */
 document.addEventListener('click', function(e){
   var t = e.target;
+  if(!t || !t.closest) return;
 
-  var themeBtn = t.closest && t.closest('.theme-btn');
+  var themeBtn = t.closest('.theme-btn');
   if(themeBtn){
     var cur = document.documentElement.getAttribute('data-theme')==='light' ? 'dark' : 'light';
     setTheme(cur);
     return;
   }
 
-  var chip = t.closest && t.closest('.chip');
-  if(chip && chip.parentNode){
-    var chips = chip.parentNode.querySelectorAll('.chip');
-    for(var i=0;i<chips.length;i++) chips[i].classList.remove('on');
-    chip.classList.add('on');
+  /* 联赛筛选：重新渲染列表 */
+  var chip = t.closest('.chip[data-lg]');
+  if(chip){
+    setLeague(chip.getAttribute('data-lg'));
     return;
   }
 
-  var pill = t.closest && t.closest('.sig-opt');
-  if(pill && pill.parentNode){
-    var pills = pill.parentNode.querySelectorAll('.sig-pill');
-    for(var j=0;j<pills.length;j++) pills[j].classList.remove('on');
-    pill.classList.add('on');
+  /* 底部导航 / CTA / 赛事卡：跳屏 */
+  var go = t.closest('[data-go]');
+  if(go){
+    showScreen(go.getAttribute('data-go'));
     return;
   }
 
-  var row = t.closest && t.closest('.sig-row');
-  if(row && row.parentNode){
-    var rows = row.parentNode.querySelectorAll('.sig-row');
-    for(var k=0;k<rows.length;k++) rows[k].classList.remove('on');
-    row.classList.add('on');
+  /* 播放器信号条：.sig-bar 内只有 .sig-opt，必须清同级的 .on */
+  var sigOpt = t.closest('.sig-opt');
+  if(sigOpt){
+    selectSignal(sigOpt.getAttribute('data-sig'));
+    return;
   }
+
+  /* 详情页信号行：选中并进入播放器 */
+  var sigRow = t.closest('.sig-row');
+  if(sigRow){
+    selectSignal(sigRow.getAttribute('data-sig'));
+    showScreen('02-player-dark');
+  }
+});
+
+/* role="button" 的卡片支持键盘操作 */
+document.addEventListener('keydown', function(e){
+  if(e.key!=='Enter' && e.key!==' ') return;
+  var el = e.target && e.target.closest ? e.target.closest('[role="button"][data-go]') : null;
+  if(!el) return;
+  e.preventDefault();
+  showScreen(el.getAttribute('data-go'));
 });
 
 window.__SCREENS = [
@@ -914,9 +1057,11 @@ window.__SCREENS = [
   {id:'04-list-light',  name:'04-list-light',  selector:'[data-screen="04-list-light"]'},
   {id:'05-empty-state', name:'05-empty-state', selector:'[data-screen="05-empty-state"]'},
   {id:'06-loading-state',name:'06-loading-state',selector:'[data-screen="06-loading-state"]'},
-  {id:'07-error-state', name:'07-error-state', selector:'[data-screen="07-error-state"]'}
+  {id:'07-error-state', name:'07-error-state', selector:'[data-screen="07-error-state"]'},
+  {id:'08-profile-dark',name:'08-profile-dark',selector:'[data-screen="08-profile-dark"]'}
 ];
 
+selectSignal(state.signal);
 showScreen('01-list-dark');
 </script>
 </body>

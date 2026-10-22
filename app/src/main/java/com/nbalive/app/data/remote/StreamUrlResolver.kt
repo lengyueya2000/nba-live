@@ -22,6 +22,10 @@ import java.net.URLDecoder
  *      -> window.playerConfig.playerUrlBase64 = "aHR0cHM6Ly9kZW1vLnNvbmd6ZW5ldC5jb20vcGFwcy5odG1sP2lkPQ=="
  *      -> window.encodedStr = "..."（XXTEA 加密，无法在纯 Kotlin 静态还原）
  *    该链路使用 XXTEA + 混淆 JS 加密，本实现不解析，作为降级（交给 WebView 或标记为不可用）。
+ *
+ * ⚠️ 反混淆是**有损**的：源站哪天不再混淆，[restoreObfuscatedHost] 就会把正常域名
+ * 改成乱码（hls.example.com -> hls.elpmaxe.com）。所以本类不再"只认一个地址"，
+ * 而是一次给出多个候选（反混淆版 + 原文版），由调用方用"能不能拉到清单"来裁决。
  */
 class StreamUrlResolver {
 
@@ -32,13 +36,19 @@ class StreamUrlResolver {
     }
 
     data class Resolved(
+        /** 已选定的 m3u8 地址（调用方校验过可拉出清单的那一个）。 */
         val m3u8Url: String,
         val referer: String?,
+        /**
+         * 同一播放页还原出的全部候选地址，按可能性从高到低。
+         * 调用方应逐个校验（拉清单看有没有 #EXTM3U），第一个成功的即采用。
+         */
+        val m3u8Candidates: List<String> = listOf(m3u8Url),
     )
 
     /**
      * @param pageUrl 播放页地址
-     * @return 解析成功返回 m3u8；失败返回 null
+     * @return 解析成功返回候选地址；失败返回 null
      */
     suspend fun resolve(pageUrl: String, fetch: suspend (String) -> String?): Resolved? {
         var current = pageUrl
@@ -52,9 +62,14 @@ class StreamUrlResolver {
             }
             Log.d(TAG, "fetched len=${html.length}: $current")
 
-            extractM3u8(html)?.let {
-                Log.d(TAG, "m3u8 = $it")
-                return Resolved(it, refererFor(pageUrl))
+            val candidates = extractM3u8Candidates(html)
+            if (candidates.isNotEmpty()) {
+                Log.d(TAG, "m3u8 candidates: $candidates")
+                return Resolved(
+                    m3u8Url = candidates.first(),
+                    referer = refererFor(pageUrl),
+                    m3u8Candidates = candidates,
+                )
             }
 
             // 中间跳：/play/sm.html?id=439 会再套一层 /play/439.html
@@ -69,29 +84,39 @@ class StreamUrlResolver {
         return null
     }
 
-    /** 从页面里抽取 m3u8 地址（含域名反混淆）。 */
-    private fun extractM3u8(html: String): String? {
+    /**
+     * 从页面里抽取 m3u8 候选地址（含域名反混淆）。
+     *
+     * 顺序即优先级：反混淆版在前（源站在混淆时它是唯一正确的），
+     * 原文版在后（源站哪天不混淆时它才是对的）。
+     */
+    private fun extractM3u8Candidates(html: String): List<String> {
+        val out = LinkedHashSet<String>()
+
         // 主链路：songzenet msss.html?id=<encoded m3u8>
         // 注意：payload 里可能带 &（auth_key 的 query），不能按 & 截断；
-        // 到下一个属性引号/空白/标签边界为止。
-        Regex("""msss\.html\?id=([^"'\s<]+?)(?=&id2=|[&"'\s<])""").find(html)?.let { m ->
+        // 只在遇到 &id2=、引号、空白或标签边界时停。
+        Regex("""msss\.html\?id=([^"'\s<]+?)(?=&id2=|["'\s<])""").find(html)?.let { m ->
             val raw = m.groupValues[1]
             val decoded = runCatching {
                 // encodeURI 不转义 '+'，而 URLDecoder 会把 '+' 解成空格，
                 // 破坏 base64 的 auth_key 签名 -> 先把裸 '+' 还原为 %2B
                 URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8")
             }.getOrNull() ?: raw
-            restoreObfuscatedHost(decoded)?.let { return it }
-            // 反混淆失败也要试原文：源站可能哪天就不混淆了
-            normalizeScheme(raw)?.let { return it }
+            restoreObfuscatedHost(decoded)?.let { out.add(it) }
+            normalizeScheme(decoded)?.let { out.add(it) }
+            normalizeScheme(raw)?.let { out.add(it) }
         }
+
         // 兜底：页面里直接出现 .m3u8
         Regex("""(https?:)?//[^\s"'<>]+\.m3u8[^\s"'<>]*""").find(html)?.let { m ->
             var u = m.value
             if (u.startsWith("//")) u = "http:$u"
-            return u
+            restoreObfuscatedHost(u)?.let { out.add(it) }
+            out.add(u)
         }
-        return null
+
+        return out.toList()
     }
 
     private fun normalizeScheme(raw: String): String? {
@@ -131,6 +156,9 @@ class StreamUrlResolver {
     /**
      * 还原被反转混淆的主域名。
      * 例：hdl2.gnimixuiq.com -> hdl2.qiuximing.com
+     *
+     * ⚠️ 本函数**假定**域名被混淆过。源站取消混淆时它会返回错误的主域名，
+     * 因此调用方必须把它当作候选之一、用实际拉清单来验证，不能直接当唯一答案。
      */
     fun restoreObfuscatedHost(raw: String): String? {
         var value = raw.trim()

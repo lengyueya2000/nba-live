@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
@@ -45,6 +46,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -59,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -76,10 +79,8 @@ import com.nbalive.app.ui.screens.PlayerScreen
 import com.nbalive.app.ui.screens.ProfileScreen
 import com.nbalive.app.ui.screens.SearchScreen
 import com.nbalive.app.ui.theme.GradLive
-import com.nbalive.app.ui.theme.GradRed
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
-import com.nbalive.app.ui.theme.SportDark
 
 
 private enum class Tab(val label: String, val filled: ImageVector, val outlined: ImageVector) {
@@ -340,7 +341,7 @@ private fun BrandTopBar(
             )
             Text(
                 text = "SPORTS CENTER",
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Bold,
                 fontSize = 9.5.sp,
                 letterSpacing = 2.4.sp,
@@ -363,6 +364,8 @@ private fun BrandTopBar(
 private fun TopIconButton(icon: ImageVector, label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
+            // 触摸目标不小于 48dp（图标视觉尺寸保持 19dp 不变）
+            .minimumInteractiveComponentSize()
             .size(40.dp)
             .clip(RoundedCornerShape(Radius.btn))
             .background(MaterialTheme.colorScheme.surface)
@@ -401,6 +404,8 @@ private fun SubPageTopBar(
     ) {
         Box(
             modifier = Modifier
+                // 触摸目标不小于 48dp
+                .minimumInteractiveComponentSize()
                 .size(40.dp)
                 .clip(RoundedCornerShape(Radius.btn))
                 .background(MaterialTheme.colorScheme.surface)
@@ -431,6 +436,8 @@ private fun SubPageTopBar(
             Box {
                 Box(
                     modifier = Modifier
+                        // 触摸目标不小于 48dp
+                        .minimumInteractiveComponentSize()
                         .size(40.dp)
                         .clip(RoundedCornerShape(Radius.btn))
                         .background(MaterialTheme.colorScheme.surface)
@@ -480,7 +487,11 @@ private fun SportBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(Radius.sheet))
-                    .clickable { onSelect(item) }
+                    // Role.Tab 让 TalkBack 把它读成"标签页"；图标本身是装饰，
+                    // 可读名称由下方的文字标签提供（避免同一名字被读两遍）。
+                    .clickable(role = Role.Tab) { onSelect(item) }
+                    // 触摸目标高度不小于 48dp
+                    .heightIn(min = 48.dp)
                     .padding(vertical = Space.sm),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -489,23 +500,25 @@ private fun SportBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
                         .size(width = 44.dp, height = 26.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .then(
-                            if (active) Modifier.background(Color(0x24FF3B4E))
+                            // 选中底色跟随主题主色，不再写死红色
+                            if (active) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
                             else Modifier,
                         ),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = if (active) item.filled else item.outlined,
-                        contentDescription = item.label,
+                        contentDescription = null,
                         modifier = Modifier.size(20.dp),
                         tint = if (active) MaterialTheme.colorScheme.primary
-                        else SportDark.Txt3,
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Spacer(Modifier.height(3.dp))
                 Text(
                     text = item.label,
-                    color = if (active) MaterialTheme.colorScheme.primary else SportDark.Txt3,
+                    color = if (active) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 10.5.sp,
                     letterSpacing = 0.4.sp,

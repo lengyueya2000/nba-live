@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  明文流量策略。
+
+  这个 App 必须允许明文 HTTP：源站的播放页与切片走 http，
+  而 m3u8 清单所在的 CDN 主机名是**运行时由源站生成并混淆**的
+  （hdl2.<反转后的主域名>），无法预先写进域名白名单——
+  写死了就等于播放器拿不到清单。
+
+  因此这里显式保留 base-config 的明文许可，并把已知主机列出来备案，
+  便于日后源站支持 https 时收紧策略。
+
+  已知的明文主机：
+    play.sportsteam356.com   JRKAN 播放页
+    play.sportsteam368.com   JRS 播放页
+    jrszbt.com              JRS 源站
+-->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      InsecureBaseConfiguration：明文许可是产品硬需求（见文件头说明），
+      不是疏忽——CDN 主机名由源站运行时生成，无法写死白名单。
+    -->
+    <base-config
+        cleartextTrafficPermitted="true"
+        tools:ignore="InsecureBaseConfiguration">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

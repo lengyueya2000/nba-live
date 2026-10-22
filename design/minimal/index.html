@@ -267,11 +267,11 @@ button{font-family:inherit}
     <div class="brand"><i></i>NBA Live<span>直播 · 信号</span></div>
   </div>
 
-  <div class="tabs" id="lgTabs">
-    <button class="on">全部</button>
-    <button>NBA</button>
-    <button>CBA</button>
-    <button class="more">更多<svg><use href="#i-down"/></svg></button>
+  <div class="tabs" id="lgTabs" role="tablist">
+    <button type="button" role="tab" aria-selected="true" class="on" data-lg="">全部</button>
+    <button type="button" role="tab" aria-selected="false" data-lg="nba">NBA</button>
+    <button type="button" role="tab" aria-selected="false" data-lg="cba">CBA</button>
+    <button type="button" class="more">更多<svg><use href="#i-down"/></svg></button>
   </div>
 
   <div class="search">
@@ -286,83 +286,12 @@ button{font-family:inherit}
     <button>10-24<small>周五</small></button>
   </div>
 
-  <div class="scroll" id="listScroll">
-    <div class="ghead">10月22日 周三 <em>2 场</em></div>
+  <div class="scroll" id="listScroll"></div>
 
-    <div class="mrow live" data-k="nba 凯尔特人 老鹰" data-go="detail">
-      <div class="t-live"><span class="pulse"></span>直播中</div>
-      <div class="lg nba">NBA</div>
-      <div class="teams">
-        <span class="logo" style="--c:#1a4a8a"><img src="https://cdn.sportnanoapi.com/basketball/team/0dc24d08ef0b5584e0b70f967db64b36.png" alt="凯尔特人" onerror="this.parentNode.classList.add('fail')"><span class="fb">凯</span></span>
-        <span class="tname">凯尔特人</span>
-        <span class="vs">vs</span>
-        <span class="logo" style="--c:#c0392b"><img src="https://cdn.sportnanoapi.com/basketball/team/4e67b14905a05af9e1bd04406bf8690f.png" alt="老鹰" onerror="this.parentNode.classList.add('fail')"><span class="fb">老</span></span>
-        <span class="tname">老鹰</span>
-      </div>
-      <div class="sig"><b>3</b> 线</div>
-    </div>
-
-    <div class="mrow" data-k="nba 湖人 开拓者" data-go="detail">
-      <div class="t-time">07:30</div>
-      <div class="lg nba">NBA</div>
-      <div class="teams">
-        <span class="logo" style="--c:#5b2d8e"><img src="https://cdn.sportnanoapi.com/basketball/team/0dc24d08ef0b5584e0b70f967db64b36.png" alt="湖人" onerror="this.parentNode.classList.add('fail')"><span class="fb">湖</span></span>
-        <span class="tname">湖人</span>
-        <span class="vs">vs</span>
-        <span class="logo" style="--c:#c0392b"><img src="https://cdn.sportnanoapi.com/basketball/team/4e67b14905a05af9e1bd04406bf8690f.png" alt="开拓者" onerror="this.parentNode.classList.add('fail')"><span class="fb">开</span></span>
-        <span class="tname">开拓者</span>
-      </div>
-      <div class="sig"><b>3</b> 线</div>
-    </div>
-
-    <div class="ghead">10月21日 周二 <em>已结束</em></div>
-
-    <div class="mrow" data-k="cba 浙江 山东" data-go="detail">
-      <div class="t-fin">已结束</div>
-      <div class="lg cba">CBA</div>
-      <div class="teams">
-        <span class="logo" style="--c:#1f6b4a"><img src="http://www.jrszb444.com/d/file/p/2019/07-22/6da83cc0a417e07e2787d56b9c335a70.jpg" alt="浙江" onerror="this.parentNode.classList.add('fail')"><span class="fb">浙</span></span>
-        <span class="tname">浙江</span>
-        <span class="vs">vs</span>
-        <span class="logo" style="--c:#b4762a"><img src="http://www.jrszb444.com/d/file/p/2019/07-22/964df7d6987b40bff17f8b25cc0b1186.jpg" alt="山东" onerror="this.parentNode.classList.add('fail')"><span class="fb">山</span></span>
-        <span class="tname">山东</span>
-      </div>
-      <div class="sig"><b>3</b> 线</div>
-    </div>
-
-    <div class="mrow" data-k="cba 青岛 辽宁" data-go="detail">
-      <div class="t-fin">已结束</div>
-      <div class="lg cba">CBA</div>
-      <div class="teams">
-        <span class="logo" style="--c:#1c6ea4"><img src="http://www.jrszb444.com/d/file/p/2019/07-17/ddf3e58f3df2f8c872c503b97c254681.jpg" alt="青岛" onerror="this.parentNode.classList.add('fail')"><span class="fb">青</span></span>
-        <span class="tname">青岛</span>
-        <span class="vs">vs</span>
-        <span class="logo" style="--c:#8a1f2b"><img src="http://www.jrszb444.com/d/file/p/2019/07-22/acb1277db8452ad3271a65207209575.jpg" alt="辽宁" onerror="this.parentNode.classList.add('fail')"><span class="fb">辽</span></span>
-        <span class="tname">辽宁</span>
-      </div>
-      <div class="sig"><b>3</b> 线</div>
-    </div>
-
-    <div class="mrow" data-k="cba 深圳 广厦" data-go="detail">
-      <div class="t-fin">已结束</div>
-      <div class="lg cba">CBA</div>
-      <div class="teams">
-        <span class="logo" style="--c:#c0392b"><img src="http://www.jrszb444.com/d/file/p/2019/04-16/76af9384d3eb454a4d318ae371734d15.jpg" alt="深圳" onerror="this.parentNode.classList.add('fail')"><span class="fb">深</span></span>
-        <span class="tname">深圳</span>
-        <span class="vs">vs</span>
-        <span class="logo" style="--c:#1f6b4a"><img src="http://www.jrszb444.com/d/file/p/2019/07-22/964df7d6987b40bff17f8b25cc0b1186.jpg" alt="广厦" onerror="this.parentNode.classList.add('fail')"><span class="fb">广</span></span>
-        <span class="tname">广厦</span>
-      </div>
-      <div class="sig"><b>3</b> 线</div>
-    </div>
-
-    <div class="foot">数据来源 JRS / JRKAN · 每 30 分钟自动刷新<br>信号可用性以源站实时状态为准</div>
-  </div>
-
-  <nav class="nav" data-nav="list">
-    <button class="on"><svg><use href="#i-list"/></svg>赛事</button>
-    <button><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
-    <button><svg><use href="#i-me"/></svg>我的</button>
+  <nav class="nav" role="tablist" data-nav="list">
+    <button type="button" role="tab" aria-selected="true" class="on" data-go="list"><svg><use href="#i-list"/></svg>赛事</button>
+    <button type="button" role="tab" aria-selected="false" data-go="player"><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
+    <button type="button" role="tab" aria-selected="false" data-go="profile"><svg><use href="#i-me"/></svg>我的</button>
   </nav>
 </section>
 
@@ -399,11 +328,11 @@ button{font-family:inherit}
       <div class="v-ctl">
         <div class="prog"><i></i></div>
         <div class="v-row">
-          <button class="v-btn" id="playBtn"><svg><use href="#i-pause"/></svg></button>
-          <span class="v-t">12:04 / 48:00</span>
+          <button class="v-btn" id="playBtn" aria-label="播放或暂停"><svg><use href="#i-pause"/></svg></button>
+          <span class="v-t">直播中</span>
           <span class="v-sp"></span>
-          <button class="v-btn"><svg><use href="#i-vol"/></svg></button>
-          <button class="v-btn"><svg><use href="#i-full"/></svg></button>
+          <button class="v-btn" aria-label="音量"><svg><use href="#i-vol"/></svg></button>
+          <button class="v-btn" aria-label="全屏"><svg><use href="#i-full"/></svg></button>
         </div>
       </div>
     </div>
@@ -423,35 +352,35 @@ button{font-family:inherit}
     </div>
 
     <div class="sigtabs" id="sigTabs">
-      <button class="on" data-sig="1" data-q="主线路"><span class="n">信号 1</span><span class="q">主线路</span></button>
-      <button data-sig="2" data-q="高清"><span class="n">信号 2</span><span class="q">高清</span></button>
-      <button data-sig="3" data-q="备线"><span class="n">信号 3</span><span class="q">备线</span></button>
+      <button class="on" data-sig="1" data-q="直连 HLS"><span class="n">信号 1</span><span class="q">直连 HLS</span></button>
+      <button data-sig="2" data-q="网页播放"><span class="n">信号 2</span><span class="q">网页播放</span></button>
+      <button data-sig="3" data-q="网页播放"><span class="n">信号 3</span><span class="q">网页播放</span></button>
     </div>
 
     <div class="srow">
-      <span class="l">源站 <b>JRKAN</b> · 延迟 12s</span>
+      <span class="l">源站 <b>JRKAN</b> · 共 3 条线路</span>
       <button class="link" id="srcLink"><svg><use href="#i-retry"/></svg>切换源站</button>
     </div>
 
     <div class="notice" id="notice">
       <svg class="ic"><use href="#i-warn"/></svg>
-      <span class="tx">信号 2 连接失败，已自动切换到 <em>信号 3</em> 继续播放</span>
-      <button class="x" id="noticeX"><svg><use href="#i-x"/></svg></button>
+      <span class="tx">信号 2 连接失败，已自动切换到 <em>信号 1</em> 继续播放</span>
+      <button class="x" id="noticeX" aria-label="关闭提示"><svg><use href="#i-x"/></svg></button>
     </div>
 
     <div class="stitle">赛事信息</div>
     <div class="itab">
       <div class="r"><span class="k">联赛</span><span class="v">NBA</span></div>
       <div class="r"><span class="k">开赛时间</span><span class="v">10月22日 07:00</span></div>
-      <div class="r"><span class="k">可用信号</span><span class="v">3 条</span></div>
-      <div class="r"><span class="k">播放协议</span><span class="v">HLS (m3u8)</span></div>
+      <div class="r"><span class="k">可用线路</span><span class="v">3 条</span></div>
+      <div class="r"><span class="k">播放方式</span><span class="v">直连 HLS / 网页播放</span></div>
     </div>
   </div>
 
-  <nav class="nav" data-nav="player">
-    <button><svg><use href="#i-list"/></svg>赛事</button>
-    <button class="on"><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
-    <button><svg><use href="#i-me"/></svg>我的</button>
+  <nav class="nav" role="tablist" data-nav="player">
+    <button type="button" role="tab" aria-selected="false" data-go="list"><svg><use href="#i-list"/></svg>赛事</button>
+    <button type="button" role="tab" aria-selected="true" class="on" data-go="player"><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
+    <button type="button" role="tab" aria-selected="false" data-go="profile"><svg><use href="#i-me"/></svg>我的</button>
   </nav>
 </section>
 
@@ -467,7 +396,7 @@ button{font-family:inherit}
   </div>
 
   <div class="topbar">
-    <button class="tb" id="backBtn"><svg><use href="#i-chev"/></svg></button>
+    <button class="tb" id="backBtn" aria-label="返回赛事列表"><svg><use href="#i-chev"/></svg></button>
     <h1>赛事详情</h1>
   </div>
 
@@ -491,30 +420,30 @@ button{font-family:inherit}
       </div>
     </div>
 
-    <div class="stitle">可用信号 <em>3 条</em></div>
+    <div class="stitle">可用线路 <em>3 条</em></div>
 
     <div class="srow2" data-sig="1">
       <div>
-        <div class="t1"><b>信号 1</b><span class="chip">主线路</span><span class="st">播放中</span></div>
+        <div class="t1"><b>信号 1</b><span class="chip">直连 HLS</span><span class="st">播放中</span></div>
         <span class="u">m.jrkan.com/live/nbafs01</span>
       </div>
-      <button class="playbtn on"><svg><use href="#i-pause"/></svg></button>
+      <button class="playbtn on" aria-label="暂停播放"><svg><use href="#i-pause"/></svg></button>
     </div>
 
     <div class="srow2" data-sig="2">
       <div>
-        <div class="t1"><b>信号 2</b><span class="chip">高清</span><span class="st">连接失败</span></div>
+        <div class="t1"><b>信号 2</b><span class="chip">网页播放</span><span class="st">连接失败</span></div>
         <span class="u">m.jrkan.com/live/nbafs02</span>
       </div>
-      <button class="playbtn"><svg><use href="#i-play"/></svg></button>
+      <button class="playbtn" aria-label="播放该线路"><svg><use href="#i-play"/></svg></button>
     </div>
 
     <div class="srow2" data-sig="3">
       <div>
-        <div class="t1"><b>信号 3</b><span class="chip">备线</span><span class="st">可播放</span></div>
+        <div class="t1"><b>信号 3</b><span class="chip">网页播放 · 备线</span><span class="st">备线</span></div>
         <span class="u">jrszbt.com/live/nbafs03</span>
       </div>
-      <button class="playbtn"><svg><use href="#i-play"/></svg></button>
+      <button class="playbtn" aria-label="播放该线路"><svg><use href="#i-play"/></svg></button>
     </div>
 
     <div class="stitle">源站与补充</div>
@@ -535,10 +464,10 @@ button{font-family:inherit}
     <div class="foot">信号质量与可用性由源站决定<br>播放异常时 App 会自动尝试下一条线路</div>
   </div>
 
-  <nav class="nav" data-nav="detail">
-    <button class="on"><svg><use href="#i-list"/></svg>赛事</button>
-    <button><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
-    <button><svg><use href="#i-me"/></svg>我的</button>
+  <nav class="nav" role="tablist" data-nav="detail">
+    <button type="button" role="tab" aria-selected="true" class="on" data-go="list"><svg><use href="#i-list"/></svg>赛事</button>
+    <button type="button" role="tab" aria-selected="false" data-go="player"><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
+    <button type="button" role="tab" aria-selected="false" data-go="profile"><svg><use href="#i-me"/></svg>我的</button>
   </nav>
 </section>
 
@@ -564,7 +493,7 @@ button{font-family:inherit}
   </div>
   <div class="search">
     <svg><use href="#i-search"/></svg>
-    <input type="text" value="湖人" readonly>
+    <input type="text" value="勇士" readonly>
   </div>
   <div class="daterow">
     <button>10-21<small>周二</small></button>
@@ -584,7 +513,7 @@ button{font-family:inherit}
         <path d="M62 88l20-20" stroke="var(--fg-3)"/>
       </svg>
       <h2>没有找到相关赛事</h2>
-      <p>「湖人」在 10月22日 无可用场次，换个日期或联赛筛选试试。</p>
+      <p>「勇士」在 10月22日 无可用场次，换个日期或联赛筛选试试。</p>
       <div class="acts">
         <button class="btn pri"><svg><use href="#i-cal"/></svg>查看全部赛事</button>
         <button class="btn">清除搜索条件</button>
@@ -592,10 +521,10 @@ button{font-family:inherit}
     </div>
   </div>
 
-  <nav class="nav">
-    <button class="on"><svg><use href="#i-list"/></svg>赛事</button>
-    <button><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
-    <button><svg><use href="#i-me"/></svg>我的</button>
+  <nav class="nav" role="tablist">
+    <button type="button" role="tab" aria-selected="true" class="on" data-go="list"><svg><use href="#i-list"/></svg>赛事</button>
+    <button type="button" role="tab" aria-selected="false" data-go="player"><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
+    <button type="button" role="tab" aria-selected="false" data-go="profile"><svg><use href="#i-me"/></svg>我的</button>
   </nav>
 </section>
 
@@ -650,10 +579,10 @@ button{font-family:inherit}
     </div>
   </div>
 
-  <nav class="nav">
-    <button class="on"><svg><use href="#i-list"/></svg>赛事</button>
-    <button><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
-    <button><svg><use href="#i-me"/></svg>我的</button>
+  <nav class="nav" role="tablist">
+    <button type="button" role="tab" aria-selected="true" class="on" data-go="list"><svg><use href="#i-list"/></svg>赛事</button>
+    <button type="button" role="tab" aria-selected="false" data-go="player"><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
+    <button type="button" role="tab" aria-selected="false" data-go="profile"><svg><use href="#i-me"/></svg>我的</button>
   </nav>
 </section>
 
@@ -705,10 +634,53 @@ button{font-family:inherit}
     </div>
   </div>
 
-  <nav class="nav">
-    <button class="on"><svg><use href="#i-list"/></svg>赛事</button>
-    <button><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
-    <button><svg><use href="#i-me"/></svg>我的</button>
+  <nav class="nav" role="tablist">
+    <button type="button" role="tab" aria-selected="true" class="on" data-go="list"><svg><use href="#i-list"/></svg>赛事</button>
+    <button type="button" role="tab" aria-selected="false" data-go="player"><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
+    <button type="button" role="tab" aria-selected="false" data-go="profile"><svg><use href="#i-me"/></svg>我的</button>
+  </nav>
+</section>
+
+<!-- ================= 屏 D：我的 ================= -->
+<section class="screen" data-screen="profile">
+  <div class="statusbar">
+    <span>22:04</span>
+    <span class="sb-r">
+      <svg viewBox="0 0 24 24" fill="currentColor"><rect x="2" y="13" width="3" height="7" rx="1"/><rect x="7" y="10" width="3" height="10" rx="1"/><rect x="12" y="6.5" width="3" height="13.5" rx="1"/><rect x="17" y="3" width="3" height="17" rx="1"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 9.5a13 13 0 0118 0"/><path d="M6.5 13a8 8 0 0111 0"/><path d="M10 16.4a3.4 3.4 0 014 0"/><circle cx="12" cy="19.4" r="1" fill="currentColor" stroke="none"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="17" height="10" rx="2.5"/><rect x="3.6" y="8.6" width="12" height="6.8" rx="1.2" fill="currentColor" stroke="none"/><path d="M20.5 10.5v3"/></svg>
+    </span>
+  </div>
+
+  <div class="brandrow">
+    <div class="brand"><i></i>NBA Live<span>我的</span></div>
+  </div>
+
+  <div class="scroll">
+    <div class="stitle">播放偏好</div>
+    <div class="itab">
+      <div class="r"><span class="k">自动故障切换</span><span class="v">已开启 · 失败后自动顺延</span></div>
+      <div class="r"><span class="k">线路播放方式</span><span class="v">直连 HLS / 网页播放</span></div>
+    </div>
+
+    <div class="stitle">外观</div>
+    <div class="itab">
+      <div class="r"><span class="k">主题</span><span class="v">跟随系统 / 浅色 / 深色</span></div>
+    </div>
+
+    <div class="stitle">关于</div>
+    <div class="itab">
+      <div class="r"><span class="k">数据来源</span><span class="v">JRS / JRKAN</span></div>
+      <div class="r"><span class="k">支持联赛</span><span class="v">NBA / CBA</span></div>
+    </div>
+
+    <div class="foot">本应用仅聚合第三方公开线路，不存储、不转播任何赛事内容。</div>
+  </div>
+
+  <nav class="nav" role="tablist" data-nav="profile">
+    <button type="button" role="tab" aria-selected="false" data-go="list"><svg><use href="#i-list"/></svg>赛事</button>
+    <button type="button" role="tab" aria-selected="false" data-go="player"><svg><use href="#i-live"/></svg>直播<span class="dot"></span></button>
+    <button type="button" role="tab" aria-selected="true" class="on" data-go="profile"><svg><use href="#i-me"/></svg>我的</button>
   </nav>
 </section>
 
@@ -722,7 +694,8 @@ button{font-family:inherit}
     { id: 'detail',       name: '赛事详情',   selector: '[data-screen="detail"]' },
     { id: 'empty-state',  name: '空态',       selector: '[data-screen="empty-state"]' },
     { id: 'loading-state',name: '加载态',     selector: '[data-screen="loading-state"]' },
-    { id: 'error-state',  name: '错误态',     selector: '[data-screen="error-state"]' }
+    { id: 'error-state',  name: '错误态',     selector: '[data-screen="error-state"]' },
+    { id: 'profile',      name: '我的',       selector: '[data-screen="profile"]' }
   ];
 
   window.__SHOW_SCREEN = function (id) {
@@ -739,14 +712,122 @@ button{font-family:inherit}
     return theme;
   };
 
-  /* ---- 底部导航 ---- */
+  /* ---- 底部导航：真的跳屏 ---- */
   document.querySelectorAll('.nav button').forEach(function (b) {
     b.addEventListener('click', function () {
       var nav = b.closest('.nav');
-      nav.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+      nav.querySelectorAll('button').forEach(function (x) {
+        x.classList.remove('on');
+        x.setAttribute('aria-selected', 'false');
+      });
       b.classList.add('on');
+      b.setAttribute('aria-selected', 'true');
+      var go = b.getAttribute('data-go');
+      if (go) window.__SHOW_SCREEN(go);
     });
   });
+
+  /* ============================================================
+     赛事数据（真实样本，只保留产品支持的 NBA / CBA）
+     ============================================================ */
+  var TEAMS = {
+    celtics : {n:'凯尔特人', logo:'https://cdn.sportnanoapi.com/basketball/team/0dc24d08ef0b5584e0b70f967db64b36.png', c:'#1a4a8a'},
+    hawks   : {n:'老鹰',   logo:'https://cdn.sportnanoapi.com/basketball/team/4e67b14905a05af9e1bd04406bf8690f.png', c:'#c0392b'},
+    lakers  : {n:'湖人',   logo:null, c:'#5b2d8e'},
+    blazers : {n:'开拓者', logo:null, c:'#c0392b'},
+    zhejiang: {n:'浙江',   logo:'http://www.jrszb444.com/d/file/p/2019/07-22/6da83cc0a417e07e2787d56b9c335a70.jpg', c:'#1f6b4a'},
+    shandong: {n:'山东',   logo:'http://www.jrszb444.com/d/file/p/2019/07-22/964df7d6987b40bff17f8b25cc0b1186.jpg', c:'#b4762a'},
+    qingdao : {n:'青岛',   logo:'http://www.jrszb444.com/d/file/p/2019/07-17/ddf3e58f3df2f8c872c503b97c254681.jpg', c:'#1c6ea4'},
+    liaoning: {n:'辽宁',   logo:'http://www.jrszb444.com/d/file/p/2019/07-22/acb1277db8452ad3271a65207209575.jpg', c:'#8a1f2b'},
+    shenzhen: {n:'深圳',   logo:'http://www.jrszb444.com/d/file/p/2019/04-16/76af9384d3eb454a4d318ae371734d15.jpg', c:'#c0392b'},
+    guangsha: {n:'广厦',   logo:'http://www.jrszb444.com/d/file/p/2019/07-22/964df7d6987b40bff17f8b25cc0b1186.jpg', c:'#1f6b4a'}
+  };
+
+  /* 信号条数 -1 表示尚未解析出线路数，不能当数字展示 */
+  function sigText(m) {
+    var n = (m && typeof m.sig === 'number') ? m.sig : -1;
+    return n < 0 ? '' : String(n);
+  }
+
+  var MATCHES = [
+    {day:'10月22日 周三', lg:'nba', h:'celtics', a:'hawks',   time:'07:00', status:'live', sig:3},
+    {day:'10月22日 周三', lg:'nba', h:'lakers',  a:'blazers', time:'07:30', status:'soon', sig:3},
+    {day:'10月21日 周二', lg:'cba', h:'zhejiang',a:'shandong',time:'19:35', status:'done', sig:3},
+    {day:'10月21日 周二', lg:'cba', h:'qingdao', a:'liaoning',time:'19:35', status:'done', sig:3},
+    {day:'10月21日 周二', lg:'cba', h:'shenzhen',a:'guangsha', time:'19:35', status:'done', sig:3}
+  ];
+
+  /* 队徽：真实 URL + onerror 首字兜底；没有 URL 时直接用首字色块 */
+  function logoHtml(key) {
+    var t = TEAMS[key];
+    if (!t.logo) {
+      return '<span class="logo fail" style="--c:' + t.c + '"><span class="fb">' + t.n.charAt(0) + '</span></span>';
+    }
+    return '<span class="logo" style="--c:' + t.c + '"><img src="' + t.logo + '" alt="' + t.n +
+      '" onerror="this.parentNode.classList.add(\'fail\')"><span class="fb">' + t.n.charAt(0) + '</span></span>';
+  }
+
+  function rowHtml(m) {
+    var h = TEAMS[m.h], a = TEAMS[m.a];
+    var lead = m.status === 'live'
+      ? '<div class="t-live"><span class="pulse"></span>直播中</div>'
+      : (m.status === 'done'
+          ? '<div class="t-fin">已结束</div>'
+          : '<div class="t-time">' + m.time + '</div>');
+    var sig = sigText(m);
+    return '<div class="mrow' + (m.status === 'live' ? ' live' : '') + '" data-k="' +
+      m.lg + ' ' + h.n + ' ' + a.n + '" data-go="detail">' +
+      lead +
+      '<div class="lg ' + m.lg + '">' + m.lg.toUpperCase() + '</div>' +
+      '<div class="teams">' +
+        logoHtml(m.h) + '<span class="tname">' + h.n + '</span><span class="vs">vs</span>' +
+        logoHtml(m.a) + '<span class="tname">' + a.n + '</span>' +
+      '</div>' +
+      '<div class="sig">' + (sig !== '' ? '<b>' + sig + '</b> 线' : '') + '</div>' +
+    '</div>';
+  }
+
+  /* 联赛筛选 + 搜索：真正从数据数组重新渲染列表 */
+  var listState = { league: '', query: '' };
+
+  function renderList() {
+    var scroll = document.getElementById('listScroll');
+    if (!scroll) return;
+    var q = listState.query;
+    var rows = MATCHES.filter(function (m) {
+      if (listState.league && m.lg !== listState.league) return false;
+      if (q) {
+        var h = TEAMS[m.h].n, a = TEAMS[m.a].n;
+        return (m.lg + ' ' + h + ' ' + a).toLowerCase().indexOf(q) >= 0;
+      }
+      return true;
+    });
+
+    var groups = [];
+    rows.forEach(function (m) {
+      var g = null;
+      groups.forEach(function (x) { if (x.day === m.day) g = x; });
+      if (!g) { g = { day: m.day, items: [] }; groups.push(g); }
+      g.items.push(m);
+    });
+
+    var html = '';
+    groups.forEach(function (g) {
+      var allDone = g.items.every(function (m) { return m.status === 'done'; });
+      html += '<div class="ghead">' + g.day + ' <em>' + (allDone ? '已结束' : (g.items.length + ' 场')) + '</em></div>';
+      g.items.forEach(function (m) { html += rowHtml(m); });
+    });
+    if (!groups.length) {
+      html += '<div class="state"><h2>没有找到相关赛事</h2><p>换个日期或联赛筛选试试。</p></div>';
+    }
+    html += '<div class="foot">数据来源 JRS / JRKAN · 每 30 分钟自动刷新<br>信号可用性以源站实时状态为准</div>';
+    scroll.innerHTML = html;
+  }
+  window.__SET_LEAGUE = function (lg) {
+    listState.league = lg || '';
+    renderList();
+    return listState.league;
+  };
 
   /* ---- 联赛 / 日期下划线标签 ---- */
   document.querySelectorAll('.tabs').forEach(function (t) {
@@ -754,6 +835,13 @@ button{font-family:inherit}
       b.addEventListener('click', function () {
         t.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
         b.classList.add('on');
+        /* 联赛筛选：重新渲染列表，而不是只换一个高亮 */
+        if (b.hasAttribute('data-lg')) {
+          t.querySelectorAll('button[data-lg]').forEach(function (x) {
+            x.setAttribute('aria-selected', x === b ? 'true' : 'false');
+          });
+          window.__SET_LEAGUE(b.getAttribute('data-lg'));
+        }
       });
     });
   });
@@ -766,22 +854,22 @@ button{font-family:inherit}
     });
   });
 
-  /* ---- 列表行 -> 详情 ---- */
-  document.querySelectorAll('.mrow').forEach(function (row) {
-    row.addEventListener('click', function () {
+  /* ---- 列表行 -> 详情（事件委托，重渲染后依然有效） ---- */
+  var listScroll = document.getElementById('listScroll');
+  if (listScroll) {
+    listScroll.addEventListener('click', function (e) {
+      var row = e.target.closest ? e.target.closest('.mrow') : null;
+      if (!row) return;
       window.__SHOW_SCREEN(row.getAttribute('data-go') || 'detail');
     });
-  });
+  }
 
   /* ---- 搜索过滤（本地） ---- */
   var q = document.getElementById('q');
   if (q) {
     q.addEventListener('input', function () {
-      var v = q.value.trim().toLowerCase();
-      document.querySelectorAll('#listScroll .mrow').forEach(function (row) {
-        var k = (row.getAttribute('data-k') || '').toLowerCase();
-        row.style.display = (!v || k.indexOf(v) >= 0) ? '' : 'none';
-      });
+      listState.query = q.value.trim().toLowerCase();
+      renderList();
     });
   }
 
@@ -837,6 +925,7 @@ button{font-family:inherit}
   if (bb) bb.addEventListener('click', function () { window.__SHOW_SCREEN('list'); });
 
   /* ---- 初始屏 ---- */
+  renderList();
   window.__SHOW_SCREEN('list');
 })();
 </script>

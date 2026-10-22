@@ -27,12 +27,6 @@ class JrsStatusCorrectionTest {
         jrsDetailId = "1",
     )
 
-    private fun millisAt(daysFromNow: Long, hour: Int, minute: Int): Long {
-        val day = java.time.LocalDate.now().plusDays(daysFromNow)
-        return day.atTime(hour, minute).atZone(java.time.ZoneId.systemDefault())
-            .toInstant().toEpochMilli()
-    }
-
     @Test
     fun `scheduled time is parsed from detail page`() {
         val html = """<p class="match-info-league">NBA</p> <p class="match-info-time">07:00</p>"""
@@ -86,5 +80,41 @@ class JrsStatusCorrectionTest {
     fun `no correction when start date unknown`() {
         // startAtMillis 为 null（无法确定是哪一天）时不猜测
         assertNull(parser.correctedStatus(liveMatch(null), "07:00"))
+    }
+
+    // ---- 跨零点：源站把 00:30 的比赛归到前一天的分组 ----
+
+    @Test
+    fun `game grouped under the previous day is corrected to the next day`() {
+        // 源站把 11-01 00:30 的比赛归在 10-31 分组里。
+        // 现在是 11-01 01:00 —— 按分组日期算会得到"10-31 00:30"，凭空"结束 24 小时前"。
+        val groupDay = java.time.LocalDate.of(2026, 10, 31)
+        val m = liveMatch(groupDay.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+        val now = java.time.ZonedDateTime.of(
+            java.time.LocalDate.of(2026, 11, 1),
+            java.time.LocalTime.of(1, 0),
+            java.time.ZoneId.systemDefault(),
+        )
+
+        val c = parser.correctedStatus(m, "00:30", now)
+        assertEquals(MatchStatus.LIVE, c?.status)
+        val start = java.time.Instant.ofEpochMilli(c!!.startAtMillis)
+            .atZone(java.time.ZoneId.systemDefault()).toLocalDateTime()
+        assertEquals(java.time.LocalDateTime.of(2026, 11, 1, 0, 30), start)
+    }
+
+    @Test
+    fun `late night game grouped the same day is still finished`() {
+        // 同样 00:30，但分组日期就是当天且现在已是深夜 -> 确实该判已结束
+        val groupDay = java.time.LocalDate.of(2026, 11, 1)
+        val m = liveMatch(groupDay.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
+        val now = java.time.ZonedDateTime.of(
+            java.time.LocalDate.of(2026, 11, 1),
+            java.time.LocalTime.of(20, 0),
+            java.time.ZoneId.systemDefault(),
+        )
+
+        val c = parser.correctedStatus(m, "00:30", now)
+        assertEquals(MatchStatus.FINISHED, c?.status)
     }
 }

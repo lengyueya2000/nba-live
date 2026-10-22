@@ -8,6 +8,7 @@ import com.nbalive.app.data.model.StreamSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 
 /**
  * merge() 的回归测试：只测纯合并逻辑，不触网。
@@ -103,5 +104,35 @@ class MatchRepositoryTest {
         val b = match("jrs-", "C队", "D队", null, "直播中")
         val merged = invokeMerge(listOf(a, b), emptyList())
         assertEquals(2, merged.map { it.id }.distinct().size)
+    }
+
+    // ---- 回归：多个 JRKAN 播放页展开出的线路 id 不能重复 ----
+
+    @Test
+    fun `expanding several jrkan play pages yields unique source ids`() = runBlocking {
+        // 同一场比赛在源站出现两行 -> merge 后带两个 JRKAN 播放页。
+        // 每个播放页都要展开出自己的线路；id 重复会让播放器的 LazyColumn key 冲突而崩溃。
+        val m = match(
+            "jrkan-1", "湖人", "凯尔特人", dayMillis(10, 21), "10-21 19:35",
+            sources = listOf(
+                StreamSource("jrkan-1-s0", "信号1", Provider.JRKAN, "http://play.sportsteam356.com/play/steam1.html"),
+                StreamSource("jrkan-1-s1", "信号2", Provider.JRKAN, "http://play.sportsteam356.com/play/steam2.html"),
+            ),
+        )
+
+        fun page(vararg ids: String) = ids.joinToString("") { id ->
+            """<a class="item" data-play="/play/sm.html?id=$id&id2="><strong>直播$id</strong></a>"""
+        }
+
+        val detail = repo.loadSignals(m) { url, _ ->
+            if (url.contains("steam1")) page("439", "919") else page("111", "222")
+        }
+
+        assertEquals("两个播放页各展开出 2 条线路", 4, detail.signals.size)
+        assertEquals(
+            "线路 id 必须唯一，否则播放器 LazyColumn 会因 key 重复崩溃",
+            detail.signals.size,
+            detail.signals.map { it.id }.distinct().size,
+        )
     }
 }

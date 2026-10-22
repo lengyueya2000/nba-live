@@ -44,15 +44,29 @@ keyPassword=...
 
 缺失时 release 构建退回未签名，便于 CI 注入。
 
+release 构建开启 R8 代码压缩与资源压缩，保留规则见 `app/proguard-rules.pro`。
+
 **安装包不入库**：APK 作为二进制附件发布在 [GitHub Releases](../../releases)。
+
+## 安全与网络
+
+- 明文流量策略集中在 `app/src/main/res/xml/network_security_config.xml`：源站的播放页与 m3u8 切片走 HTTP，而清单所在的 CDN 主机名是**运行时由源站生成并混淆**的（`hdl2.<反转后的主域名>`），无法预先写进域名白名单，因此保留明文许可并把已知主机备案在文件里
+- 备份 / 换机迁移全部排除（`data_extraction_rules.xml`）：App 只存深色模式与画面模式这类设备相关的显示设置，没有备份价值
+- 签名凭据（`keystore.properties`）已被 `.gitignore` 排除，**不入库**
 
 ## 目录
 
 ```
 app/                 Android 工程（data 解析 / ui Compose / 播放器）
-design/              设计稿与真机截图（sportcard 为已选方案）
+design/              设计稿与真机截图（sportcard 为已选方案，cinema/minimal 为备选探索）
 gradle/              Gradle Wrapper
 ```
+
+## 已知取舍
+
+- **直连 HLS 只覆盖 `/play/sm.html` 这一条链路**：JRS 的 mgxl/pao 播放器与 JRKAN 的 wen/pao 线路使用 XXTEA 加密，静态还原不了，只能交给 WebView 承载（WebView 会嗅探解密后的 m3u8 并自动升级回 ExoPlayer）
+- **域名反混淆是有损的**：源站哪天不再混淆，反混淆会得到乱码域名。解析器因此一次给出多个候选地址，用"能否拉出清单"裁决，而不是只认一个
+- **状态校正是启发式的**：源站列表的"直播中"会滞后 3 小时以上，只能用计划开赛时间做区间判断（开赛后 3.5 小时判已结束、开赛前 15 分钟判未开赛）
 
 ## 免责声明
 

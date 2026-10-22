@@ -1,7 +1,6 @@
 package com.nbalive.app.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,7 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,7 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.SportsBasketball
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -32,15 +30,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.nbalive.app.ui.AspectMode
-import com.nbalive.app.ui.theme.GradLive
+import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
-import com.nbalive.app.ui.theme.SportDark
 
 /**
  * "我的"标签页：播放偏好 + 外观 + 关于。
@@ -62,8 +56,10 @@ fun ProfileScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(top = Space.sm, bottom = Space.xxl),
+            // padding 必须在 verticalScroll 之前：
+            // 反过来的话上下留白会被算进可滚动内容，滚一下就跟着内容跑掉了。
+            .padding(top = Space.sm, bottom = Space.xxl)
+            .verticalScroll(rememberScrollState()),
     ) {
         // 播放设置
         SectionTitle("播放设置")
@@ -83,39 +79,15 @@ fun ProfileScreen(
             Text(
                 text = "全屏播放时的画面填充方式",
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(Space.sm))
-            Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-                AspectMode.entries.forEach { mode ->
-                    val active = mode == aspectMode
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 40.dp)
-                            .clip(RoundedCornerShape(Radius.btn))
-                            .background(
-                                if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                                else MaterialTheme.colorScheme.background,
-                            )
-                            .border(
-                                1.dp,
-                                if (active) MaterialTheme.colorScheme.primary else SportDark.Line,
-                                RoundedCornerShape(Radius.btn),
-                            )
-                            .clickable { onAspectChange(mode) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = mode.label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (active) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
+            // 与播放器共用同一个控件（components/Common.kt 的 AspectModeSelector），
+            // 不再各抄一份——之前两份逐字复制，改配色只改到一半。
+            AspectModeSelector(
+                aspectMode = aspectMode,
+                onAspectChange = onAspectChange,
+            )
             Spacer(Modifier.height(Space.md))
             SwitchRow(
                 title = "屏幕常亮",
@@ -141,6 +113,7 @@ fun ProfileScreen(
                 checked = darkMode,
                 onCheckedChange = onDarkModeChange,
                 leadingIcon = true,
+                darkMode = darkMode,
             )
         }
 
@@ -165,13 +138,13 @@ fun ProfileScreen(
                     Icons.Filled.Info,
                     contentDescription = null,
                     modifier = Modifier.size(13.dp),
-                    tint = SportDark.Txt3,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.width(Space.xs))
                 Text(
                     text = "本应用仅聚合第三方公开线路，不存储、不转播任何赛事内容。",
                     style = MaterialTheme.typography.labelSmall,
-                    color = SportDark.Txt3,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -195,6 +168,7 @@ private fun SwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     leadingIcon: Boolean = false,
+    darkMode: Boolean = false,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -208,8 +182,10 @@ private fun SwitchRow(
                     .background(MaterialTheme.colorScheme.background),
                 contentAlignment = Alignment.Center,
             ) {
+                // 图标跟着当前主题走：浅色主题下亮一个月亮图标会显得莫名其妙。
+                // 纯装饰，模式本身由行标题 + 开关状态说明，所以 contentDescription 为空。
                 Icon(
-                    Icons.Filled.DarkMode,
+                    imageVector = if (darkMode) Icons.Filled.DarkMode else Icons.Filled.LightMode,
                     contentDescription = null,
                     modifier = Modifier.size(15.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -226,7 +202,7 @@ private fun SwitchRow(
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Switch(
@@ -245,7 +221,7 @@ private fun InfoRow(label: String, value: String) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodySmall,
-            color = SportDark.Txt3,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
         )
         Spacer(Modifier.weight(1f))

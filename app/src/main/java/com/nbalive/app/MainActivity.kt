@@ -3,6 +3,7 @@ package com.nbalive.app
 import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
@@ -20,6 +21,7 @@ import com.nbalive.app.ui.MainViewModel
 import com.nbalive.app.ui.NbaLiveApp
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.theme.NbaLiveTheme
+import kotlin.math.min
 
 class MainActivity : ComponentActivity() {
 
@@ -51,12 +53,44 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
         runCatching {
-            enterPictureInPictureMode(
-                PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(16, 9))
-                    .build(),
-            )
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .apply {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        // Android 12+：系统在手势缩小/按 Home 时自动进小窗
+                        setAutoEnterEnabled(true)
+                        // 源区域提示：告诉系统视频在屏幕上的位置，
+                        // 小窗过渡动画才不会整屏闪一下
+                        videoSourceRect()?.let { setSourceRectHint(it) }
+                    }
+                }
+                .build()
+            setPictureInPictureParams(params)
+            enterPictureInPictureMode(params)
         }
+    }
+
+    /**
+     * 视频区在窗口中的位置（居中的 16:9）。
+     *
+     * 视频在 Compose 里渲染，这里拿不到真正的控件边界，
+     * 用窗口居中的 16:9 区域近似——它只用于小窗过渡动画的起点提示。
+     */
+    private fun videoSourceRect(): Rect? {
+        val decor = window?.decorView ?: return null
+        if (decor.width <= 0 || decor.height <= 0) return null
+        val loc = IntArray(2)
+        decor.getLocationOnScreen(loc)
+        val videoHeight = min(decor.width * 9 / 16, decor.height)
+        val videoWidth = videoHeight * 16 / 9
+        val left = (decor.width - videoWidth) / 2
+        val top = (decor.height - videoHeight) / 2
+        return Rect(
+            loc[0] + left,
+            loc[1] + top,
+            loc[0] + left + videoWidth,
+            loc[1] + top + videoHeight,
+        )
     }
 
     override fun onPictureInPictureModeChanged(

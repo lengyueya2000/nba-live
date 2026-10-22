@@ -30,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -47,11 +48,13 @@ import com.nbalive.app.ui.components.LeagueStrip
 import com.nbalive.app.ui.components.SignalBadge
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
+import com.nbalive.app.ui.hhmm
+import com.nbalive.app.ui.leagueLabel
+import com.nbalive.app.ui.mmdd
 import com.nbalive.app.ui.theme.GradLive
-import com.nbalive.app.ui.theme.GradRed
 import com.nbalive.app.ui.theme.Radius
+import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.Space
-import com.nbalive.app.ui.theme.SportDark
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -75,28 +78,6 @@ private fun groupByDay(matches: List<Match>, today: LocalDate): List<DayGroup> {
             }
             DayGroup(label, list)
         }
-}
-
-/** 只取展示用的 HH:mm */
-private fun Match.hhmm(): String {
-    // LIVE 行：校正后 startAtMillis 是详情页回填的真实开赛时间，直接显示；
-    // 未校正的 JRS"直播中"行 startAtMillis 只是 parseDateTime 的当天 00:00 兜底，
-    // 这种假 00:00 不能上屏（真 00:00 开赛的篮球赛不存在），退回源站文案。
-    startAtMillis?.let {
-        val t = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
-        if (status == MatchStatus.LIVE && t.hour == 0 && t.minute == 0) return timeLabel
-        return "%02d:%02d".format(t.hour, t.minute)
-    }
-    return timeLabel.substringAfterLast(' ').ifBlank { timeLabel }
-}
-
-/** 只取展示用的 MM-dd */
-private fun Match.mmdd(): String {
-    startAtMillis?.let {
-        val t = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault())
-        return "%02d-%02d".format(t.monthValue, t.dayOfMonth)
-    }
-    return timeLabel.substringBefore(' ').ifBlank { "" }
 }
 
 @Composable
@@ -145,6 +126,8 @@ private fun LeagueSelector(
             Surface(
                 modifier = Modifier
                     .weight(1f)
+                    // 触摸目标不小于 48dp（不改变视觉尺寸）
+                    .minimumInteractiveComponentSize()
                     .height(44.dp)
                     .clip(RoundedCornerShape(Radius.btn))
                     .clickable { onSelect(league) },
@@ -159,7 +142,7 @@ private fun LeagueSelector(
                     modifier = Modifier
                         .fillMaxSize()
                         .then(
-                            if (active) Modifier.background(GradRed) else Modifier,
+                            if (active) Modifier.background(accentBrush()) else Modifier,
                         ),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -177,7 +160,7 @@ private fun LeagueSelector(
                             Text(
                                 text = "$n",
                                 color = if (active) Color.White.copy(alpha = 0.8f)
-                                else SportDark.Txt3,
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 10.sp,
                                 style = MaterialTheme.typography.labelSmall,
                                 maxLines = 1,
@@ -247,7 +230,7 @@ private fun DayHeader(label: String, count: Int, liveCount: Int) {
         Text(
             text = "$count 场",
             style = MaterialTheme.typography.labelSmall,
-            color = SportDark.Txt3,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
         )
         Spacer(Modifier.weight(1f))
@@ -278,7 +261,7 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
                 StatusChip(status = MatchStatus.LIVE)
                 Spacer(Modifier.width(Space.sm))
                 Text(
-                    text = match.leagueRawName.ifBlank { match.league.displayName },
+                    text = match.leagueLabel(),
                     color = Color.White.copy(alpha = 0.92f),
                     style = MaterialTheme.typography.labelLarge,
                     maxLines = 1,
@@ -318,10 +301,14 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
                     )
                     Spacer(Modifier.width(Space.sm))
                 }
-                HeroPill(
-                    icon = Icons.Filled.SportsBasketball,
-                    text = match.sources.firstOrNull()?.provider?.displayName ?: "多源",
-                )
+                // JRS 列表页的 sources 恒为空（JrsParser.parseList 里 sources = emptyList()），
+                // 不能凭空写"多源"；没有真实源站就不显示这个药丸。
+                match.sources.firstOrNull()?.provider?.displayName?.let { provider ->
+                    HeroPill(
+                        icon = Icons.Filled.SportsBasketball,
+                        text = provider,
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 Surface(
                     shape = RoundedCornerShape(Radius.btn),
@@ -412,7 +399,7 @@ private fun MatchCard(match: Match, onClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             LeagueChip(
-                text = match.leagueRawName.ifBlank { match.league.displayName },
+                text = match.leagueLabel(),
                 league = match.league,
             )
             Spacer(Modifier.weight(1f))
@@ -433,7 +420,7 @@ private fun MatchCard(match: Match, onClick: () -> Unit) {
             Text(
                 text = match.mmdd(),
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }
@@ -447,7 +434,7 @@ private fun MatchCard(match: Match, onClick: () -> Unit) {
             GridTeam(name = match.homeTeam, logo = match.homeLogo, modifier = Modifier.weight(1f))
             Text(
                 text = "VS",
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(top = 16.dp),
             )
@@ -507,7 +494,7 @@ private fun EmptyState() {
                 Icons.Filled.CalendarMonth,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
-                tint = SportDark.Txt3,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(Space.lg))
             Text(
@@ -519,7 +506,7 @@ private fun EmptyState() {
             Text(
                 text = "换个联赛看看，或稍后刷新",
                 style = MaterialTheme.typography.bodySmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -548,7 +535,7 @@ private fun ErrorState(error: String, onRetry: () -> Unit) {
             Text(
                 text = error,
                 style = MaterialTheme.typography.bodySmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(Space.xxl))
             Surface(
@@ -558,7 +545,7 @@ private fun ErrorState(error: String, onRetry: () -> Unit) {
             ) {
                 Box(
                     modifier = Modifier
-                        .background(GradRed, RoundedCornerShape(Radius.btn))
+                        .background(accentBrush(), RoundedCornerShape(Radius.btn))
                         .padding(horizontal = 32.dp, vertical = 12.dp),
                 ) {
                     Text(

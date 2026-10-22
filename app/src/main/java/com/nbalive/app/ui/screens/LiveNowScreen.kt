@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,12 +35,13 @@ import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.components.LeagueChip
+import com.nbalive.app.ui.components.SignalBadge
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
-import com.nbalive.app.ui.theme.GradRed
+import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.theme.Radius
+import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.Space
-import com.nbalive.app.ui.theme.SportDark
 
 /**
  * "直播"标签页：只列正在直播的场次，点一下直接全屏看。
@@ -81,7 +83,7 @@ fun LiveNowScreen(
             Text(
                 text = if (loading) "加载中…" else "${live.size} 场",
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }
@@ -122,7 +124,7 @@ private fun EmptyLiveState() {
                 Icons.Filled.PlayCircle,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
-                tint = SportDark.Txt3,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(Space.lg))
             Text(
@@ -134,7 +136,7 @@ private fun EmptyLiveState() {
             Text(
                 text = "去「赛事」页看看今天还有哪些场次",
                 style = MaterialTheme.typography.bodySmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -154,14 +156,14 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
             StatusChip(status = match.status)
             Spacer(Modifier.width(Space.sm))
             LeagueChip(
-                text = match.leagueRawName.ifBlank { match.league.displayName },
+                text = match.leagueLabel(),
                 league = match.league,
             )
             Spacer(Modifier.weight(1f))
             Text(
                 text = match.timeLabel,
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }
@@ -182,7 +184,7 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
             Text(
                 text = "vs",
                 style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = Space.sm),
             )
             Text(
@@ -200,19 +202,21 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
         Spacer(Modifier.height(Space.md))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = if (match.signalCount > 0) "共 ${match.signalCount} 条线路" else "多源线路",
-                style = MaterialTheme.typography.labelSmall,
-                color = SportDark.Txt3,
-                maxLines = 1,
-            )
+            // signalCount：>0 = 实际线路数；0 = 没有线路；-1 = 未解析（JRS 列表行）。
+            // 只有确知数量才画徽章，0 / -1 一律不渲染——不凭空断言"多源"。
+            if (match.signalCount > 0) {
+                SignalBadge(match.signalCount)
+            }
             Spacer(Modifier.weight(1f))
             Box(
                 modifier = Modifier
+                    // 触摸目标补到 48dp（视觉尺寸不变，只是可点区域变大）
+                    .minimumInteractiveComponentSize()
                     .clip(RoundedCornerShape(Radius.btn))
-                    .background(GradRed)
+                    .background(accentBrush())
                     .clickable(onClick = onClick)
                     .padding(horizontal = 14.dp, vertical = 7.dp),
+                contentAlignment = Alignment.Center,
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -236,3 +240,11 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
         }
     }
 }
+
+/**
+ * 主 CTA（"立即观看"）底色。
+ *
+ * 原来的 GradRed 渐变（#FF3B4E → #FF7A2F）对白字只有 3.51:1 / 2.60:1，
+ * 12sp 白字达不到 WCAG AA 的 4.5:1。
+ * 这里改用共享的 [accentBrush]：按主题主色生成，并把每一档都压暗到白字可读。
+ */

@@ -10,7 +10,9 @@
     color: #F8FAFC;
     font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
     padding: 48px 40px 80px;
-    width: 1680px;
+    width: 100%;
+    max-width: 1680px;
+    margin: 0 auto;
   }
   .head { margin-bottom: 40px; }
   .head h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.5px; }
@@ -44,6 +46,16 @@
   .swatches { display: flex; gap: 6px; margin-top: 10px; }
   .sw { width: 26px; height: 26px; border-radius: 6px; border: 1px solid rgba(255,255,255,.14); }
   .foot { margin-top: 48px; color: #6B7280; font-size: 13px; line-height: 1.8; }
+  @media (max-width: 1200px) {
+    body { padding: 28px 20px 48px; }
+    .grid { grid-template-columns: 1fr; }
+    .shots { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (max-width: 640px) {
+    .head h1 { font-size: 28px; }
+    .shots { grid-template-columns: 1fr; }
+    .desc { min-height: 0; }
+  }
 </style>
 </head>
 <body>
@@ -55,16 +67,16 @@
 
   <div class="grid">
     <!-- A -->
-    <div class="card recommended">
-      <h2>方案 A · 影院沉浸 <span class="tag pick">推荐</span></h2>
+    <div class="card">
+      <h2>方案 A · 影院沉浸 <span class="tag">参考留档</span></h2>
       <div class="desc">
         深黑 OLED 打底，把比赛当作"正在放映的片子"。直播中的赛事用红色光晕呼吸突出，
         播放器做成沉浸式暗场，信号切换以半透明胶囊条贴在视频下方。观赛氛围最强。
       </div>
       <div class="shots">
-        <div class="shot"><img src="cinema/out/01-list-dark.png"><div class="cap">赛事列表</div></div>
-        <div class="shot"><img src="cinema/out/02-player-dark.png"><div class="cap">播放器</div></div>
-        <div class="shot"><img src="cinema/out/03-detail-dark.png"><div class="cap">赛事详情</div></div>
+        <div class="shot"><img src="cinema/out/01-list-dark.png" alt="方案 A 影院沉浸 · 赛事列表截图"><div class="cap">赛事列表</div></div>
+        <div class="shot"><img src="cinema/out/02-player-dark.png" alt="方案 A 影院沉浸 · 播放器截图"><div class="cap">播放器</div></div>
+        <div class="shot"><img src="cinema/out/03-detail-dark.png" alt="方案 A 影院沉浸 · 赛事详情截图"><div class="cap">赛事详情</div></div>
       </div>
       <div class="meta">
         <dl>
@@ -85,16 +97,16 @@
     </div>
 
     <!-- B -->
-    <div class="card">
-      <h2>方案 B · 运动卡片 <span class="tag">SPORT CARD</span></h2>
+    <div class="card recommended">
+      <h2>方案 B · 运动卡片 <span class="tag pick">已落地</span></h2>
       <div class="desc">
         明快、有活力的运动视觉。大圆角卡片 + 联赛色条 + 大字号开赛时间，
         双列网格让一屏看到更多场次。播放器带"其他直播"推荐区，方便连着看。
       </div>
       <div class="shots">
-        <div class="shot"><img src="sportcard/out/01-list-dark.png"><div class="cap">赛事列表</div></div>
-        <div class="shot"><img src="sportcard/out/02-player-dark.png"><div class="cap">播放器</div></div>
-        <div class="shot"><img src="sportcard/out/03-detail-dark.png"><div class="cap">赛事详情</div></div>
+        <div class="shot"><img src="sportcard/out/01-list-dark.png" alt="方案 B 运动卡片 · 赛事列表截图"><div class="cap">赛事列表</div></div>
+        <div class="shot"><img src="sportcard/out/02-player-dark.png" alt="方案 B 运动卡片 · 播放器截图"><div class="cap">播放器</div></div>
+        <div class="shot"><img src="sportcard/out/03-detail-dark.png" alt="方案 B 运动卡片 · 赛事详情截图"><div class="cap">赛事详情</div></div>
       </div>
       <div class="meta">
         <dl>
@@ -116,15 +128,15 @@
 
     <!-- C -->
     <div class="card">
-      <h2>方案 C · 极简赛程表 <span class="tag">MINIMAL</span></h2>
+      <h2>方案 C · 极简赛程表 <span class="tag">参考留档</span></h2>
       <div class="desc">
         完全反卡片化。把应用做成一份优雅的赛程表：一行一场，时间 / 联赛 / 对阵 / 线路数横向排布，
         靠排版与留白建立秩序。信息密度最高，操作路径最短。
       </div>
       <div class="shots">
-        <div class="shot"><img src="minimal/out/list.png"><div class="cap">赛事列表</div></div>
-        <div class="shot"><img src="minimal/out/player.png"><div class="cap">播放器</div></div>
-        <div class="shot"><img src="minimal/out/detail.png"><div class="cap">赛事详情</div></div>
+        <div class="shot"><img src="minimal/out/list.png" alt="方案 C 极简赛程表 · 赛事列表截图"><div class="cap">赛事列表</div></div>
+        <div class="shot"><img src="minimal/out/player.png" alt="方案 C 极简赛程表 · 播放器截图"><div class="cap">播放器</div></div>
+        <div class="shot"><img src="minimal/out/detail.png" alt="方案 C 极简赛程表 · 赛事详情截图"><div class="cap">赛事详情</div></div>
       </div>
       <div class="meta">
         <dl>
@@ -147,7 +159,8 @@
 
   <div class="foot">
     三套方案均已完成：赛事列表 / 播放器 / 赛事详情 三核心屏 + 空态 / 加载态 / 错误态 + 浅色模式。<br>
-    选定方向后，我会把该方案的设计 token 与组件落到 Kotlin + Jetpack Compose 工程里。
+    <b>方案 B（运动卡片）</b>已被选定为 App 的视觉方向，其设计 token 与组件已落到 Kotlin + Jetpack Compose 工程；
+    方案 A / 方案 C 作为视觉探索留档，不再与实现同步维护。
   </div>
 </body>
 </html>

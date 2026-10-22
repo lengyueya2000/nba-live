@@ -105,4 +105,51 @@ class JrkanParserTest {
         assertEquals(1, channels.size)
         assertTrue(channels[0].pageUrl.contains("/play/sm.html"))
     }
+
+    // ---- 回归：时间串没有年份，跨年时必须落在 ±6 个月窗口内 ----
+
+    @Test
+    fun `date without year resolves to the nearest occurrence within six months`() {
+        val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+        // 每个月都试一遍：无论今天落在几月，解析结果都必须离今天不超过 6 个月
+        (0..11).forEach { monthOffset ->
+            val target = today.plusMonths(monthOffset.toLong())
+            val label = "%02d-%02d 19:35".format(target.monthValue, target.dayOfMonth)
+            val parsed = parseStartDate(label)
+            val days = java.time.temporal.ChronoUnit.DAYS.between(today, parsed)
+            assertTrue(
+                "$label 解析成 $parsed，距今天 $today 已超出 ±6 个月窗口（$days 天）",
+                kotlin.math.abs(days) <= 200,
+            )
+        }
+    }
+
+    @Test
+    fun `a date more than six months in the past rolls forward one year`() {
+        val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+        // 7 个月前的月日：按"今年"算会落到过去 7 个月，必须顺延一年
+        val target = today.minusMonths(7)
+        val label = "%02d-%02d 19:35".format(target.monthValue, target.dayOfMonth)
+        val parsed = parseStartDate(label)
+        assertEquals(
+            "$label 应该顺延到下一年",
+            target.plusYears(1),
+            parsed,
+        )
+    }
+
+    /** 走公开入口 parseList，拿到解析后的开赛日期。 */
+    private fun parseStartDate(timeLabel: String): java.time.LocalDate {
+        val js = """
+            document.write('<ul class="item play" data-lid="1,2,3" data-stype="zqlq">');
+            document.write('  <li class="lab_events"><span class="name">NBA</span></li>');
+            document.write('  <li class="lab_time">$timeLabel</li>');
+            document.write('  <li class="lab_team_home"><strong class="name">A</strong></li>');
+            document.write('  <li class="lab_team_away"><strong class="name">B</strong></li>');
+            document.write('</ul>');
+        """.trimIndent()
+        val m = parser.parseList(js).first()
+        return java.time.Instant.ofEpochMilli(m.startAtMillis!!)
+            .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+    }
 }

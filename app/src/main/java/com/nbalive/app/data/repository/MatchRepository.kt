@@ -11,11 +11,14 @@ import com.nbalive.app.data.remote.JrsParser
 import com.nbalive.app.data.remote.JrkanParser
 import com.nbalive.app.data.remote.StreamUrlResolver
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.IOException
 
@@ -34,11 +37,28 @@ class MatchRepository(
     companion object {
         const val JRS_LIST_URL = "https://jrszbt.com/"
         const val JRKAN_LIST_JS = "https://im-imgs-bucket.oss-accelerate.aliyuncs.com/index.js?t_5"
+
+        /** 状态校正时并发拉详情页的上限：防止一次刷新把源站打爆。 */
+        private const val MAX_DETAIL_CONCURRENCY = 4
     }
+
+    /**
+     * runCatching 会把 [CancellationException] 也吞掉，
+     * 协程被取消后还会继续跑完剩下的逻辑。
+     * 这里显式区分：取消照常抛出，其余异常才包成 Result。
+     */
+    private inline fun <T> catching(block: () -> T): Result<T> =
+        try {
+            Result.success(block())
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
 
     /** 拉取并合并两个源的全部赛事。一个源抛异常不能带走另一个源的好数据。 */
     suspend fun loadMatches(): Result<List<Match>> = withContext(Dispatchers.IO) {
-        runCatching {
+        catching {
             supervisorScope {
                 val jrsDeferred = async { fetchJrs() }
                 val jrkanDeferred = async { fetchJrkan() }
@@ -71,14 +91,20 @@ class MatchRepository(
         val live = matches.filter { it.status == MatchStatus.LIVE }
         if (live.isEmpty()) return@coroutineScope matches
 
-        // JRS：详情页校正
+        // JRS：详情页校正。并发数要封顶——直播中的场次可能十几场，
+        // 一次全开就是把源站当 DDoS 源打；同时单个详情失败不能连累其它场次。
+        val gate = Semaphore(MAX_DETAIL_CONCURRENCY)
         val fixes = live.filter { it.jrsDetailId != null }.map { m ->
             async {
-                val html = http.get("https://jrszbt.com/live/${m.jrsDetailId}.html", JRS_LIST_URL)
-                val c = html?.let { jrsParser.correctedStatus(m, jrsParser.parseScheduledTime(it)) }
-                m.id to c
+                gate.withPermit {
+                    catching {
+                        val html = http.get("https://jrszbt.com/live/${m.jrsDetailId}.html", JRS_LIST_URL)
+                        val c = html?.let { jrsParser.correctedStatus(m, jrsParser.parseScheduledTime(it)) }
+                        m.id to c
+                    }.getOrNull()
+                }
             }
-        }.awaitAll().toMap()
+        }.awaitAll().filterNotNull().toMap()
 
         matches.map { m ->
             if (m.status != MatchStatus.LIVE) return@map m
@@ -110,13 +136,13 @@ class MatchRepository(
                 .thenBy { it.leagueRawName }
         )
 
-    private suspend fun fetchJrs(): Result<List<Match>> = runCatching {
-        val html = http.get(JRS_LIST_URL) ?: return@runCatching emptyList()
+    private suspend fun fetchJrs(): Result<List<Match>> = catching {
+        val html = http.get(JRS_LIST_URL) ?: return@catching emptyList()
         jrsParser.parseList(html)
     }
 
-    private suspend fun fetchJrkan(): Result<List<Match>> = runCatching {
-        val js = http.get(JRKAN_LIST_JS) ?: return@runCatching emptyList()
+    private suspend fun fetchJrkan(): Result<List<Match>> = catching {
+        val js = http.get(JRKAN_LIST_JS) ?: return@catching emptyList()
         jrkanParser.parseList(js)
     }
 
@@ -180,12 +206,21 @@ class MatchRepository(
      * JRKAN：列表页只给一个播放页，真正的多条线路在播放页内部，需要展开。
      * JRS：信号在详情页的 a.toLive 里。
      */
-    suspend fun loadSignals(match: Match): Detail = withContext(Dispatchers.IO) {
+    suspend fun loadSignals(match: Match): Detail =
+        loadSignals(match) { url, referer -> http.get(url, referer) }
+
+    /**
+     * 可注入 fetch 的实现，供单元测试覆盖"多个播放页展开后 id 是否唯一"这类逻辑。
+     */
+    internal suspend fun loadSignals(
+        match: Match,
+        fetch: suspend (String, String?) -> String?,
+    ): Detail = withContext(Dispatchers.IO) {
         var correction: JrsParser.StatusCorrection? = null
 
         val jrsSignals = match.jrsDetailId?.let { id ->
             val detailUrl = "https://jrszbt.com/live/$id.html"
-            val html = http.get(detailUrl, JRS_LIST_URL)
+            val html = fetch(detailUrl, JRS_LIST_URL)
             if (html != null) {
                 correction = jrsParser.correctedStatus(match, jrsParser.parseScheduledTime(html))
                 jrsParser.parseDetail(html, match)
@@ -195,10 +230,14 @@ class MatchRepository(
         } ?: emptyList()
 
         val jrkanSources = match.sources.filter { it.provider == Provider.JRKAN }
-        val jrkanSignals = jrkanSources.mapNotNull { source ->
-            val html = http.get(source.pageUrl) ?: return@mapNotNull null
-            jrkanParser.parseChannels(html, match.id)
-        }.flatten()
+        // 每个播放页用独立的 id 前缀：parseChannels 内部的编号从 0 开始，
+        // 两个页面共用前缀会产出重复 id —— 播放器把 id 当 LazyColumn 的 key，
+        // 重复 key 会直接抛 IllegalArgumentException 崩掉（这个仓库已经崩过两次）。
+        val jrkanSignals = jrkanSources.flatMapIndexed { index, source ->
+            val html = fetch(source.pageUrl, http.refererOf(source.pageUrl))
+                ?: return@flatMapIndexed emptyList()
+            jrkanParser.parseChannels(html, "${match.id}-jr$index")
+        }
         // 展开失败时退回列表页给的播放页，至少还能用 WebView 打开
         val jrkanFinal = jrkanSignals.ifEmpty { jrkanSources }
 
@@ -216,6 +255,10 @@ class MatchRepository(
      *
      * 只解析出地址不够——地址可能已过期或需要特定 Referer。
      * 这里确认返回体里含 `#EXTM3U` 才认为该线路可用，避免进播放器黑屏。
+     *
+     * 解析可能给出多个候选（反混淆版 / 原文版）：逐个校验，
+     * 第一个能拉出清单的即采用。源站哪天取消域名混淆，原文版会自动顶上，
+     * 不用等"反混淆彻底坏掉"才整条线路判死。
      */
     suspend fun resolveStream(source: StreamSource): StreamUrlResolver.Resolved? =
         withContext(Dispatchers.IO) {
@@ -224,17 +267,15 @@ class MatchRepository(
                 http.get(url, http.refererOf(url))
             } ?: return@withContext null
 
-            val playlist = http.get(resolved.m3u8Url, resolved.referer)
-            if (playlist == null) {
-                Log.w("MatchRepo", "m3u8 fetch null: ${resolved.m3u8Url}")
-                return@withContext null
+            for (candidate in resolved.m3u8Candidates) {
+                val playlist = http.get(candidate, resolved.referer, fastFail = true)
+                if (playlist != null && playlist.contains("#EXTM3U")) {
+                    Log.d("MatchRepo", "m3u8 OK: $candidate")
+                    return@withContext resolved.copy(m3u8Url = candidate)
+                }
+                Log.w("MatchRepo", "m3u8 candidate rejected: $candidate")
             }
-            if (!playlist.contains("#EXTM3U")) {
-                Log.w("MatchRepo", "m3u8 not a playlist (${playlist.length}): ${playlist.take(80)}")
-                return@withContext null
-            }
-            Log.d("MatchRepo", "m3u8 OK: ${resolved.m3u8Url}")
-
-            resolved
+            Log.w("MatchRepo", "all m3u8 candidates failed: ${resolved.m3u8Candidates}")
+            null
         }
 }
