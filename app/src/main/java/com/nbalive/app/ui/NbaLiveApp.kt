@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -91,6 +92,10 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() as? MainActivity }
 
+    // ---------- 播放偏好：画面模式 / 屏幕常亮 ----------
+    val aspectMode by PlayerPrefs.aspect.collectAsStateWithLifecycle()
+    val keepScreenOn by PlayerPrefs.keepScreenOn.collectAsStateWithLifecycle()
+
     // ---------- 全屏 / 画中画 ----------
     // saveable：字体缩放/语言变化会重建 Activity（不在 configChanges 里），不能丢全屏
     var fullscreen by rememberSaveable { mutableStateOf(false) }
@@ -103,6 +108,8 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         PipState.playerActive = route == Route.PLAYER && playingNow
         onDispose { PipState.playerActive = false }
     }
+    // 观看直播期间保持屏幕常亮，避免球赛看着看着自动熄屏
+    KeepScreenOnEffect(enabled = route == Route.PLAYER && playingNow && keepScreenOn)
     // 离开播放页自动退出全屏，避免下次进来是横屏
     LaunchedEffect(route) {
         if (route != Route.PLAYER) fullscreen = false
@@ -185,6 +192,11 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     },
                     onPlaybackError = viewModel::onPlaybackFailed,
                     onStreamSniffed = viewModel::onStreamSniffed,
+                    sniffFailed = playerState.failedSniffUrl != null,
+                    aspectMode = aspectMode,
+                    keepScreenOn = keepScreenOn,
+                    onAspectChange = { PlayerPrefs.setAspect(context, it) },
+                    onKeepScreenOnChange = { PlayerPrefs.setKeepScreenOn(context, it) },
                     fullscreen = fullscreen,
                     inPip = inPip,
                     onToggleFullscreen = { fullscreen = !fullscreen },
@@ -371,6 +383,26 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+/**
+ * 观看直播期间保持屏幕常亮；退出播放/停止播放时恢复系统熄屏策略。
+ */
+@Composable
+private fun KeepScreenOnEffect(enabled: Boolean) {
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+    DisposableEffect(enabled, activity) {
+        val window = activity?.window ?: return@DisposableEffect onDispose { }
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 }
 
 /**

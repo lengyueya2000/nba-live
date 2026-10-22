@@ -125,6 +125,45 @@ class JrsParser {
         return PLAYER_HOST_MARKERS.any { host.contains(it, ignoreCase = true) }
     }
 
+    /**
+     * 详情页里的计划开赛时间（如 "07:00"）。
+     * JRS 列表页的"直播中"会因缓存严重滞后（实测结束 3 小时仍标直播中），
+     * 详情页的时间是校正真实状态的依据。
+     */
+    fun parseScheduledTime(html: String): String? =
+        Regex("""match-info-time"[^>]*>\s*(\d{1,2}:\d{2})""").find(html)?.groupValues?.get(1)
+
+    /**
+     * 用计划开赛时间校正"直播中"：开赛已过 3.5 小时（一场篮球赛的合理上限）=> 已结束。
+     * 同时回填真实开赛时间戳（列表页"直播中"的行没有 HH:mm，startAtMillis 只是 00:00 兜底）。
+     * 无法判断时返回 null（不猜测、不误杀）。
+     */
+    fun correctedStatus(match: Match, scheduledTime: String?): StatusCorrection? {
+        if (match.status != MatchStatus.LIVE || scheduledTime == null) return null
+        val day = match.startAtMillis?.let {
+            java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+        } ?: return null
+        val hm = Regex("""(\d{1,2}):(\d{2})""").find(scheduledTime) ?: return null
+        val hour = hm.groupValues[1].toIntOrNull() ?: return null
+        val minute = hm.groupValues[2].toIntOrNull() ?: return null
+        val start = runCatching {
+            day.atTime(hour, minute).atZone(java.time.ZoneId.systemDefault())
+        }.getOrNull() ?: return null
+        val startMillis = start.toInstant().toEpochMilli()
+        val status = if (java.time.ZonedDateTime.now().isAfter(start.plusHours(3).plusMinutes(30))) {
+            MatchStatus.FINISHED
+        } else {
+            MatchStatus.LIVE
+        }
+        return StatusCorrection(status, startMillis)
+    }
+
+    /** 详情页校正结果：真实状态 + 真实开赛时间 */
+    data class StatusCorrection(
+        val status: MatchStatus,
+        val startAtMillis: Long,
+    )
+
     /** "2026-10-21" + "19:35" -> epoch millis；失败返回 null。 */
     private fun parseDateTime(dateLabel: String?, timeLabel: String): Long? {
         if (dateLabel.isNullOrBlank()) return null

@@ -26,6 +26,7 @@ class MainActivity : ComponentActivity() {
         // 不保证回调 onPictureInPictureModeChanged(false)，进程还活着的话，
         // 下一次进播放页会直接渲染成"只有视频、无任何控件"的假死界面。
         PipState.inPip.value = false
+        com.nbalive.app.ui.PlayerPrefs.init(applicationContext)
         enableEdgeToEdge()
         setContent {
             NbaLiveTheme(darkTheme = true) {

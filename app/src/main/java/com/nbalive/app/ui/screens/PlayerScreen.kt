@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
@@ -51,6 +52,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -75,6 +78,7 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
+import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
@@ -106,6 +110,12 @@ fun PlayerScreen(
     onOtherMatchClick: (Match) -> Unit,
     onPlaybackError: () -> Unit = {},
     onStreamSniffed: (String, String?) -> Unit = { _, _ -> },
+    /** 嗅探升级失败退回网页：不再弹"暂无信号"提示 */
+    sniffFailed: Boolean = false,
+    aspectMode: AspectMode = AspectMode.FIT,
+    keepScreenOn: Boolean = true,
+    onAspectChange: (AspectMode) -> Unit = {},
+    onKeepScreenOnChange: (Boolean) -> Unit = {},
     fullscreen: Boolean = false,
     inPip: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
@@ -135,12 +145,14 @@ fun PlayerScreen(
                     VideoSurface(
                         streamUrl = streamUrl,
                         referer = streamReferer,
+                        aspectMode = aspectMode,
                         onError = onPlaybackError,
                     )
                 }
                 webFallbackUrl != null -> WebSurface(
                     url = webFallbackUrl,
                     onStreamFound = onStreamSniffed,
+                    suppressHint = sniffFailed,
                 )
                 else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -402,6 +414,81 @@ fun PlayerScreen(
             }
         }
 
+        // ---------- 画面设置 ----------
+        if (streamUrl != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Space.lg)
+                    .padding(top = Space.md)
+                    .clip(RoundedCornerShape(Radius.card))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(Space.md),
+            ) {
+                Text(
+                    text = "画面",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = SportDark.Txt3,
+                )
+                Spacer(Modifier.height(Space.sm))
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+                    AspectMode.entries.forEach { mode ->
+                        val active = mode == aspectMode
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 40.dp)
+                                .clip(RoundedCornerShape(Radius.btn))
+                                .background(
+                                    if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                    else MaterialTheme.colorScheme.background,
+                                )
+                                .border(
+                                    1.dp,
+                                    if (active) MaterialTheme.colorScheme.primary else SportDark.Line,
+                                    RoundedCornerShape(Radius.btn),
+                                )
+                                .clickable { onAspectChange(mode) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = mode.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (active) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(Space.sm))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = "屏幕常亮",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = if (keepScreenOn) "观赛期间不自动熄屏" else "跟随系统熄屏设置",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = SportDark.Txt3,
+                        )
+                    }
+                    Switch(
+                        checked = keepScreenOn,
+                        onCheckedChange = onKeepScreenOnChange,
+                        colors = SwitchDefaults.colors(
+                            checkedTrackColor = MaterialTheme.colorScheme.primary,
+                        ),
+                    )
+                }
+            }
+        }
+
         // ---------- 其他直播 ----------
         val others = otherMatches.filter { it.id != match?.id }.take(4)
         if (others.isNotEmpty()) {
@@ -527,6 +614,7 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
 private fun VideoSurface(
     streamUrl: String,
     referer: String?,
+    aspectMode: AspectMode,
     onError: () -> Unit,
 ) {
     val reportedRef = remember { mutableSetOf<String>() }
@@ -601,11 +689,13 @@ private fun VideoSurface(
                 useController = true
                 controllerShowTimeoutMs = 3000
                 setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                resizeMode = aspectMode.resizeMode
                 this.player = player
                 playerView = this
             }
         },
         update = { view ->
+            view.resizeMode = aspectMode.resizeMode
             val player = view.player
             if (player != null) {
                 val current = player.currentMediaItem?.localConfiguration?.uri?.toString()
@@ -630,10 +720,22 @@ private fun VideoSurface(
 private fun WebSurface(
     url: String,
     onStreamFound: (String, String?) -> Unit,
+    suppressHint: Boolean = false,
 ) {
     val onStreamFoundState = rememberUpdatedState(onStreamFound)
     val lifecycleOwner = LocalLifecycleOwner.current
     var webView by remember { mutableStateOf<WebView?>(null) }
+
+    // 比赛已结束时源站页面是一片黑且永远不会出流：
+    // 25 秒内没嗅探到任何 m3u8 就给用户明确提示，而不是干等黑屏。
+    // 嗅探成功后本组件会被 VideoSurface 替换、协程自动取消，无需手动复位。
+    // suppressHint：嗅探过但直连失败退回网页播放时，网页本身就是最终播放器，不再打扰。
+    var noSignal by remember(url) { mutableStateOf(false) }
+    LaunchedEffect(url, suppressHint) {
+        if (suppressHint) return@LaunchedEffect
+        delay(25_000)
+        noSignal = true
+    }
 
     // 与 ExoPlayer 同理：退到后台（非小窗）时暂停页面定时器，省电并防止声音后台外放
     DisposableEffect(lifecycleOwner) {
@@ -648,94 +750,128 @@ private fun WebSurface(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    AndroidView(
-        factory = { ctx ->
-            WebView(ctx).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-                setBackgroundColor(AndroidColor.BLACK)
-                settings.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    mediaPlaybackRequiresUserGesture = false
-                    // 播放页是 http，其视频切片常是 https 反向代理后的 http；
-                    // 收紧成 COMPATIBILITY 会黑屏，这是实测后的有意取舍
-                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                    userAgentString = HttpClient.USER_AGENT
-                }
-                // 拦截非 http(s) 跳转：源站广告经常用 intent:// / market:// 拉起商店和外链 App
-                webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(
-                        view: WebView?,
-                        request: WebResourceRequest?,
-                    ): Boolean {
-                        val scheme = request?.url?.scheme ?: return false
-                        return scheme != "http" && scheme != "https"
+    Box(Modifier.fillMaxSize()) {
+        AndroidView(
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                    setBackgroundColor(AndroidColor.BLACK)
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        mediaPlaybackRequiresUserGesture = false
+                        // 播放页是 http，其视频切片常是 https 反向代理后的 http；
+                        // 收紧成 COMPATIBILITY 会黑屏，这是实测后的有意取舍
+                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        userAgentString = HttpClient.USER_AGENT
                     }
-
-                    // 嗅探源站 JS 解密后真正请求的 m3u8：拿到就上报，交给 ExoPlayer 直连
-                    override fun shouldInterceptRequest(
-                        view: WebView?,
-                        request: WebResourceRequest?,
-                    ): android.webkit.WebResourceResponse? {
-                        val u = request?.url?.toString().orEmpty()
-                        if (u.contains(".m3u8") && !u.contains(".js")) {
-                            val ref = request?.requestHeaders?.entries
-                                ?.firstOrNull { it.key.equals("Referer", true) }?.value
-                            onStreamFoundState.value(u, ref)
+                    // 拦截非 http(s) 跳转：源站广告经常用 intent:// / market:// 拉起商店和外链 App
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                        ): Boolean {
+                            val scheme = request?.url?.scheme ?: return false
+                            return scheme != "http" && scheme != "https"
                         }
-                        return super.shouldInterceptRequest(view, request)
-                    }
-                }
-                webChromeClient = object : WebChromeClient() {
-                    // 源站常弹“备用网址”alert，直接吞掉，避免挡住播放器
-                    override fun onJsAlert(
-                        view: WebView?,
-                        url: String?,
-                        message: String?,
-                        result: android.webkit.JsResult?,
-                    ): Boolean {
-                        result?.confirm()
-                        return true
-                    }
 
-                    // confirm 多为广告/引流弹窗，替用户点"取消"而不是默认同意
-                    override fun onJsConfirm(
-                        view: WebView?,
-                        url: String?,
-                        message: String?,
-                        result: android.webkit.JsResult?,
-                    ): Boolean {
-                        result?.cancel()
-                        return true
+                        // 嗅探源站 JS 解密后真正请求的 m3u8：拿到就上报，交给 ExoPlayer 直连
+                        override fun shouldInterceptRequest(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                        ): android.webkit.WebResourceResponse? {
+                            val u = request?.url?.toString().orEmpty()
+                            if (u.contains(".m3u8") && !u.contains(".js")) {
+                                val ref = request?.requestHeaders?.entries
+                                    ?.firstOrNull { it.key.equals("Referer", true) }?.value
+                                onStreamFoundState.value(u, ref)
+                            }
+                            return super.shouldInterceptRequest(view, request)
+                        }
                     }
+                    webChromeClient = object : WebChromeClient() {
+                        // 源站常弹“备用网址”alert，直接吞掉，避免挡住播放器
+                        override fun onJsAlert(
+                            view: WebView?,
+                            url: String?,
+                            message: String?,
+                            result: android.webkit.JsResult?,
+                        ): Boolean {
+                            result?.confirm()
+                            return true
+                        }
+
+                        // confirm 多为广告/引流弹窗，替用户点"取消"而不是默认同意
+                        override fun onJsConfirm(
+                            view: WebView?,
+                            url: String?,
+                            message: String?,
+                            result: android.webkit.JsResult?,
+                        ): Boolean {
+                            result?.cancel()
+                            return true
+                        }
+                    }
+                    loadUrl(url)
+                    tag = url
+                    webView = this
                 }
-                loadUrl(url)
-                tag = url
-                webView = this
+            },
+            update = { view ->
+                // 注意不能比较 view.url：页面会自行跳转（sm.html -> 内层播放页），
+                // 那样每次重组都会重新 loadUrl，把正在播的流打断。用 tag 记住请求的 url。
+                if (view.tag != url) {
+                    view.tag = url
+                    view.loadUrl(url)
+                }
+            },
+            onRelease = { view ->
+                // WebView 不 destroy 会一直持有 Activity 上下文和渲染进程内存；
+                // 反复进出网页线路会累积到 OOM
+                (view.parent as? ViewGroup)?.removeView(view)
+                view.stopLoading()
+                view.loadUrl("about:blank")
+                view.webChromeClient = null
+                view.webViewClient = WebViewClient()
+                view.clearHistory()
+                view.destroy()
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        if (noSignal) {
+            // 半透明提示压在黑屏上：告诉用户大概率是比赛已结束，可换线路；点击可关闭
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable { noSignal = false },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = SportDark.Warn,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Spacer(Modifier.height(Space.sm))
+                    Text(
+                        text = "该线路暂无信号",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                    )
+                    Spacer(Modifier.height(Space.xs))
+                    Text(
+                        text = "比赛可能已结束，可切换其他线路",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.75f),
+                    )
+                }
             }
-        },
-        update = { view ->
-            // 注意不能比较 view.url：页面会自行跳转（sm.html -> 内层播放页），
-            // 那样每次重组都会重新 loadUrl，把正在播的流打断。用 tag 记住请求的 url。
-            if (view.tag != url) {
-                view.tag = url
-                view.loadUrl(url)
-            }
-        },
-        onRelease = { view ->
-            // WebView 不 destroy 会一直持有 Activity 上下文和渲染进程内存；
-            // 反复进出网页线路会累积到 OOM
-            (view.parent as? ViewGroup)?.removeView(view)
-            view.stopLoading()
-            view.loadUrl("about:blank")
-            view.webChromeClient = null
-            view.webViewClient = WebViewClient()
-            view.clearHistory()
-            view.destroy()
-        },
-        modifier = Modifier.fillMaxSize(),
-    )
+        }
+    }
 }

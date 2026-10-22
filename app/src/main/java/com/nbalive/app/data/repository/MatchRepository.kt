@@ -124,7 +124,7 @@ class MatchRepository(
     }
 
     /**
-     * 拉取某场赛事的全部信号。
+     * 拉取某场赛事的全部信号，并用详情页时间校正"直播中"（源站列表缓存会滞后）。
      *
      * 按"信号来自哪个源站"分派，而不是靠 Match.id 前缀猜——
      * 合并后的赛事可能同时携带两个源的信号。
@@ -132,11 +132,18 @@ class MatchRepository(
      * JRKAN：列表页只给一个播放页，真正的多条线路在播放页内部，需要展开。
      * JRS：信号在详情页的 a.toLive 里。
      */
-    suspend fun loadSignals(match: Match): List<StreamSource> = withContext(Dispatchers.IO) {
+    suspend fun loadSignals(match: Match): Detail = withContext(Dispatchers.IO) {
+        var correction: JrsParser.StatusCorrection? = null
+
         val jrsSignals = match.jrsDetailId?.let { id ->
             val detailUrl = "https://jrszbt.com/live/$id.html"
             val html = http.get(detailUrl, JRS_LIST_URL)
-            if (html != null) jrsParser.parseDetail(html, match) else emptyList()
+            if (html != null) {
+                correction = jrsParser.correctedStatus(match, jrsParser.parseScheduledTime(html))
+                jrsParser.parseDetail(html, match)
+            } else {
+                emptyList()
+            }
         } ?: emptyList()
 
         val jrkanSources = match.sources.filter { it.provider == Provider.JRKAN }
@@ -147,8 +154,14 @@ class MatchRepository(
         // 展开失败时退回列表页给的播放页，至少还能用 WebView 打开
         val jrkanFinal = jrkanSignals.ifEmpty { jrkanSources }
 
-        (jrsSignals + jrkanFinal).distinctBy { it.pageUrl }
+        Detail((jrsSignals + jrkanFinal).distinctBy { it.pageUrl }, correction)
     }
+
+    /** loadSignals 的结果：信号列表 + 可选校正（源站列表"直播中"滞后时用） */
+    data class Detail(
+        val signals: List<StreamSource>,
+        val correction: JrsParser.StatusCorrection? = null,
+    )
 
     /**
      * 把播放页解析为可直连的 m3u8，并**实际拉一次清单做校验**。

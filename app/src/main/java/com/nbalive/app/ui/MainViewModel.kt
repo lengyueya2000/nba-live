@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nbalive.app.data.model.League
@@ -131,8 +132,17 @@ class MainViewModel(
         _detailState.value = MatchDetailUiState(match = match, loadingSignals = true)
         detailJob?.cancel()
         detailJob = viewModelScope.launch {
-            val signals = repository.loadSignals(match)
-            _detailState.update { it.copy(signals = signals, loadingSignals = false) }
+            val detail = repository.loadSignals(match)
+            // 源站列表的"直播中"可能滞后（实测结束 3 小时仍标直播中）：
+            // 用详情页的计划开赛时间校正状态并回填真实开赛时间，同步回列表
+            val c = detail.correction
+            if (c != null && (c.status != match.status || c.startAtMillis != match.startAtMillis)) {
+                fun fix(m: Match): Match =
+                    if (m.id == match.id) m.copy(status = c.status, startAtMillis = c.startAtMillis) else m
+                _detailState.update { it.copy(match = fix(it.match ?: match)) }
+                _listState.update { st -> st.copy(matches = st.matches.map(::fix)) }
+            }
+            _detailState.update { it.copy(signals = detail.signals, loadingSignals = false) }
         }
     }
 
@@ -212,9 +222,10 @@ class MainViewModel(
                 }
             }
 
-            // 所有可直连线路都失败 -> WebView 兜底
-            // WebView 内源站 JS 会自行解密；WebSurface 同时嗅探它请求的 m3u8，
-            // 拿到后通过 onStreamSniffed 升级回 ExoPlayer（见下）
+            // 走 WebView 承载。注意区分两种情况：
+            //  - 本来就没有直连候选（JRS / 加密线路）：这是该线路的正常播放方式，不打扰用户
+            //  - 有直连候选但全部解析失败：才提示"直连不可用"
+            val hadDirectCandidates = ordered.isNotEmpty()
             val fallback = state.signals[start]
             _playerState.update {
                 it.copy(
@@ -223,7 +234,11 @@ class MainViewModel(
                     streamReferer = null,
                     webFallbackUrl = fallback.pageUrl,
                     sniffedStream = false,
-                    errorMessage = "所有直连线路均不可用，已切换为内嵌播放",
+                    errorMessage = if (hadDirectCandidates) {
+                        "所有直连线路均不可用，已切换为内嵌播放"
+                    } else {
+                        null
+                    },
                 )
             }
         }
