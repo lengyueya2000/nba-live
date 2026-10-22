@@ -134,7 +134,9 @@ class JrsParser {
         Regex("""match-info-time"[^>]*>\s*(\d{1,2}:\d{2})""").find(html)?.groupValues?.get(1)
 
     /**
-     * 用计划开赛时间校正"直播中"：开赛已过 3.5 小时（一场篮球赛的合理上限）=> 已结束。
+     * 用计划开赛时间校正"直播中"：
+     * - 开赛已过 3.5 小时（一场篮球赛的合理上限）=> 已结束
+     * - 距开赛还有 15 分钟以上 => 源站提前误标，实际未开赛
      * 同时回填真实开赛时间戳（列表页"直播中"的行没有 HH:mm，startAtMillis 只是 00:00 兜底）。
      * 无法判断时返回 null（不猜测、不误杀）。
      */
@@ -150,10 +152,11 @@ class JrsParser {
             day.atTime(hour, minute).atZone(java.time.ZoneId.systemDefault())
         }.getOrNull() ?: return null
         val startMillis = start.toInstant().toEpochMilli()
-        val status = if (java.time.ZonedDateTime.now().isAfter(start.plusHours(3).plusMinutes(30))) {
-            MatchStatus.FINISHED
-        } else {
-            MatchStatus.LIVE
+        val now = java.time.ZonedDateTime.now()
+        val status = when {
+            now.isAfter(start.plusHours(3).plusMinutes(30)) -> MatchStatus.FINISHED
+            now.isBefore(start.minusMinutes(15)) -> MatchStatus.UPCOMING
+            else -> MatchStatus.LIVE
         }
         return StatusCorrection(status, startMillis)
     }

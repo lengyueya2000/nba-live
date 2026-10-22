@@ -13,6 +13,8 @@ import com.nbalive.app.data.remote.StreamUrlResolver
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -52,10 +54,61 @@ class MatchRepository(
                     // 两边都空：大概率是网络/源站故障，而不是"今天真没比赛"
                     throw IOException("两个数据源都没有返回赛事，请检查网络")
                 }
-                merge(jrs, jrkan)
+                // 先校正再排序：源站列表的"直播中"会滞后，不修就全堆在最前面
+                sort(correctLiveStatuses(merge(jrs, jrkan)))
             }
         }
     }
+
+    /**
+     * 列表级状态校正：源站列表对已结束的场次仍标"直播中"（实测滞后 3 小时+）。
+     *
+     * - JRS 场次：列表行没有真实开赛时间（"直播中"顶掉了时间），
+     *   并发拉一次详情页（约 5KB/次）用计划开赛时间校正并回填。
+     * - 纯 JRKAN 场次：列表自带 "MM-dd HH:mm"，startAtMillis 可信，直接本地判超时。
+     */
+    private suspend fun correctLiveStatuses(matches: List<Match>): List<Match> = coroutineScope {
+        val live = matches.filter { it.status == MatchStatus.LIVE }
+        if (live.isEmpty()) return@coroutineScope matches
+
+        // JRS：详情页校正
+        val fixes = live.filter { it.jrsDetailId != null }.map { m ->
+            async {
+                val html = http.get("https://jrszbt.com/live/${m.jrsDetailId}.html", JRS_LIST_URL)
+                val c = html?.let { jrsParser.correctedStatus(m, jrsParser.parseScheduledTime(it)) }
+                m.id to c
+            }
+        }.awaitAll().toMap()
+
+        matches.map { m ->
+            if (m.status != MatchStatus.LIVE) return@map m
+            val c = fixes[m.id]
+            when {
+                c != null ->
+                    m.copy(status = c.status, startAtMillis = c.startAtMillis)
+                // 无 JRS 详情页可查且时间可信（JRKAN 的 "MM-dd HH:mm"）：本地超时判定
+                m.jrsDetailId == null && m.id.startsWith("jrkan-") && isOver(m.startAtMillis) ->
+                    m.copy(status = MatchStatus.FINISHED)
+                else -> m
+            }
+        }
+    }
+
+    /** 开赛已过 3.5 小时（一场篮球赛的合理上限） */
+    private fun isOver(startAtMillis: Long?): Boolean {
+        startAtMillis ?: return false
+        val start = java.time.Instant.ofEpochMilli(startAtMillis)
+            .atZone(java.time.ZoneId.systemDefault())
+        return java.time.ZonedDateTime.now().isAfter(start.plusHours(3).plusMinutes(30))
+    }
+
+    /** 直播中优先，其余按开赛时间。 */
+    private fun sort(matches: List<Match>): List<Match> =
+        matches.sortedWith(
+            compareBy<Match> { if (it.status == MatchStatus.LIVE) 0 else 1 }
+                .thenBy { it.startAtMillis ?: Long.MAX_VALUE }
+                .thenBy { it.leagueRawName }
+        )
 
     private suspend fun fetchJrs(): Result<List<Match>> = runCatching {
         val html = http.get(JRS_LIST_URL) ?: return@runCatching emptyList()
@@ -107,12 +160,7 @@ class MatchRepository(
             // 产品只做 NBA + CBA：源站混入的足球/外联赛在这里统一丢弃
             .filter { it.league in League.supported }
             .distinctBy { it.id }
-            .sortedWith(
-                // 直播中排最前；其余按开赛时间，解析不出时间的排最后
-                compareBy<Match> { if (it.status == MatchStatus.LIVE) 0 else 1 }
-                    .thenBy { it.startAtMillis ?: Long.MAX_VALUE }
-                    .thenBy { it.leagueRawName }
-            )
+            .toList()
     }
 
     /** 归一化队名用于跨源匹配（去掉空白差异），并带上开赛日期防止同队重复场次被合并。 */

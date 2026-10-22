@@ -61,6 +61,15 @@ class JrsStatusCorrectionTest {
     }
 
     @Test
+    fun `game scheduled in the future is corrected to upcoming`() {
+        // 源站会提前把未开赛的场次标成"直播中"（实测 CBA 19:35 场下午就被标）
+        val inTwoHours = java.time.ZonedDateTime.now().plusHours(2)
+        val m = liveMatch(inTwoHours.toInstant().toEpochMilli())
+        val time = "%02d:%02d".format(inTwoHours.hour, inTwoHours.minute)
+        assertEquals(MatchStatus.UPCOMING, parser.correctedStatus(m, time)?.status)
+    }
+
+    @Test
     fun `no correction when match is not live`() {
         val started = java.time.ZonedDateTime.now().minusHours(20)
         val m = liveMatch(started.toInstant().toEpochMilli()).copy(status = MatchStatus.UPCOMING)
