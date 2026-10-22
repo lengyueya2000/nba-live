@@ -147,6 +147,27 @@ class MainViewModel(
         }
     }
 
+    /**
+     * 详情页「更多 -> 刷新线路」：重新拉一次该场次的信号列表。
+     * 源站偶尔会补线路，重进页面不一定能刷新到，给个显式入口。
+     */
+    fun refreshSignals() {
+        val match = _detailState.value.match ?: return
+        detailJob?.cancel()
+        _detailState.update { it.copy(loadingSignals = true) }
+        detailJob = viewModelScope.launch {
+            val detail = repository.loadSignals(match)
+            val c = detail.correction
+            if (c != null && (c.status != match.status || c.startAtMillis != match.startAtMillis)) {
+                fun fix(m: Match): Match =
+                    if (m.id == match.id) m.copy(status = c.status, startAtMillis = c.startAtMillis) else m
+                _detailState.update { it.copy(match = fix(it.match ?: match)) }
+                _listState.update { st -> st.copy(matches = st.matches.map(::fix)) }
+            }
+            _detailState.update { it.copy(signals = detail.signals, loadingSignals = false) }
+        }
+    }
+
     // ---------- 播放 ----------
 
     fun openPlayer(index: Int) {

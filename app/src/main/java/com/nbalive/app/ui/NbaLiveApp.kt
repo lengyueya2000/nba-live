@@ -25,20 +25,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SportsBasketball
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -64,9 +69,12 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.MainActivity
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.ui.screens.LiveNowScreen
 import com.nbalive.app.ui.screens.MatchDetailScreen
 import com.nbalive.app.ui.screens.MatchListScreen
 import com.nbalive.app.ui.screens.PlayerScreen
+import com.nbalive.app.ui.screens.ProfileScreen
+import com.nbalive.app.ui.screens.SearchScreen
 import com.nbalive.app.ui.theme.GradLive
 import com.nbalive.app.ui.theme.GradRed
 import com.nbalive.app.ui.theme.Radius
@@ -89,13 +97,25 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
 
     var tab by remember { mutableStateOf(Tab.MATCHES) }
+    // 搜索页：全屏覆盖层，不占用路由，返回键先关它
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
 
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() as? MainActivity }
+    val versionName = remember(context) {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "1.2.0"
+    }
 
     // ---------- 播放偏好：画面模式 / 屏幕常亮 ----------
     val aspectMode by PlayerPrefs.aspect.collectAsStateWithLifecycle()
     val keepScreenOn by PlayerPrefs.keepScreenOn.collectAsStateWithLifecycle()
+
+    // ---------- 深色模式 ----------
+    // 与 MainActivity 保持一致：设计是深色优先，没手动设置过就按深色算
+    val darkPref by AppPrefs.darkMode.collectAsStateWithLifecycle()
+    val darkMode = darkPref ?: true
 
     // ---------- 全屏 / 画中画 ----------
     // saveable：字体缩放/语言变化会重建 Activity（不在 configChanges 里），不能丢全屏
@@ -118,9 +138,13 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     // 全屏时横屏 + 隐藏系统栏
     FullscreenSystemEffect(enabled = fullscreen && !inPip)
 
-    // 系统返回键：全屏时先退全屏
-    BackHandler(enabled = route != Route.LIST || fullscreen) {
-        if (fullscreen) fullscreen = false else viewModel.back()
+    // 系统返回键：搜索页 > 全屏 > 路由
+    BackHandler(enabled = searchOpen || route != Route.LIST || fullscreen) {
+        when {
+            searchOpen -> searchOpen = false
+            fullscreen -> fullscreen = false
+            else -> viewModel.back()
+        }
     }
 
     // 播放降级提示：只在播放页呈现，避免用户已经返回列表还弹出"直连线路不可用"
@@ -132,14 +156,24 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             if (!videoOnly) {
                 when (route) {
-                    Route.LIST -> BrandTopBar()
-                    Route.DETAIL -> SubPageTopBar(title = "赛事详情", onBack = viewModel::back)
+                    Route.LIST -> BrandTopBar(
+                        darkMode = darkMode,
+                        onSearch = { searchOpen = true },
+                        onToggleTheme = { AppPrefs.setDarkMode(context, !darkMode) },
+                        onRefresh = viewModel::refresh,
+                    )
+                    Route.DETAIL -> SubPageTopBar(
+                        title = "赛事详情",
+                        onBack = viewModel::back,
+                        moreItems = listOf("刷新线路" to viewModel::refreshSignals),
+                    )
                     Route.PLAYER -> SubPageTopBar(
                         title = playerState.match?.let { "${it.homeTeam} VS ${it.awayTeam}" } ?: "播放",
                         onBack = viewModel::back,
@@ -149,7 +183,14 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         },
         bottomBar = {
             if (route != Route.PLAYER && !videoOnly) {
-                SportBottomBar(selected = tab, onSelect = { tab = it })
+                SportBottomBar(
+                    selected = tab,
+                    onSelect = {
+                        tab = it
+                        // 在详情页点底部标签 -> 先回列表，否则标签切了却没反应
+                        if (route != Route.LIST) viewModel.back()
+                    },
+                )
             }
         },
     ) { padding ->
@@ -159,20 +200,43 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                 .then(if (videoOnly) Modifier else Modifier.padding(padding)),
         ) {
             when (route) {
-                Route.LIST -> MatchListScreen(
-                    matches = listState.visibleMatches,
-                    loading = listState.loading,
-                    error = listState.error,
-                    selectedLeague = listState.selectedLeague,
-                    counts = listState.counts,
-                    onLeagueSelected = viewModel::selectLeague,
-                    // 点比赛直接全屏自动播放，不再先跳详情页选线路
-                    onMatchClick = { m ->
-                        fullscreen = true
-                        viewModel.playMatch(m)
-                    },
-                    onRetry = viewModel::refresh,
-                )
+                Route.LIST -> when (tab) {
+                    Tab.MATCHES -> MatchListScreen(
+                        matches = listState.visibleMatches,
+                        loading = listState.loading,
+                        error = listState.error,
+                        selectedLeague = listState.selectedLeague,
+                        counts = listState.counts,
+                        onLeagueSelected = viewModel::selectLeague,
+                        // 点比赛直接全屏自动播放，不再先跳详情页选线路
+                        onMatchClick = { m ->
+                            fullscreen = true
+                            viewModel.playMatch(m)
+                        },
+                        onRetry = viewModel::refresh,
+                    )
+
+                    // 直播页：只列正在直播的，点一下直接看
+                    Tab.LIVE -> LiveNowScreen(
+                        matches = listState.matches,
+                        loading = listState.loading,
+                        onMatchClick = { m ->
+                            fullscreen = true
+                            viewModel.playMatch(m)
+                        },
+                    )
+
+                    // 我的：真实生效的播放/外观设置
+                    Tab.PROFILE -> ProfileScreen(
+                        aspectMode = aspectMode,
+                        keepScreenOn = keepScreenOn,
+                        darkMode = darkMode,
+                        versionName = versionName,
+                        onAspectChange = { PlayerPrefs.setAspect(context, it) },
+                        onKeepScreenOnChange = { PlayerPrefs.setKeepScreenOn(context, it) },
+                        onDarkModeChange = { AppPrefs.setDarkMode(context, it) },
+                    )
+                }
 
                 Route.DETAIL -> MatchDetailScreen(
                     match = detailState.match ?: return@Box,
@@ -213,11 +277,35 @@ fun NbaLiveApp(viewModel: MainViewModel) {
             }
         }
     }
+
+    // ---------- 搜索页覆盖层 ----------
+    if (searchOpen) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            SearchScreen(
+                matches = listState.matches,
+                onClose = { searchOpen = false },
+                onMatchClick = { m ->
+                    searchOpen = false
+                    fullscreen = true
+                    viewModel.playMatch(m)
+                },
+            )
+        }
+    }
+    } // end Box
 }
 
 /** 品牌顶栏：渐变标记 + 标题 + 副标题 + 右侧操作 */
 @Composable
-private fun BrandTopBar() {
+private fun BrandTopBar(
+    darkMode: Boolean,
+    onSearch: () -> Unit,
+    onToggleTheme: () -> Unit,
+    onRefresh: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -258,19 +346,26 @@ private fun BrandTopBar() {
             )
         }
         Spacer(Modifier.weight(1f))
-        TopIconButton(icon = Icons.Filled.Search, label = "搜索")
+        TopIconButton(icon = Icons.Filled.Refresh, label = "刷新", onClick = onRefresh)
         Spacer(Modifier.width(Space.sm))
-        TopIconButton(icon = Icons.Filled.DarkMode, label = "深色模式")
+        TopIconButton(icon = Icons.Filled.Search, label = "搜索", onClick = onSearch)
+        Spacer(Modifier.width(Space.sm))
+        TopIconButton(
+            icon = if (darkMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+            label = if (darkMode) "浅色模式" else "深色模式",
+            onClick = onToggleTheme,
+        )
     }
 }
 
 @Composable
-private fun TopIconButton(icon: ImageVector, label: String) {
+private fun TopIconButton(icon: ImageVector, label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(40.dp)
             .clip(RoundedCornerShape(Radius.btn))
-            .background(MaterialTheme.colorScheme.surface),
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -282,9 +377,19 @@ private fun TopIconButton(icon: ImageVector, label: String) {
     }
 }
 
-/** 二级页顶栏 */
+/**
+ * 二级页顶栏。
+ *
+ * [moreItems] 为空时不渲染"更多"按钮（用等宽占位保持标题居中），
+ * 避免出现点了没反应的死按钮。
+ */
 @Composable
-private fun SubPageTopBar(title: String, onBack: () -> Unit) {
+private fun SubPageTopBar(
+    title: String,
+    onBack: () -> Unit,
+    moreItems: List<Pair<String, () -> Unit>> = emptyList(),
+) {
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -318,19 +423,41 @@ private fun SubPageTopBar(title: String, onBack: () -> Unit) {
             modifier = Modifier.padding(horizontal = Space.md),
         )
         Spacer(Modifier.weight(1f))
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(Radius.btn))
-                .background(MaterialTheme.colorScheme.surface),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Filled.MoreHoriz,
-                contentDescription = "更多",
-                modifier = Modifier.size(19.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        if (moreItems.isEmpty()) {
+            // 等宽占位：没有更多操作时标题仍然居中
+            Spacer(Modifier.size(40.dp))
+        } else {
+            Box {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(Radius.btn))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .clickable { menuOpen = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.MoreHoriz,
+                        contentDescription = "更多",
+                        modifier = Modifier.size(19.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                ) {
+                    moreItems.forEach { (label, action) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                menuOpen = false
+                                action()
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }

@@ -11,8 +11,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nbalive.app.ui.AppPrefs
 import com.nbalive.app.ui.MainViewModel
 import com.nbalive.app.ui.NbaLiveApp
 import com.nbalive.app.ui.PipState
@@ -27,9 +30,14 @@ class MainActivity : ComponentActivity() {
         // 下一次进播放页会直接渲染成"只有视频、无任何控件"的假死界面。
         PipState.inPip.value = false
         com.nbalive.app.ui.PlayerPrefs.init(applicationContext)
+        AppPrefs.init(applicationContext)
         enableEdgeToEdge()
         setContent {
-            NbaLiveTheme(darkTheme = true) {
+            // 深色模式：本应用设计是深色优先，没手动设置过就保持深色；
+            // 用户在「我的」或顶栏切换后按选择走
+            val darkPref by AppPrefs.darkMode.collectAsStateWithLifecycle()
+            val darkTheme = darkPref ?: true
+            NbaLiveTheme(darkTheme = darkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val vm: MainViewModel = viewModel()
                     NbaLiveApp(viewModel = vm)

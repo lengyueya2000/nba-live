@@ -273,8 +273,11 @@ private fun SignalRow(
     highlight: Boolean,
     onClick: () -> Unit,
 ) {
-    val borderColor = if (highlight) SportDark.Red.copy(alpha = 0.55f) else SportDark.Line
-    val bg = if (highlight) SportDark.Card2 else MaterialTheme.colorScheme.surface
+    // 选中行用主题色浅底，而不是写死的深色卡：浅色主题下写死深色会变成一块黑砖
+    val borderColor = if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+    else MaterialTheme.colorScheme.outlineVariant
+    val bg = if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+    else MaterialTheme.colorScheme.surface
 
     Row(
         modifier = Modifier

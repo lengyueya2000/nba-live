@@ -151,7 +151,7 @@ private fun LeagueSelector(
                 color = if (active) Color.Transparent else MaterialTheme.colorScheme.surface,
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
-                    if (active) Color.Transparent else SportDark.Line,
+                    if (active) Color.Transparent else MaterialTheme.colorScheme.outlineVariant,
                 ),
             ) {
                 Box(
