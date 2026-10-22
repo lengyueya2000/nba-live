@@ -1,6 +1,7 @@
 package com.nbalive.app.data.remote
 
 import com.nbalive.app.data.model.League
+import com.nbalive.app.data.model.MatchStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -105,6 +106,47 @@ class JrkanParserTest {
         assertEquals(1, channels.size)
         assertTrue(channels[0].pageUrl.contains("/play/sm.html"))
     }
+
+    // ---- 回归：lab_vs active / spin_ant 是静态模板类，不携带状态 ----
+    // 实测源站 75/75 场次恒带这两个类（含未开赛 3 天后的、昨天已结束的）。
+    // 拿它判"进行中"会让列表每一行都亮红"直播中"。
+
+    @Test
+    fun `static active class does not mark a future match as live`() {
+        val tomorrow = java.time.LocalDate.now().plusDays(1)
+        val label = "%02d-%02d 19:35".format(tomorrow.monthValue, tomorrow.dayOfMonth)
+        val m = parser.parseList(statusBlock(label)).first()
+        assertEquals(MatchStatus.UPCOMING, m.status)
+    }
+
+    @Test
+    fun `static active class does not mark an old match as live`() {
+        // 5 小时前开赛：超过篮球赛 3.5 小时上限 -> 已结束
+        val past = java.time.ZonedDateTime.now(java.time.ZoneId.systemDefault()).minusHours(5)
+        val label = "%02d-%02d %02d:%02d".format(past.monthValue, past.dayOfMonth, past.hour, past.minute)
+        val m = parser.parseList(statusBlock(label)).first()
+        assertEquals(MatchStatus.FINISHED, m.status)
+    }
+
+    @Test
+    fun `match that tipped off within three and a half hours is live`() {
+        // 特征测试：去掉静态类判据后，进行中的场次仍必须判成直播中
+        val started = java.time.ZonedDateTime.now(java.time.ZoneId.systemDefault()).minusHours(1)
+        val label = "%02d-%02d %02d:%02d".format(started.monthValue, started.dayOfMonth, started.hour, started.minute)
+        val m = parser.parseList(statusBlock(label)).first()
+        assertEquals(MatchStatus.LIVE, m.status)
+    }
+
+    /** 单场结构，带源站恒在的 lab_vs active / spin_ant 静态类。 */
+    private fun statusBlock(timeLabel: String): String = """
+        document.write('<ul class="item play d-touch active hot" data-lid="1,2,3" data-stype="zqlq">');
+        document.write('  <li class="lab_events"><span class="name">NBA</span></li>');
+        document.write('  <li class="lab_time">$timeLabel</li>');
+        document.write('  <li class="lab_team_home"><strong class="name">A</strong></li>');
+        document.write('  <li class="lab_vs active"><div class="sub_status"><em class="spin_ant"></em></div></li>');
+        document.write('  <li class="lab_team_away"><strong class="name">B</strong></li>');
+        document.write('</ul>');
+    """.trimIndent()
 
     // ---- 回归：时间串没有年份，跨年时必须落在 ±6 个月窗口内 ----
 

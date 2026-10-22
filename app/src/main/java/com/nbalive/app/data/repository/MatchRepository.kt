@@ -85,9 +85,10 @@ class MatchRepository(
      *
      * - JRS 场次：列表行没有真实开赛时间（"直播中"顶掉了时间），
      *   并发拉一次详情页（约 5KB/次）用计划开赛时间校正并回填。
-     * - 纯 JRKAN 场次：列表自带 "MM-dd HH:mm"，startAtMillis 可信，直接本地判超时。
+     * - 无详情页可查的场次（JRKAN 等）：列表自带 "MM-dd HH:mm"，startAtMillis 可信，
+     *   本地时钟双向校正——超时判已结束，未到点判未开赛（源站会提前把未开赛标成"直播中"）。
      */
-    private suspend fun correctLiveStatuses(matches: List<Match>): List<Match> = coroutineScope {
+    internal suspend fun correctLiveStatuses(matches: List<Match>): List<Match> = coroutineScope {
         val live = matches.filter { it.status == MatchStatus.LIVE }
         if (live.isEmpty()) return@coroutineScope matches
 
@@ -112,27 +113,41 @@ class MatchRepository(
             when {
                 c != null ->
                     m.copy(status = c.status, startAtMillis = c.startAtMillis)
-                // 无 JRS 详情页可查且时间可信（JRKAN 的 "MM-dd HH:mm"）：本地超时判定
-                m.jrsDetailId == null && m.id.startsWith("jrkan-") && isOver(m.startAtMillis) ->
-                    m.copy(status = MatchStatus.FINISHED)
+                // 没有详情页可查且计划开赛时间可信（JRKAN 的 "MM-dd HH:mm"）：
+                // 本地时钟双向校正 —— 源站会把未开赛的场次提前标成"直播中"
+                // （只判"超时->已结束"会让未来场次一直亮红到开赛后 3.5 小时）
+                m.jrsDetailId == null && m.startAtMillis != null -> m.copy(
+                    status = statusByClock(m.startAtMillis),
+                    startAtMillis = m.startAtMillis,
+                )
                 else -> m
             }
         }
     }
 
-    /** 开赛已过 3.5 小时（一场篮球赛的合理上限） */
-    private fun isOver(startAtMillis: Long?): Boolean {
-        startAtMillis ?: return false
+    /** 计划开赛时间 -> 状态：超 3.5 小时=已结束，早于 15 分钟=未开赛，窗口内=进行中。 */
+    private fun statusByClock(startAtMillis: Long): MatchStatus {
         val start = java.time.Instant.ofEpochMilli(startAtMillis)
             .atZone(java.time.ZoneId.systemDefault())
-        return java.time.ZonedDateTime.now().isAfter(start.plusHours(3).plusMinutes(30))
+        val now = java.time.ZonedDateTime.now()
+        return when {
+            now.isAfter(start.plusHours(3).plusMinutes(30)) -> MatchStatus.FINISHED
+            now.isBefore(start.minusMinutes(15)) -> MatchStatus.UPCOMING
+            else -> MatchStatus.LIVE
+        }
     }
 
     /** 直播中优先，其余按开赛时间。 */
     private fun sort(matches: List<Match>): List<Match> =
         matches.sortedWith(
             compareBy<Match> { if (it.status == MatchStatus.LIVE) 0 else 1 }
-                .thenBy { it.startAtMillis ?: Long.MAX_VALUE }
+                // 直播中组内按开赛时间**倒序**：最晚开赛（刚开始不久、最新鲜）的排最上；
+                // 其余组内保持升序：最近要开的在前。组内方向不同，不能直接 thenBy。
+                .then { a, b ->
+                    val ta = a.startAtMillis ?: Long.MAX_VALUE
+                    val tb = b.startAtMillis ?: Long.MAX_VALUE
+                    if (a.status == MatchStatus.LIVE) tb.compareTo(ta) else ta.compareTo(tb)
+                }
                 .thenBy { it.leagueRawName }
         )
 
@@ -166,7 +181,8 @@ class MatchRepository(
             } else {
                 val sources = (existing.sources + m.sources).distinctBy { it.pageUrl }
                 existing.copy(
-                    // JRS 的状态更准（能区分"直播中"）
+                    // JRS 的状态更准（能区分"直播中"）；
+                    // 即便此处保留了滞后的 LIVE，correctLiveStatuses 也会用详情页/时钟校正
                     status = if (m.status != MatchStatus.UPCOMING) m.status else existing.status,
                     timeLabel = existing.timeLabel.ifBlank { m.timeLabel },
                     startAtMillis = existing.startAtMillis ?: m.startAtMillis,

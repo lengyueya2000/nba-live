@@ -93,7 +93,7 @@ class JrkanParser {
                 awayLogo = awayLogo,
                 timeLabel = timeRaw,
                 startAtMillis = parseDateTime(timeRaw),
-                status = parseStatus(block, timeRaw),
+                status = parseStatus(timeRaw),
                 signalCount = sources.size,
                 sources = sources,
             )
@@ -102,14 +102,28 @@ class JrkanParser {
     }
 
     /**
-     * JRKAN 的直播态：源站用 `li.lab_vs active` + `spin_ant` 转圈表示进行中。
-     * 已结束/未开赛沿用时间文字里的关键词；识别不出时保持未开赛。
+     * JRKAN 的状态判定。
+     *
+     * ⚠️ `li.lab_vs active` / `spin_ant` 是**静态模板类**，实测源站 75/75 场次恒带
+     * （含未开赛 3 天后的、昨天已结束的），零信息量 —— 曾拿它判"进行中"，
+     * 导致列表每一行都亮红"直播中"。真正的状态只能从时间文字 + 本地时钟推：
+     *  - 文字有明确关键词（已结束/直播中）-> 照采
+     *  - 文字是 "MM-dd HH:mm" -> 开赛已过 3.5 小时=已结束，距开赛 >15 分钟=未开赛，否则=进行中
+     *  （与 JRS 详情页校正同一套窗口）
      */
-    private fun parseStatus(block: String, timeRaw: String): MatchStatus {
+    private fun parseStatus(timeRaw: String): MatchStatus {
         val explicit = MatchStatus.fromSource(timeRaw)
         if (explicit != MatchStatus.UPCOMING) return explicit
-        return if (Regex("""lab_vs[^"]*\bactive\b""").containsMatchIn(block)) MatchStatus.LIVE
-        else MatchStatus.UPCOMING
+
+        val startMillis = parseDateTime(timeRaw) ?: return MatchStatus.UPCOMING
+        val start = java.time.Instant.ofEpochMilli(startMillis)
+            .atZone(java.time.ZoneId.systemDefault())
+        val now = java.time.ZonedDateTime.now()
+        return when {
+            now.isAfter(start.plusHours(3).plusMinutes(30)) -> MatchStatus.FINISHED
+            now.isBefore(start.minusMinutes(15)) -> MatchStatus.UPCOMING
+            else -> MatchStatus.LIVE
+        }
     }
 
     /**

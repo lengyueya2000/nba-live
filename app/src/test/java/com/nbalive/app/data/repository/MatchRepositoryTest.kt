@@ -89,6 +89,13 @@ class MatchRepositoryTest {
         assertEquals("99", m.jrsDetailId)
     }
 
+    private fun invokeSort(matches: List<Match>): List<Match> {
+        val m = MatchRepository::class.java.getDeclaredMethod("sort", List::class.java)
+        m.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return m.invoke(repo, matches) as List<Match>
+    }
+
     @Test
     fun `live matches sort before upcoming`() {
         val live = match("jrkan-live", "勇士", "火箭", dayMillis(10, 22, 7), "10-22 07:00", status = MatchStatus.LIVE)
@@ -98,12 +105,47 @@ class MatchRepositoryTest {
     }
 
     @Test
+    fun `live matches are ordered latest first`() {
+        // 直播中按开赛时间倒序：最晚开赛（最新鲜）的在最上面
+        val early = match("live-7", "勇士", "火箭", dayMillis(10, 23, 7), "10-23 07:00", status = MatchStatus.LIVE)
+        val mid = match("live-930", "湖人", "凯尔特人", dayMillis(10, 23, 9, 30), "10-23 09:30", status = MatchStatus.LIVE)
+        val late = match("live-1935", "雄鹿", "热火", dayMillis(10, 23, 19, 35), "10-23 19:35", status = MatchStatus.LIVE)
+        val sorted = invokeSort(listOf(early, mid, late))
+        assertEquals(listOf("live-1935", "live-930", "live-7"), sorted.map { it.id })
+    }
+
+    @Test
+    fun `upcoming matches still sort earliest first`() {
+        // 非直播组保持升序：最近要开的在前
+        val tomorrow = match("up-t", "湖人", "凯尔特人", dayMillis(10, 24, 19, 35), "10-24 19:35")
+        val today = match("up-d", "勇士", "火箭", dayMillis(10, 23, 7), "10-23 07:00")
+        val sorted = invokeSort(listOf(tomorrow, today))
+        assertEquals(listOf("up-d", "up-t"), sorted.map { it.id })
+    }
+
+    @Test
     fun `duplicate ids from both sources never collide in grid`() {
         // 两条 JRS 行 href 异常时 id 相同 -> merge 后必须 distinct，否则 LazyVerticalGrid 崩溃
         val a = match("jrs-", "A队", "B队", null, "直播中")
         val b = match("jrs-", "C队", "D队", null, "直播中")
         val merged = invokeMerge(listOf(a, b), emptyList())
         assertEquals(2, merged.map { it.id }.distinct().size)
+    }
+
+    // ---- 回归：源站把未开赛场次标成"直播中"时，本地时钟要能纠回未开赛 ----
+
+    @Test
+    fun `future match without a detail page is corrected from live to upcoming`() = runBlocking {
+        val start = java.time.LocalDate.now().plusDays(1).atTime(19, 35)
+            .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        // 无 jrsDetailId（没有详情页可查）且 id 不带任何已知源前缀：
+        // 判定必须基于"有没有详情页可查 + 计划开赛时间"，而不是猜 id 前缀
+        val m = match(
+            "other-9", "湖人", "凯尔特人", start, "10-24 19:35",
+            status = MatchStatus.LIVE,
+        )
+        val fixed = repo.correctLiveStatuses(listOf(m))
+        assertEquals(MatchStatus.UPCOMING, fixed.single().status)
     }
 
     // ---- 回归：多个 JRKAN 播放页展开出的线路 id 不能重复 ----
