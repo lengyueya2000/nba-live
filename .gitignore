@@ -1,0 +1,23 @@
+# Gradle / 构建产物（APK 一律不入库，发布走 GitHub Release）
+.gradle/
+build/
+app/build/
+local.properties
+.kotlin/
+
+# 签名凭据 —— 绝不入库
+keystore.properties
+*.jks
+*.keystore
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# 设计稿工具的依赖与中间产物
+design/_shared/node_modules/
+design/_shared/out/
+design/_shared/out-selftest/
+design/_shared/probe/
+node_modules/

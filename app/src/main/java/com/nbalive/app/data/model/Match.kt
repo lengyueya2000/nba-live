@@ -1,0 +1,115 @@
+package com.nbalive.app.data.model
+
+import androidx.compose.runtime.Immutable
+
+/** 联赛分类 */
+enum class League(val displayName: String) {
+    ALL("全部"),
+    NBA("NBA"),
+    CBA("CBA"),
+    OTHER("其他");
+
+    companion object {
+        /** 产品范围内可选的主筛选（只做 NBA + CBA，不含"其他"）。 */
+        val filters: List<League> = listOf(ALL, NBA, CBA)
+
+        /** 产品支持展示的联赛；源站返回的足球/外联赛一律丢弃。 */
+        val supported: Set<League> = setOf(NBA, CBA)
+
+        private val aliasMap = mapOf(
+            "NBA" to NBA,
+            "CBA" to CBA,
+            "美职篮" to NBA,
+            "男子篮球" to NBA,
+            "中国男子篮球" to CBA,
+        )
+
+        // WNBA 不是 NBA：用否定回顾断言避免子串误伤
+        private val NBA_RE = Regex("""(?<![A-Za-z])NBA""", RegexOption.IGNORE_CASE)
+        private val CBA_RE = Regex("""(?<![A-Za-z])CBA""", RegexOption.IGNORE_CASE)
+
+        fun fromSource(raw: String): League {
+            val key = raw.trim()
+            aliasMap[key]?.let { return it }
+            return if (NBA_RE.containsMatchIn(key)) NBA
+            else if (CBA_RE.containsMatchIn(key)) CBA
+            else OTHER
+        }
+    }
+}
+
+/** 赛事状态 */
+enum class MatchStatus {
+    /** 未开赛 */
+    UPCOMING,
+
+    /** 直播中 */
+    LIVE,
+
+    /** 已结束 */
+    FINISHED;
+
+    companion object {
+        fun fromSource(raw: String): MatchStatus = when {
+            // 顺序很重要："直播已结束" 同时含 "直播" 和 "结束"，必须先判结束
+            raw.contains("已结束") || raw.contains("完场") || raw.contains("结束") -> FINISHED
+            raw.contains("直播中") || raw.contains("直播") -> LIVE
+            else -> UPCOMING
+        }
+    }
+}
+
+/** 一场赛事 */
+@Immutable
+data class Match(
+    /** 跨源唯一键，用于去重与故障切换 */
+    val id: String,
+    val league: League,
+    val leagueRawName: String,
+    val homeTeam: String,
+    val awayTeam: String,
+    val homeLogo: String?,
+    val awayLogo: String?,
+    /** 展示用时间，如 "07:00" 或 "10-22 07:00" */
+    val timeLabel: String,
+    /** 排序用时间戳（epoch millis），无法解析时为 null */
+    val startAtMillis: Long?,
+    val status: MatchStatus,
+    /** 可用信号数量 */
+    val signalCount: Int,
+    /** 该赛事关联的所有播放源 */
+    val sources: List<StreamSource>,
+    /** JRS 详情页数字 id；合并后仍能取到 JRS 信号（不靠 Match.id 猜源站） */
+    val jrsDetailId: String? = null,
+)
+
+/** 一个播放源（某条线路） */
+@Immutable
+data class StreamSource(
+    val id: String,
+    val label: String,
+    /** 所属源站：JRS / JRKAN */
+    val provider: Provider,
+    /** 播放页地址（还需进一步解析出 m3u8） */
+    val pageUrl: String,
+    /** 解析出的直连 m3u8（若已解析成功） */
+    val streamUrl: String? = null,
+    /** 解析出 m3u8 后请求所需的 Referer */
+    val referer: String? = null,
+)
+
+/** 数据源站点 */
+enum class Provider(val displayName: String) {
+    JRS("JRS"),
+    JRKAN("JRKAN");
+}
+
+/**
+ * 该线路能否静态解析成 m3u8 直连播放。
+ *
+ * 实测：只有 `/play/sm.html` 这条链路能还原出 m3u8；
+ * JRS 的 mgxl/pao 播放器用 XXTEA 加密，JRKAN 的 wen/pao 线路需要额外令牌，
+ * 这些只能交给 WebView 承载源站页面。
+ */
+val StreamSource.isDirectHls: Boolean
+    get() = pageUrl.contains("/play/sm.html")

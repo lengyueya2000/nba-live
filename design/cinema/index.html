@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=390, initial-scale=1" />
+<title>NBA Live · 方案 A 影院级沉浸</title>
+<style>
+/* ============================================================
+   方案 A — CINEMA IMMERSIVE / 影院级沉浸
+   OLED 深黑底 + 播放红 #E11D48 单一强调色 + 海报式赛事卡
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#05050A}
+body{
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+.stage{width:390px;margin:0 auto}
+.phone{width:390px;height:844px;position:relative;overflow:hidden;background:#000}
+
+/* ---------- 主题变量 ---------- */
+.screen{
+  --bg:#000000;
+  --surface:#0C0C0D;
+  --surface-2:#141418;
+  --surface-3:#1D1D23;
+  --line:#312E81;
+  --line-soft:rgba(49,46,129,.55);
+  --txt:#F8FAFC;
+  --txt-2:#94A3B8;
+  --txt-3:#8A93A5;
+  --accent:#E11D48;
+  --accent-2:#FB7185;
+  --accent-soft:rgba(225,29,72,.16);
+  --glass:rgba(255,255,255,.06);
+  --glass-2:rgba(255,255,255,.10);
+  --art-1:radial-gradient(120% 80% at 88% 0%, rgba(225,29,72,.30), transparent 58%);
+  --art-2:radial-gradient(95% 75% at 6% 100%, rgba(49,46,129,.55), transparent 62%);
+  --art-base:linear-gradient(200deg, rgba(20,20,24,.96), rgba(10,10,11,.99));
+  --art-list:radial-gradient(90% 120% at 100% 0%, rgba(49,46,129,.42), transparent 62%);
+  --shadow:0 18px 44px rgba(0,0,0,.60);
+  position:absolute;inset:0;display:none;flex-direction:column;
+  background:var(--bg);color:var(--txt);overflow:hidden;font-size:14px;line-height:1.4;
+}
+.screen.on{display:flex}
+html[data-theme="light"] .screen,
+.screen[data-theme="light"]{
+  --bg:#F4F5F9;
+  --surface:#FFFFFF;
+  --surface-2:#EFF1F6;
+  --surface-3:#E4E7F0;
+  --line:#D3D8EE;
+  --line-soft:rgba(49,46,129,.24);
+  --txt:#0A0F1E;
+  --txt-2:#525C70;
+  --txt-3:#6B7488;
+  --accent:#E11D48;
+  --accent-2:#BE123C;
+  --accent-soft:rgba(225,29,72,.10);
+  --glass:rgba(10,15,30,.05);
+  --glass-2:rgba(10,15,30,.09);
+  --art-1:radial-gradient(120% 80% at 88% 0%, rgba(225,29,72,.18), transparent 58%);
+  --art-2:radial-gradient(95% 75% at 6% 100%, rgba(49,46,129,.22), transparent 62%);
+  --art-base:linear-gradient(200deg, #FFFFFF 0%, #EFF1F7 100%);
+  --art-list:radial-gradient(90% 120% at 100% 0%, rgba(49,46,129,.16), transparent 62%);
+  --shadow:0 14px 32px rgba(18,24,48,.10);
+}
+
+/* ---------- 通用 ---------- */
+.defs{position:absolute;width:0;height:0;overflow:hidden}
+.ic{width:20px;height:20px;display:block;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.ic-14{width:14px;height:14px}.ic-16{width:16px;height:16px}.ic-22{width:22px;height:22px}.ic-28{width:28px;height:28px}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.sp{flex:1 1 auto}
+.scroll{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
+.scroll::-webkit-scrollbar{width:0;height:0}
+.list-body{flex:0 0 auto;padding-bottom:96px}
+
+/* ---------- 顶部品牌区 ---------- */
+.topbar{
+  flex:0 0 auto;display:flex;align-items:center;gap:12px;
+  padding:44px 16px 12px;position:relative;
+}
+.topbar::after{
+  content:"";position:absolute;left:16px;right:16px;bottom:0;height:1px;
+  background:linear-gradient(90deg,rgba(225,29,72,.65),rgba(49,46,129,.55) 38%,rgba(255,255,255,0));
+}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand-mark{
+  width:38px;height:38px;flex:0 0 auto;border-radius:13px;display:grid;place-items:center;color:#fff;
+  background:linear-gradient(145deg,#E11D48,#9F1239);
+  box-shadow:0 8px 22px rgba(225,29,72,.36);
+}
+.brand-txt{min-width:0}
+.brand-txt b{display:block;font-size:17px;font-weight:900;letter-spacing:2px;line-height:20px}
+.brand-txt span{display:block;font-size:12px;letter-spacing:2.6px;color:var(--txt-3);font-weight:700;line-height:15px}
+.top-actions{display:flex;align-items:center;gap:8px}
+.round-btn{
+  width:48px;height:48px;flex:0 0 auto;border-radius:16px;border:1px solid var(--line-soft);
+  background:var(--surface);color:var(--txt);display:grid;place-items:center;cursor:pointer;
+}
+.round-btn:active{background:var(--surface-2)}
+.theme-btn .ic-sun{display:none}
+html[data-theme="light"] .theme-btn .ic-sun{display:block}
+html[data-theme="light"] .theme-btn .ic-moon{display:none}
+
+/* ---------- 联赛筛选 ---------- */
+.filters{flex:0 0 auto;display:flex;gap:8px;padding:12px 16px 4px}
+.chip{
+  height:40px;padding:0 18px;border-radius:20px;border:1px solid var(--line-soft);
+  background:var(--surface);color:var(--txt-2);font-family:inherit;font-size:13px;font-weight:700;
+  display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;
+}
+.chip.on{
+  background:linear-gradient(135deg,rgba(225,29,72,.92),rgba(159,18,57,.92));
+  border-color:transparent;color:#fff;box-shadow:0 6px 18px rgba(225,29,72,.32);
+}
+.chip em{font-style:normal;font-size:12px;font-weight:800;opacity:.78}
+
+/* ---------- 分组标题 ---------- */
+.sec{display:flex;align-items:center;gap:10px;margin:18px 16px 10px}
+.sec h2{margin:0;font-size:14px;font-weight:800;letter-spacing:1.2px;white-space:nowrap}
+.sec .tag{
+  font-size:12px;font-weight:800;letter-spacing:.6px;color:var(--accent-2);
+  background:var(--accent-soft);border:1px solid rgba(225,29,72,.32);
+  border-radius:8px;padding:3px 8px;white-space:nowrap;
+}
+.sec .rule{flex:1 1 auto;height:1px;background:linear-gradient(90deg,var(--line-soft),rgba(255,255,255,0))}
+
+/* ---------- 海报式直播大卡 ---------- */
+.poster{
+  position:relative;margin:0 16px;border-radius:24px;padding:16px;overflow:hidden;
+  background:var(--surface);border:1px solid var(--line-soft);box-shadow:var(--shadow);
+}
+.poster::before{
+  content:"";position:absolute;left:0;right:0;top:0;height:3px;z-index:2;
+  background:linear-gradient(90deg,#E11D48 0%,#FB7185 42%,rgba(225,29,72,0) 100%);
+}
+.poster-art{position:absolute;inset:0;background:var(--art-1),var(--art-2),var(--art-base);z-index:0}
+.poster > *:not(.poster-art){position:relative;z-index:1}
+.poster.live{
+  border-color:rgba(225,29,72,.45);
+  animation:posterGlow 2.8s ease-in-out infinite;
+}
+@keyframes posterGlow{
+  0%,100%{box-shadow:0 18px 44px rgba(0,0,0,.60),0 0 22px rgba(225,29,72,.10)}
+  50%{box-shadow:0 18px 44px rgba(0,0,0,.60),0 0 38px rgba(225,29,72,.30)}
+}
+.poster-top{display:flex;align-items:center;gap:10px}
+.live-mark{
+  display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:800;letter-spacing:1.6px;
+  color:var(--accent-2);text-shadow:0 0 16px rgba(225,29,72,.85);white-space:nowrap;flex:0 0 auto;
+}
+.pulse{
+  width:9px;height:9px;border-radius:50%;background:#E11D48;flex:0 0 auto;
+  box-shadow:0 0 0 0 rgba(225,29,72,.55);animation:pulse 1.9s ease-out infinite;
+}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 rgba(225,29,72,.55)}
+  70%{box-shadow:0 0 0 13px rgba(225,29,72,0)}
+  100%{box-shadow:0 0 0 0 rgba(225,29,72,0)}
+}
+.poster-lg{font-size:12px;font-weight:700;letter-spacing:.6px;color:var(--txt-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;text-align:right}
+.poster-stage{display:flex;align-items:center;gap:6px;margin:14px 0 14px}
+.p-team{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:8px}
+.p-team b{
+  font-size:17px;font-weight:900;letter-spacing:1.5px;line-height:21px;text-align:center;
+  max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.p-mid{flex:0 0 auto;width:62px;display:flex;flex-direction:column;align-items:center;gap:6px}
+.p-vs{
+  width:100%;height:1px;position:relative;text-align:center;
+}
+.p-vs::after{
+  content:"VS";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  font-size:12px;font-weight:900;letter-spacing:1px;color:var(--accent);
+  background:var(--surface);padding:0 5px;
+}
+.p-time{font-size:22px;font-weight:900;letter-spacing:1px;line-height:24px}
+.poster-foot{display:flex;align-items:center;gap:8px}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:15px;
+  background:var(--glass);border:1px solid var(--line-soft);
+  font-size:12px;font-weight:700;color:var(--txt-2);white-space:nowrap;
+}
+.pill .ic{color:var(--txt-3)}
+.enter-btn{
+  margin-left:auto;height:40px;padding:0 16px;border-radius:20px;border:0;cursor:pointer;
+  background:linear-gradient(135deg,#E11D48,#9F1239);color:#fff;font-family:inherit;
+  font-size:13px;font-weight:800;letter-spacing:.6px;display:inline-flex;align-items:center;gap:6px;
+  box-shadow:0 8px 20px rgba(225,29,72,.36);white-space:nowrap;
+}
+
+/* ---------- 赛事卡（海报条） ---------- */
+.card{
+  position:relative;margin:0 16px 10px;padding:12px 14px;border-radius:20px;overflow:hidden;
+  background:var(--surface);border:1px solid var(--line-soft);box-shadow:var(--shadow);
+}
+.card-art{position:absolute;inset:0;background:var(--art-list);z-index:0}
+.card > *:not(.card-art){position:relative;z-index:1}
+.card-head{display:flex;align-items:center;gap:8px}
+.lg-chip{
+  height:24px;padding:0 10px;border-radius:8px;font-size:12px;font-weight:800;letter-spacing:1px;
+  display:inline-flex;align-items:center;color:#fff;white-space:nowrap;flex:0 0 auto;
+}
+.lg-chip.nba{background:linear-gradient(135deg,#312E81,#4338CA)}
+.lg-chip.cba{background:linear-gradient(135deg,#9F1239,#E11D48)}
+.card-date{font-size:12px;font-weight:700;color:var(--txt-3);letter-spacing:.4px;white-space:nowrap;flex:0 0 auto}
+.sig-pill{
+  margin-left:auto;display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 10px;
+  border-radius:12px;background:var(--glass);border:1px solid var(--line-soft);
+  font-size:12px;font-weight:700;color:var(--txt-2);white-space:nowrap;flex:0 0 auto;
+}
+.sig-pill .ic{color:var(--txt-3)}
+.card-match{display:flex;align-items:center;gap:8px;margin:10px 0}
+.mt{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:8px}
+.mt.rt{flex-direction:row-reverse}
+.mt b{
+  font-size:14px;font-weight:800;line-height:18px;letter-spacing:.6px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;
+}
+.m-vs{flex:0 0 auto;font-size:12px;font-weight:900;letter-spacing:1px;color:var(--txt-3)}
+.card-foot{display:flex;align-items:center;gap:10px}
+.status{
+  display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:13px;
+  font-size:12px;font-weight:800;white-space:nowrap;border:1px solid var(--line-soft);
+  background:var(--glass);color:var(--txt-2);
+}
+.status.soon{color:#C7D2FE;border-color:rgba(99,102,241,.40);background:rgba(99,102,241,.14)}
+html[data-theme="light"] .status.soon,.screen[data-theme="light"] .status.soon{color:#4338CA}
+.status.done{color:var(--txt-3)}
+.status.done .ic{color:var(--txt-3)}
+.foot-time{font-size:13px;font-weight:800;color:var(--txt);letter-spacing:.4px}
+.foot-src{margin-left:auto;font-size:12px;font-weight:700;color:var(--txt-3);white-space:nowrap}
+
+/* ---------- 队徽 ---------- */
+.logo{
+  position:relative;display:inline-block;flex:0 0 auto;border-radius:50%;overflow:hidden;
+  background:#FFFFFF;box-shadow:0 0 0 1px rgba(255,255,255,.14);
+}
+.logo img{width:100%;height:100%;object-fit:contain;display:block}
+.logo .fb{
+  display:none;position:absolute;inset:0;background:var(--fb,#312E81);color:#fff;
+  align-items:center;justify-content:center;font-weight:900;line-height:1;
+}
+.logo.fail img{display:none}
+.logo.fail .fb{display:flex}
+.lg-36{width:36px;height:36px}.lg-36 .fb{font-size:15px}
+.lg-40{width:40px;height:40px}.lg-40 .fb{font-size:17px}
+.lg-52{width:52px;height:52px}.lg-52 .fb{font-size:21px}
+.lg-64{width:64px;height:64px}.lg-64 .fb{font-size:26px}
+
+/* ---------- 底部导航 ---------- */
+.tabbar{
+  position:absolute;left:0;right:0;bottom:0;height:88px;z-index:20;
+  display:flex;align-items:flex-start;padding:8px 10px 0;
+  background:var(--bg);
+  border-top:1px solid var(--line-soft);
+}
+.tabbar::before{
+  content:"";position:absolute;left:0;right:0;bottom:100%;height:36px;pointer-events:none;
+  background:linear-gradient(180deg,rgba(0,0,0,0),var(--bg));
+}
+html[data-theme="light"] .tabbar::before,
+.screen[data-theme="light"] .tabbar::before{
+  background:linear-gradient(180deg,rgba(255,255,255,0),var(--bg));
+}
+.tab{
+  flex:1 1 0;height:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
+  background:transparent;border:0;color:var(--txt-3);font-family:inherit;cursor:pointer;border-radius:16px;
+}
+.tab b{font-size:12px;font-weight:700;letter-spacing:1px}
+.tab.on{color:var(--accent)}
+.tab .tab-ic{position:relative;display:grid;place-items:center;width:48px;height:26px;border-radius:13px}
+.tab.on .tab-ic{background:var(--accent-soft);box-shadow:0 0 18px rgba(225,29,72,.22)}
+.tab.on .tab-ic::after{
+  content:"";position:absolute;bottom:-9px;left:50%;transform:translateX(-50%);
+  width:16px;height:3px;border-radius:2px;background:var(--accent);
+}
+
+/* ---------- 播放器 ---------- */
+.pv-stage{
+  position:relative;flex:0 0 auto;height:352px;overflow:hidden;background:#000;
+}
+.pv-art{
+  position:absolute;inset:0;
+  background:
+    radial-gradient(120% 70% at 50% 8%, rgba(225,29,72,.30), transparent 62%),
+    radial-gradient(90% 70% at 12% 96%, rgba(49,46,129,.62), transparent 64%),
+    linear-gradient(180deg,#101014 0%,#050506 60%,#000 100%);
+}
+.pv-art::after{
+  content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(115deg,rgba(255,255,255,.028) 0 2px,transparent 2px 20px);
+}
+.pv-top{position:absolute;left:0;right:0;top:0;padding:44px 16px 0;display:flex;align-items:center;gap:10px;z-index:4}
+.pv-top .round-btn{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.14);color:#fff;backdrop-filter:blur(6px)}
+.pv-title{flex:1 1 auto;min-width:0;text-align:center}
+.pv-title b{
+  display:block;font-size:14px;font-weight:800;letter-spacing:.6px;color:#fff;line-height:18px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.pv-title span{display:block;font-size:12px;font-weight:700;color:rgba(255,255,255,.62);margin-top:2px}
+.pv-badge{position:absolute;left:16px;top:104px;z-index:4;display:flex;align-items:center;gap:8px}
+.pv-badge .src{
+  height:26px;padding:0 10px;border-radius:13px;background:rgba(255,255,255,.12);
+  font-size:12px;font-weight:700;color:rgba(255,255,255,.86);display:inline-flex;align-items:center;
+}
+.pv-center{position:absolute;inset:0;z-index:4;display:grid;place-items:center}
+.pv-play{
+  width:76px;height:76px;border-radius:50%;border:0;cursor:pointer;color:#fff;display:grid;place-items:center;
+  background:linear-gradient(140deg,#E11D48,#9F1239);
+  box-shadow:0 0 0 10px rgba(225,29,72,.14),0 14px 40px rgba(225,29,72,.44);
+}
+.pv-bottom{
+  position:absolute;left:0;right:0;bottom:0;z-index:4;padding:0 16px 16px;
+  background:linear-gradient(180deg,rgba(4,4,6,0),rgba(4,4,6,.90) 46%);
+}
+.pv-times{display:flex;justify-content:space-between;margin-bottom:6px}
+.pv-times span{font-size:12px;font-weight:700;color:rgba(255,255,255,.78)}
+.pv-track{height:4px;border-radius:3px;background:rgba(255,255,255,.22);overflow:hidden}
+.pv-track i{display:block;height:100%;width:26%;border-radius:3px;background:linear-gradient(90deg,#E11D48,#FB7185)}
+.pv-ctrls{display:flex;align-items:center;gap:8px;margin-top:12px}
+.pv-ic{
+  width:48px;height:48px;border-radius:16px;display:grid;place-items:center;color:#fff;
+  background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.10);
+}
+.pv-ic.on{background:rgba(225,29,72,.42);border-color:rgba(225,29,72,.6);box-shadow:0 0 20px rgba(225,29,72,.34)}
+
+.pv-panel{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:16px 16px 96px}
+.pv-panel::-webkit-scrollbar{width:0;height:0}
+.pv-info{
+  position:relative;display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:20px;
+  background:var(--surface);border:1px solid var(--line-soft);overflow:hidden;
+}
+.pv-info::after{content:"";position:absolute;inset:0;background:var(--art-list);pointer-events:none}
+.pv-info > *{position:relative;z-index:1}
+.pv-info .mid{flex:1 1 auto;min-width:0;text-align:center}
+.pv-info .mid b{display:block;font-size:15px;font-weight:900;letter-spacing:.8px;line-height:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pv-info .mid span{display:block;font-size:12px;font-weight:700;color:var(--txt-3);margin-top:3px}
+.pv-title-row{display:flex;align-items:center;gap:8px;margin:16px 0 10px}
+.pv-title-row b{font-size:13px;font-weight:800;letter-spacing:.8px}
+.pv-title-row span{font-size:12px;font-weight:700;color:var(--txt-3)}
+.pv-title-row .rule{flex:1 1 auto;height:1px;background:var(--line-soft)}
+
+/* 半透明胶囊信号条 */
+.sig-bar{
+  display:flex;gap:8px;padding:5px;border-radius:24px;
+  background:var(--glass);border:1px solid var(--line-soft);
+}
+.sig-opt{
+  flex:1 1 0;min-width:0;height:52px;border-radius:19px;border:1px solid transparent;background:transparent;
+  color:var(--txt-2);font-family:inherit;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:0 4px;
+}
+.sig-opt b{font-size:13px;font-weight:800;letter-spacing:.6px}
+.sig-opt span{font-size:12px;font-weight:700;color:var(--txt-3);white-space:nowrap}
+.sig-opt.on{
+  background:linear-gradient(140deg,rgba(225,29,72,.42),rgba(225,29,72,.12));
+  border-color:rgba(225,29,72,.62);color:#fff;box-shadow:0 0 20px rgba(225,29,72,.28);
+}
+.sig-opt.on span{color:rgba(255,255,255,.82)}
+
+/* Snackbar */
+.snackbar{
+  margin-top:14px;display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:18px;
+  background:linear-gradient(120deg,rgba(225,29,72,.22),rgba(225,29,72,.05));
+  border:1px solid rgba(225,29,72,.44);box-shadow:0 12px 32px rgba(225,29,72,.14);
+}
+.snackbar .ic{color:var(--accent-2);flex:0 0 auto}
+.snack-t{flex:1 1 auto;min-width:0}
+.snack-t b{display:block;font-size:13px;font-weight:800;line-height:18px;color:var(--txt)}
+.snack-t span{display:block;font-size:12px;line-height:16px;color:var(--txt-2);margin-top:2px}
+.snack-btn{
+  flex:0 0 auto;height:34px;padding:0 14px;border-radius:13px;cursor:pointer;font-family:inherit;
+  background:rgba(225,29,72,.22);border:1px solid rgba(225,29,72,.55);color:var(--accent-2);
+  font-size:12px;font-weight:800;
+}
+html[data-theme="light"] .snackbar,.screen[data-theme="light"] .snackbar{background:linear-gradient(120deg,rgba(225,29,72,.14),rgba(225,29,72,.04))}
+html[data-theme="light"] .snackbar .ic,.screen[data-theme="light"] .snackbar .ic{color:#BE123C}
+html[data-theme="light"] .snack-btn,.screen[data-theme="light"] .snack-btn{color:#BE123C}
+
+.info-row{
+  display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:16px;
+  background:var(--surface);border:1px solid var(--line-soft);margin-top:10px;
+}
+.info-row .k{flex:0 0 auto;font-size:12px;font-weight:700;color:var(--txt-3)}
+.info-row .v{
+  flex:1 1 auto;min-width:0;font-size:13px;font-weight:700;color:var(--txt-2);text-align:right;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.info-row .ic{color:var(--txt-3);flex:0 0 auto}
+
+/* ---------- 赛事详情 ---------- */
+.dt-hero{
+  position:relative;flex:0 0 auto;padding:44px 16px 18px;overflow:hidden;
+  background:linear-gradient(180deg,#0B0B10 0%,var(--bg) 100%);
+}
+html[data-theme="light"] .dt-hero,
+.screen[data-theme="light"] .dt-hero{background:linear-gradient(180deg,#FFFFFF 0%,var(--bg) 100%)}
+.dt-hero::before{
+  content:"";position:absolute;left:0;right:0;top:0;height:3px;
+  background:linear-gradient(90deg,#E11D48,#FB7185 46%,rgba(225,29,72,0));
+}
+.dt-hero::after{
+  content:"";position:absolute;left:0;right:0;top:0;height:260px;pointer-events:none;
+  background:radial-gradient(120% 90% at 50% -30%, rgba(225,29,72,.26), transparent 66%),
+             radial-gradient(90% 80% at 0% 110%, rgba(49,46,129,.5), transparent 62%);
+}
+html[data-theme="light"] .dt-hero::after,
+.screen[data-theme="light"] .dt-hero::after{
+  background:radial-gradient(120% 90% at 50% -30%, rgba(225,29,72,.14), transparent 66%),
+             radial-gradient(90% 80% at 0% 110%, rgba(49,46,129,.16), transparent 62%);
+}
+.dt-hero > *{position:relative;z-index:1}
+.dt-top{display:flex;align-items:center;gap:10px}
+.dt-top h1{flex:1 1 auto;margin:0;font-size:16px;font-weight:900;letter-spacing:2px;text-align:center}
+.dt-meta{display:flex;align-items:center;gap:8px;margin-top:16px}
+.dt-meta .t{font-size:13px;font-weight:700;color:var(--txt-2)}
+.dt-match{display:flex;align-items:center;gap:8px;margin-top:16px}
+.dt-team{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:10px}
+.dt-team b{
+  font-size:20px;font-weight:900;letter-spacing:2px;line-height:24px;text-align:center;
+  max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.dt-mid{flex:0 0 auto;width:72px;display:flex;flex-direction:column;align-items:center;gap:8px}
+.dt-mid .vs{
+  width:72px;height:72px;border-radius:50%;display:grid;place-items:center;
+  background:var(--glass);border:1px solid var(--line-soft);
+  font-size:14px;font-weight:900;letter-spacing:1.5px;color:var(--txt-2);
+}
+.dt-mid small{font-size:12px;font-weight:700;color:var(--txt-3);letter-spacing:1px}
+.dt-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:4px 16px 172px}
+.dt-body::-webkit-scrollbar{width:0;height:0}
+.sig-list{display:flex;flex-direction:column;gap:8px}
+.sig-row{
+  display:flex;align-items:center;gap:11px;width:100%;padding:12px 13px;border-radius:18px;cursor:pointer;
+  background:var(--surface);border:1px solid var(--line-soft);color:inherit;font-family:inherit;text-align:left;
+}
+.sig-row .idx{
+  width:32px;height:32px;flex:0 0 auto;border-radius:11px;display:grid;place-items:center;
+  background:var(--surface-3);color:var(--txt-2);font-size:13px;font-weight:900;
+}
+.sig-row .meta{flex:1 1 auto;min-width:0}
+.sig-row .meta b{display:block;font-size:14px;font-weight:800;line-height:18px;letter-spacing:.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sig-row .meta span{display:block;font-size:12px;font-weight:700;color:var(--txt-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sig-state{
+  flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 9px;border-radius:12px;
+  font-size:12px;font-weight:800;white-space:nowrap;border:1px solid transparent;
+}
+.sig-state.ok{background:rgba(16,185,129,.14);color:#34D399;border-color:rgba(16,185,129,.34)}
+.sig-state.slow{background:rgba(245,158,11,.14);color:#FBBF24;border-color:rgba(245,158,11,.34)}
+html[data-theme="light"] .sig-state.ok,.screen[data-theme="light"] .sig-state.ok{color:#047857}
+html[data-theme="light"] .sig-state.slow,.screen[data-theme="light"] .sig-state.slow{color:#B45309}
+.sig-row.on{border-color:rgba(225,29,72,.55);background:linear-gradient(120deg,rgba(225,29,72,.14),rgba(225,29,72,.03))}
+.sig-row.on .idx{background:linear-gradient(140deg,#E11D48,#9F1239);color:#fff;box-shadow:0 4px 14px rgba(225,29,72,.36)}
+.sig-row .chev{flex:0 0 auto;color:var(--txt-3)}
+.secondary{
+  background:var(--surface);border:1px solid var(--line-soft);border-radius:18px;padding:6px 14px;
+}
+.sec-row{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line-soft)}
+.sec-row:last-child{border-bottom:0}
+.sec-row .k{flex:0 0 auto;font-size:12px;font-weight:700;color:var(--txt-3)}
+.sec-row .v{flex:1 1 auto;min-width:0;font-size:13px;font-weight:700;color:var(--txt-2);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sec-row .ic{flex:0 0 auto;color:var(--txt-3)}
+.dt-cta{
+  position:absolute;left:16px;right:16px;bottom:100px;height:54px;z-index:15;cursor:pointer;
+  border:0;border-radius:18px;font-family:inherit;font-size:15px;font-weight:900;letter-spacing:1px;
+  color:#fff;background:linear-gradient(135deg,#E11D48,#9F1239);
+  box-shadow:0 14px 34px rgba(225,29,72,.40);
+  display:flex;align-items:center;justify-content:center;gap:8px;
+}
+
+/* ---------- 空/加载/错误三态 ---------- */
+.state-wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 32px 110px;text-align:center}.state-ill{
+  width:112px;height:112px;border-radius:38px;display:grid;place-items:center;margin-bottom:24px;position:relative;
+  background:var(--surface);border:1px solid var(--line-soft);color:var(--txt-2);box-shadow:var(--shadow);
+}
+.state-ill::before{
+  content:"";position:absolute;inset:-14px;border-radius:48px;
+  background:radial-gradient(60% 60% at 50% 50%, rgba(49,46,129,.42), transparent 70%);
+}
+.state-ill.err{color:var(--accent-2);border-color:rgba(225,29,72,.38)}
+.state-ill.err::before{background:radial-gradient(60% 60% at 50% 50%, rgba(225,29,72,.34), transparent 70%)}
+.state-ill.load{color:var(--accent-2);border-color:rgba(225,29,72,.28)}
+.state-ill .ic{position:relative;z-index:1}
+.state-wrap h2{margin:0;font-size:20px;font-weight:900;letter-spacing:1.4px;line-height:26px}
+.state-wrap p{margin:10px 0 0;font-size:13px;line-height:21px;color:var(--txt-2);font-weight:600;max-width:300px}
+.state-code{
+  margin-top:12px;font-size:12px;font-weight:700;letter-spacing:.6px;color:var(--txt-3);
+  background:var(--surface-2);border:1px solid var(--line-soft);border-radius:10px;padding:5px 11px;
+}
+.state-btn{
+  margin-top:22px;height:48px;padding:0 26px;border-radius:16px;border:0;cursor:pointer;font-family:inherit;
+  font-size:14px;font-weight:800;letter-spacing:1px;color:#fff;background:linear-gradient(135deg,#E11D48,#9F1239);
+  box-shadow:0 10px 26px rgba(225,29,72,.34);display:inline-flex;align-items:center;gap:8px;
+}
+.state-btn.ghost{
+  margin-top:10px;background:var(--surface);border:1px solid var(--line-soft);color:var(--txt-2);box-shadow:none;
+}
+.state-hint{margin-top:18px;font-size:12px;font-weight:700;color:var(--txt-3);letter-spacing:.4px}
+
+/* 骨架屏 */
+.skel-wrap{flex:0 0 auto;padding:6px 16px 100px}
+.skel-wrap::-webkit-scrollbar{width:0;height:0}
+.skel{
+  position:relative;overflow:hidden;margin-bottom:10px;padding:12px 14px;border-radius:20px;
+  background:var(--surface);border:1px solid var(--line-soft);
+}
+.skel::after{
+  content:"";position:absolute;top:0;left:-60%;width:45%;height:100%;
+  background:linear-gradient(90deg,transparent,rgba(225,29,72,.10),transparent);
+  animation:shimmer 1.5s ease-in-out infinite;
+}
+@keyframes shimmer{100%{left:120%}}
+.sk{background:var(--surface-3);border-radius:8px;height:12px}
+.sk-logo{width:36px;height:36px;border-radius:50%;background:var(--surface-3);flex:0 0 auto}
+.sk-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.sk-lines{flex:1 1 auto;display:flex;flex-direction:column;gap:8px;min-width:0}
+.loading-note{display:flex;align-items:center;justify-content:center;gap:10px;padding:6px 0 0}
+.loading-note span{font-size:13px;font-weight:700;color:var(--txt-2)}
+.spinner{
+  width:18px;height:18px;border-radius:50%;flex:0 0 auto;
+  border:2px solid rgba(225,29,72,.24);border-top-color:#E11D48;animation:spin .85s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- ======================= 内联 SVG 图标库 ======================= -->
+<svg class="defs" aria-hidden="true" focusable="false">
+  <symbol id="i-ball" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3.2 3.7 3.2 14.3 0 18M12 3c-3.2 3.7-3.2 14.3 0 18"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.4 16.4 21 21"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1Z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.6v2.2M12 19.2v2.2M4.2 12H2M22 12h-2.2M6 6 4.4 4.4M19.6 19.6 18 18M18 6l1.6-1.6M4.4 19.6 6 18"/></symbol>
+  <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M3 8.5V6.6A1.6 1.6 0 0 1 4.6 5h14.8A1.6 1.6 0 0 1 21 6.6v1.9a3.5 3.5 0 0 0 0 7v1.9A1.6 1.6 0 0 1 19.4 19H4.6A1.6 1.6 0 0 1 3 17.4v-1.9a3.5 3.5 0 0 0 0-7Z"/><path d="M12 5v14" stroke-dasharray="2 3"/></symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="13" rx="3"/><path d="M8 21h8"/><path d="M9.2 11.4v3.3l3.2-1.65z"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M4.8 20a7.4 7.4 0 0 1 14.4 0"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.2 19 12 8 18.8Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.8" y="5" width="3.6" height="14" rx="1.4" fill="currentColor" stroke="none"/><rect x="13.6" y="5" width="3.6" height="14" rx="1.4" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5h3.4L12 6v12l-4.6-3.5H4z"/><path d="M15.4 9.2a3.9 3.9 0 0 1 0 5.6"/><path d="M18.2 6.6a7.6 7.6 0 0 1 0 10.8"/></symbol>
+  <symbol id="i-full" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 5 8 12l6.5 7"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9.5 5 16.5 12l-7 7"/></symbol>
+  <symbol id="i-signal" viewBox="0 0 24 24"><path d="M4 20v-3.5M9.3 20v-7M14.7 20v-11M20 20V4"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.6 21.5 20.4H2.5z"/><path d="M12 9.6v4.6M12 17.2v.6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13.5a4.2 4.2 0 0 0 6 0l3-3a4.2 4.2 0 0 0-6-6l-1.2 1.2"/><path d="M14 10.5a4.2 4.2 0 0 0-6 0l-3 3a4.2 4.2 0 0 0 6 6l1.2-1.2"/></symbol>
+  <symbol id="i-stack" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2.4"/><rect x="3" y="14" width="18" height="6" rx="2.4"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.8 12.6 9.6 17.4 19.2 6.6"/></symbol>
+  <symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M6.2 9.6A13 13 0 0 1 12 7.2c2.3 0 4.5.7 6.3 1.9"/><path d="M9.2 13.1a7.6 7.6 0 0 1 5.8-.5"/><path d="M12 18.2v.1"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.6"/><path d="M8 4.5v15M16 4.5v15M3 12h18M3 8.2h5M3 15.8h5M16 8.2h5M16 15.8h5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.4l3.4 2"/></symbol>
+</svg>
+
+<div class="stage">
+  <div class="phone" id="phone"></div>
+</div>
+
+<script>
+/* ============================================================
+   真实数据（全部取自共享基座第 6 节，不编造比分）
+   ============================================================ */
+const T = {
+  celtics :{n:'凯尔特人',logo:'https://cdn.sportnanoapi.com/basketball/team/0dc24d08ef0b5584e0b70f967db64b36.png',c:'#0A7A3D'},
+  hawks   :{n:'老鹰',  logo:'https://cdn.sportnanoapi.com/basketball/team/4e67b14905a05af9e1bd04406bf8690f.png',c:'#E03A3E'},
+  zhejiang:{n:'浙江',  logo:'http://www.jrszb444.com/d/file/p/2019/07-22/6da83cc0a417e07e2787d56b9c335a70.jpg',c:'#1E5AA8'},
+  shandong:{n:'山东',  logo:'http://www.jrszb444.com/d/file/p/2019/07-22/964df7d6987b40bff17f8b25cc0b1186.jpg',c:'#F26522'},
+  qingdao :{n:'青岛',  logo:'http://www.jrszb444.com/d/file/p/2019/07-17/ddf3e58f3df2f8c872c503b97c254681.jpg',c:'#0A5CAB'},
+  liaoning:{n:'辽宁',  logo:'http://www.jrszb444.com/d/file/p/2019/07-22/acb1277db8452ad3271a65207209575.jpg',c:'#C8102E'},
+  shenzhen:{n:'深圳',  logo:'http://www.jrszb444.com/d/file/p/2019/04-16/76af9384d3eb454a4d318ae371734d15.jpg',c:'#D32F2F'},
+  guangsha:{n:'广厦',  logo:'http://www.jrszb444.com/d/file/p/2019/07-22/964df7d6987b40bff17f8b25cc0b1186.jpg',c:'#1D4ED8'},
+  lakers  :{n:'湖人',  logo:'',c:'#552583'},
+  blazers :{n:'开拓者',logo:'',c:'#E03A3E'}
+};
+const LEAGUE = {nba:'NBA', cba:'CBA'};
+
+function icon(id, cls){ return '<svg class="ic '+(cls||'')+'"><use href="#'+id+'"></use></svg>'; }
+
+/* 队徽：真实 URL + onerror 首字色块兜底 */
+function logoHtml(key, size){
+  const t = T[key];
+  const fb = '<span class="fb">'+t.n.charAt(0)+'</span>';
+  const img = t.logo
+    ? '<img src="'+t.logo+'" alt="'+t.n+'" onerror="this.parentNode.classList.add(\'fail\')">'
+    : '';
+  return '<span class="logo '+(size||'')+'" style="--fb:'+t.c+'">'+img+fb+'</span>';
+}
+
+/* ============================================================
+   公共组件
+   ============================================================ */
+function topbar(){
+  return '<header class="topbar">'+
+    '<div class="brand">'+
+      '<span class="brand-mark">'+icon('i-ball','ic-22')+'</span>'+
+      '<span class="brand-txt"><b>NBA LIVE</b><span>影院 CINEMA</span></span>'+
+    '</div>'+
+    '<span class="sp"></span>'+
+    '<div class="top-actions">'+
+      '<button class="round-btn" aria-label="搜索">'+icon('i-search','ic-22')+'</button>'+
+      '<button class="round-btn theme-btn" aria-label="切换主题">'+icon('i-moon','ic-22 ic-moon')+icon('i-sun','ic-22 ic-sun')+'</button>'+
+    '</div>'+
+  '</header>';
+}
+
+function filters(on){
+  const list = [['全部',''],['NBA','nba'],['CBA','cba']];
+  return '<div class="filters">'+list.map(function(x){
+    return '<button class="chip '+(x[1]===on?'on':'')+'" data-lg="'+(x[1]||'')+'">'+x[0]+'</button>';
+  }).join('')+'</div>';
+}
+
+function tabbar(active){
+  const items = [['list','i-ticket','赛事'],['live','i-tv','直播'],['me','i-user','我的']];
+  return '<nav class="tabbar">'+items.map(function(it){
+    return '<button class="tab '+(it[0]===active?'on':'')+'" data-tab="'+it[0]+'">'+
+      '<span class="tab-ic">'+icon(it[1],'ic-22')+'</span><b>'+it[2]+'</b></button>';
+  }).join('')+'</nav>';
+}
+
+function sectionHead(title, tag){
+  return '<div class="sec"><h2>'+title+'</h2>'+
+    (tag?'<span class="tag">'+tag+'</span>':'')+
+    '<span class="rule"></span></div>';
+}
+
+/* 海报式直播大卡 */
+function posterCard(g){
+  return '<article class="poster live">'+
+    '<div class="poster-art"></div>'+
+    '<div class="poster-top">'+
+      '<span class="live-mark"><i class="pulse"></i>直播中</span>'+
+      '<span class="sp"></span>'+
+      '<span class="poster-lg">'+LEAGUE[g.lg]+' · 源站 '+g.src+'</span>'+
+    '</div>'+
+    '<div class="poster-stage">'+
+      '<div class="p-team">'+logoHtml(g.h,'lg-52')+'<b>'+T[g.h].n+'</b></div>'+
+      '<div class="p-mid"><span class="p-vs"></span><span class="p-time num">'+g.time+'</span></div>'+
+      '<div class="p-team">'+logoHtml(g.a,'lg-52')+'<b>'+T[g.a].n+'</b></div>'+
+    '</div>'+
+    '<div class="poster-foot">'+
+      '<span class="pill">'+icon('i-signal','ic-14')+g.sig+' 条信号</span>'+
+      '<span class="pill">'+icon('i-film','ic-14')+'直连 HLS</span>'+
+      '<button class="enter-btn">'+icon('i-play','ic-14')+'进入直播</button>'+
+    '</div>'+
+  '</article>';
+}
+
+/* 海报条赛事卡 */
+function matchCard(g){
+  const st = g.st==='done'
+    ? '<span class="status done">'+icon('i-check','ic-14')+'已结束</span>'
+    : '<span class="status soon">'+icon('i-clock','ic-14')+'未开赛</span>';
+  return '<article class="card">'+
+    '<div class="card-art"></div>'+
+    '<div class="card-head">'+
+      '<span class="lg-chip '+g.lg+'">'+LEAGUE[g.lg]+'</span>'+
+      '<span class="card-date num">'+g.date+'</span>'+
+      '<span class="sig-pill">'+icon('i-signal','ic-14')+g.sig+' 条信号</span>'+
+    '</div>'+
+    '<div class="card-match">'+
+      '<div class="mt">'+logoHtml(g.h,'lg-36')+'<b>'+T[g.h].n+'</b></div>'+
+      '<span class="m-vs">VS</span>'+
+      '<div class="mt rt"><b>'+T[g.a].n+'</b>'+logoHtml(g.a,'lg-36')+'</div>'+
+    '</div>'+
+    '<div class="card-foot">'+st+
+      '<span class="foot-time num">'+g.time+'</span>'+
+      '<span class="foot-src">源站 '+g.src+'</span>'+
+    '</div>'+
+  '</article>';
+}
+
+/* ============================================================
+   屏 A：赛事列表
+   ============================================================ */
+const LIVE_GAME = {lg:'cba',h:'qingdao',a:'liaoning',time:'19:35',date:'10-21',sig:3,st:'live',src:'JRS'};
+const GROUPS = [
+  {d:'今天 · 10月21日', tag:'CBA', items:[
+    {lg:'cba',h:'zhejiang',a:'shandong',time:'19:35',date:'10-21',sig:3,st:'soon',src:'JRKAN'},
+    {lg:'cba',h:'shenzhen',a:'guangsha',time:'19:35',date:'10-21',sig:3,st:'done',src:'JRS'}
+  ]},
+  {d:'明天 · 10月22日', tag:'NBA', items:[
+    {lg:'nba',h:'celtics',a:'hawks',time:'07:00',date:'10-22',sig:3,st:'soon',src:'JRKAN'},
+    {lg:'nba',h:'lakers',a:'blazers',time:'07:30',date:'10-22',sig:3,st:'soon',src:'JRS'}
+  ]}
+];
+
+function listBody(){
+  let html = '<div class="list-body">'+posterCard(LIVE_GAME);
+  GROUPS.forEach(function(gr){
+    html += sectionHead(gr.d, gr.tag);
+    html += gr.items.map(matchCard).join('');
+  });
+  return html+'</div>';
+}
+
+function emptyBody(){
+  return '<div class="state-wrap">'+
+    '<div class="state-ill">'+icon('i-film','ic-28')+'</div>'+
+    '<h2>今天暂无直播安排</h2>'+
+    '<p>已同步 JRS 与 JRKAN 两个源站，当前筛选条件下没有可播放的赛事。明天 07:00 的 NBA 场次会在这里出现。</p>'+
+    '<button class="state-btn">'+icon('i-refresh','ic-16')+'刷新赛程</button>'+
+    '<button class="state-btn ghost">'+icon('i-stack','ic-16')+'切换到其他源站</button>'+
+    '<span class="state-hint">开赛前 15 分钟会推送提醒</span>'+
+  '</div>';
+}
+
+function loadBody(){
+  return '<div class="skel-wrap">'+
+    '<div class="skel">'+
+      '<div class="sk-row"><div class="sk sk-logo"></div><div class="sk-lines"><div class="sk" style="width:38%"></div><div class="sk" style="width:72%"></div></div></div>'+
+      '<div class="sk-row" style="margin-bottom:0"><div class="sk sk-logo"></div><div class="sk-lines"><div class="sk" style="width:44%"></div><div class="sk" style="width:64%"></div></div></div>'+
+    '</div>'+
+    '<div class="skel">'+
+      '<div class="sk-row"><div class="sk" style="width:52px;height:24px"></div><div class="sk" style="width:80px"></div><div class="sk" style="margin-left:auto;width:68px;height:24px"></div></div>'+
+      '<div class="sk-row" style="margin-bottom:0"><div class="sk sk-logo"></div><div class="sk" style="width:26%"></div><div class="sk" style="width:26px"></div><div class="sk" style="width:26%"></div><div class="sk sk-logo"></div></div>'+
+    '</div>'+
+    '<div class="skel">'+
+      '<div class="sk-row"><div class="sk" style="width:52px;height:24px"></div><div class="sk" style="width:70px"></div><div class="sk" style="margin-left:auto;width:68px;height:24px"></div></div>'+
+      '<div class="sk-row" style="margin-bottom:0"><div class="sk sk-logo"></div><div class="sk" style="width:34%"></div><div class="sk" style="width:26px"></div><div class="sk" style="width:34%"></div><div class="sk sk-logo"></div></div>'+
+    '</div>'+
+    '<div class="loading-note"><span class="spinner"></span><span>正在同步 JRS / JRKAN 源站赛程…</span></div>'+
+  '</div>';
+}
+
+function errorBody(){
+  return '<div class="state-wrap">'+
+    '<div class="state-ill err">'+icon('i-wifi-off','ic-28')+'</div>'+
+    '<h2>赛事加载失败</h2>'+
+    '<p>源站 jrszbt.com 连接超时，未能获取今日赛程。请检查网络连接后重试，或切换到备用源站。</p>'+
+    '<span class="state-code">HTTP 504 · SOURCE_TIMEOUT</span>'+
+    '<button class="state-btn">'+icon('i-refresh','ic-16')+'重新加载</button>'+
+    '<button class="state-btn ghost">'+icon('i-stack','ic-16')+'切换备用源站</button>'+
+  '</div>';
+}
+
+/* ============================================================
+   屏 B：播放器
+   ============================================================ */
+const playerHtml =
+'<section class="screen" data-screen="02-player-dark">'+
+  '<div class="pv-stage">'+
+    '<div class="pv-art"></div>'+
+    '<div class="pv-top">'+
+      '<button class="round-btn" aria-label="返回">'+icon('i-back','ic-22')+'</button>'+
+      '<div class="pv-title"><b>青岛 vs 辽宁</b><span>CBA · 10-21 19:35</span></div>'+
+      '<button class="round-btn" aria-label="更多">'+icon('i-stack','ic-22')+'</button>'+
+    '</div>'+
+    '<div class="pv-badge">'+
+      '<span class="live-mark"><i class="pulse"></i>直播中</span>'+
+      '<span class="src">源站 JRS</span>'+
+    '</div>'+
+    '<div class="pv-center"><button class="pv-play">'+icon('i-play','ic-28')+'</button></div>'+
+    '<div class="pv-bottom">'+
+      '<div class="pv-times"><span class="num">08:42</span><span class="num">48:00</span></div>'+
+      '<div class="pv-track"><i></i></div>'+
+      '<div class="pv-ctrls">'+
+        '<span class="pv-ic">'+icon('i-pause','ic-22')+'</span>'+
+        '<span class="pv-ic">'+icon('i-volume','ic-22')+'</span>'+
+        '<span class="sp"></span>'+
+        '<span class="pv-ic on">'+icon('i-signal','ic-22')+'</span>'+
+        '<span class="pv-ic">'+icon('i-full','ic-22')+'</span>'+
+      '</div>'+
+    '</div>'+
+  '</div>'+
+  '<div class="pv-panel">'+
+    '<div class="pv-info">'+
+      logoHtml('qingdao','lg-40')+
+      '<div class="mid"><b>青岛 vs 辽宁</b><span>直播中 · 19:35 · 共 3 条信号</span></div>'+
+      logoHtml('liaoning','lg-40')+
+    '</div>'+
+    '<div class="pv-title-row"><b>信号切换</b><span>共 3 条线路</span><span class="rule"></span></div>'+
+    '<div class="sig-bar" role="tablist">'+
+      '<button class="sig-opt"><b>信号1</b><span>高清 1080P</span></button>'+
+      '<button class="sig-opt on"><b>信号2</b><span>高清 1080P</span></button>'+
+      '<button class="sig-opt"><b>信号3</b><span>标清 720P</span></button>'+
+    '</div>'+
+    '<div class="snackbar">'+
+      icon('i-alert','ic-22')+
+      '<span class="snack-t"><b>信号1 播放失败，已自动切换</b><span>当前线路 信号2 · 高清 1080P</span></span>'+
+      '<button class="snack-btn">重试</button>'+
+    '</div>'+
+    '<div class="info-row"><span class="k">源站</span><span class="v">JRS · 直连 HLS (m3u8)</span>'+icon('i-chev','ic-16')+'</div>'+
+    '<div class="info-row"><span class="k">自动故障切换</span><span class="v">已开启 · 失败后自动顺延</span>'+icon('i-check','ic-16')+'</div>'+
+  '</div>'+
+  tabbar('live')+
+'</section>';
+
+/* ============================================================
+   屏 C：赛事详情
+   ============================================================ */
+const detailHtml =
+'<section class="screen" data-screen="03-detail-dark">'+
+  '<div class="dt-hero">'+
+    '<div class="dt-top">'+
+      '<button class="round-btn" aria-label="返回">'+icon('i-back','ic-22')+'</button>'+
+      '<h1>赛事详情</h1>'+
+      '<button class="round-btn" aria-label="更多">'+icon('i-stack','ic-22')+'</button>'+
+    '</div>'+
+    '<div class="dt-meta">'+
+      '<span class="lg-chip nba">NBA</span>'+
+      '<span class="t num">10-22 07:00</span>'+
+      '<span class="status soon">'+icon('i-clock','ic-14')+'未开赛</span>'+
+      '<span class="sp"></span>'+
+      '<span class="t">3 条信号</span>'+
+    '</div>'+
+    '<div class="dt-match">'+
+      '<div class="dt-team">'+logoHtml('celtics','lg-64')+'<b>凯尔特人</b></div>'+
+      '<div class="dt-mid"><span class="vs">VS</span><small class="num">10-22</small></div>'+
+      '<div class="dt-team">'+logoHtml('hawks','lg-64')+'<b>老鹰</b></div>'+
+    '</div>'+
+  '</div>'+
+  '<div class="dt-body">'+
+    '<div class="pv-title-row"><b>选择信号</b><span>点击进入播放器并选中该线路</span><span class="rule"></span></div>'+
+    '<div class="sig-list">'+
+      '<button class="sig-row on"><span class="idx">1</span><span class="meta"><b>信号1 · 高清</b><span>1080P · HLS · 源站 JRS</span></span><span class="sig-state ok">'+icon('i-check','ic-14')+'可用</span>'+icon('i-chev','ic-16 chev')+'</button>'+
+      '<button class="sig-row"><span class="idx">2</span><span class="meta"><b>信号2 · 标清</b><span>720P · HLS · 源站 JRKAN</span></span><span class="sig-state ok">'+icon('i-check','ic-14')+'可用</span>'+icon('i-chev','ic-16 chev')+'</button>'+
+      '<button class="sig-row"><span class="idx">3</span><span class="meta"><b>信号3 · 备线</b><span>480P · HLS · 源站 JRS 备用</span></span><span class="sig-state slow">速度慢</span>'+icon('i-chev','ic-16 chev')+'</button>'+
+    '</div>'+
+    '<div class="pv-title-row" style="margin-top:18px"><b>其他源站信息</b><span>次要信息</span><span class="rule"></span></div>'+
+    '<div class="secondary">'+
+      '<div class="sec-row"><span class="k">源站</span><span class="v">JRS / JRKAN 双源</span>'+icon('i-stack','ic-16')+'</div>'+
+      '<div class="sec-row"><span class="k">更多信号外链</span><span class="v">jrkan.com 赛事页</span>'+icon('i-link','ic-16')+'</div>'+
+      '<div class="sec-row"><span class="k">备用地址</span><span class="v">m3u8 主备地址已就绪</span>'+icon('i-check','ic-16')+'</div>'+
+    '</div>'+
+  '</div>'+
+  '<button class="dt-cta">'+icon('i-play','ic-16')+'去观看 · 信号1</button>'+
+  tabbar('list')+
+'</section>';
+
+/* ============================================================
+   组装
+   ============================================================ */
+function listScreen(id, variant, theme){
+  let body;
+  if(variant==='empty') body = emptyBody();
+  else if(variant==='loading') body = loadBody();
+  else if(variant==='error') body = errorBody();
+  else body = listBody();
+  const cls = 'screen' + (theme==='light'?' on':'');
+  return '<section class="'+cls+'" data-screen="'+id+'"'+(theme==='light'?' data-theme="light"':'')+'>'+
+    topbar()+filters('all')+
+    '<div class="scroll">'+body+'</div>'+
+    tabbar('list')+
+  '</section>';
+}
+
+const phone = document.getElementById('phone');
+phone.innerHTML =
+  listScreen('01-list-dark','list')+
+  playerHtml+
+  detailHtml+
+  listScreen('04-list-light','list','light')+
+  listScreen('05-empty-state','empty')+
+  listScreen('06-loading-state','loading')+
+  listScreen('07-error-state','error');
+
+/* 屏幕切换 */
+function showScreen(id){
+  var screens = phone.querySelectorAll('.screen');
+  for(var i=0;i<screens.length;i++){
+    screens[i].classList.toggle('on', screens[i].getAttribute('data-screen')===id);
+  }
+}
+window.__SHOW_SCREEN = showScreen;
+
+/* 主题切换 */
+function setTheme(theme){
+  document.documentElement.setAttribute('data-theme', theme);
+}
+window.__SET_THEME = setTheme;
+
+/* 交互 */
+document.addEventListener('click', function(e){
+  var t = e.target;
+
+  var themeBtn = t.closest && t.closest('.theme-btn');
+  if(themeBtn){
+    var cur = document.documentElement.getAttribute('data-theme')==='light' ? 'dark' : 'light';
+    setTheme(cur);
+    return;
+  }
+
+  var chip = t.closest && t.closest('.chip');
+  if(chip && chip.parentNode){
+    var chips = chip.parentNode.querySelectorAll('.chip');
+    for(var i=0;i<chips.length;i++) chips[i].classList.remove('on');
+    chip.classList.add('on');
+    return;
+  }
+
+  var pill = t.closest && t.closest('.sig-opt');
+  if(pill && pill.parentNode){
+    var pills = pill.parentNode.querySelectorAll('.sig-pill');
+    for(var j=0;j<pills.length;j++) pills[j].classList.remove('on');
+    pill.classList.add('on');
+    return;
+  }
+
+  var row = t.closest && t.closest('.sig-row');
+  if(row && row.parentNode){
+    var rows = row.parentNode.querySelectorAll('.sig-row');
+    for(var k=0;k<rows.length;k++) rows[k].classList.remove('on');
+    row.classList.add('on');
+  }
+});
+
+window.__SCREENS = [
+  {id:'01-list-dark',   name:'01-list-dark',   selector:'[data-screen="01-list-dark"]'},
+  {id:'02-player-dark', name:'02-player-dark', selector:'[data-screen="02-player-dark"]'},
+  {id:'03-detail-dark', name:'03-detail-dark', selector:'[data-screen="03-detail-dark"]'},
+  {id:'04-list-light',  name:'04-list-light',  selector:'[data-screen="04-list-light"]'},
+  {id:'05-empty-state', name:'05-empty-state', selector:'[data-screen="05-empty-state"]'},
+  {id:'06-loading-state',name:'06-loading-state',selector:'[data-screen="06-loading-state"]'},
+  {id:'07-error-state', name:'07-error-state', selector:'[data-screen="07-error-state"]'}
+];
+
+showScreen('01-list-dark');
+</script>
+</body>
+</html>

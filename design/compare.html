@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>NBA Live · UI 方案对比</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #08080c;
+    color: #F8FAFC;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 48px 40px 80px;
+    width: 1680px;
+  }
+  .head { margin-bottom: 40px; }
+  .head h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.5px; }
+  .head p { color: #94A3B8; font-size: 16px; margin-top: 10px; line-height: 1.6; }
+  .badge {
+    display: inline-block; background: #E11D48; color: #fff; font-size: 13px;
+    font-weight: 700; padding: 4px 10px; border-radius: 6px; margin-right: 10px;
+    vertical-align: middle;
+  }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+  .card {
+    background: #0F0F16; border: 1px solid #23233A; border-radius: 20px;
+    padding: 24px; display: flex; flex-direction: column;
+  }
+  .card.recommended { border-color: #E11D48; box-shadow: 0 0 0 1px #E11D48, 0 20px 60px -20px rgba(225,29,72,.5); }
+  .card h2 { font-size: 22px; font-weight: 800; display: flex; align-items: center; gap: 10px; }
+  .tag {
+    font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
+    background: #1E1B4B; color: #A5A0FF; letter-spacing: .5px;
+  }
+  .tag.pick { background: #E11D48; color: #fff; }
+  .desc { color: #94A3B8; font-size: 13.5px; line-height: 1.7; margin: 12px 0 18px; min-height: 92px; }
+  .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .shot { border-radius: 10px; overflow: hidden; border: 1px solid #23233A; background: #000; }
+  .shot img { width: 100%; display: block; }
+  .shot .cap { font-size: 11px; color: #6B7280; text-align: center; padding: 6px 0; background: #0B0B12; }
+  .meta { margin-top: 18px; border-top: 1px solid #1E1E30; padding-top: 14px; }
+  .meta dl { display: grid; grid-template-columns: 74px 1fr; gap: 8px 12px; font-size: 12.5px; }
+  .meta dt { color: #6B7280; }
+  .meta dd { color: #C7CBD8; line-height: 1.5; }
+  .swatches { display: flex; gap: 6px; margin-top: 10px; }
+  .sw { width: 26px; height: 26px; border-radius: 6px; border: 1px solid rgba(255,255,255,.14); }
+  .foot { margin-top: 48px; color: #6B7280; font-size: 13px; line-height: 1.8; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>NBA Live · 三套 UI 方案对比</h1>
+    <p>同一份需求基线（暗色默认 / 播放红 CTA / 三核心屏 / 多线路切换 / 故障自动切换 / 空载错三态），三种设计取向。<br>
+       截图均为 390×844 真实视口渲染，使用真实赛事与队徽数据。</p>
+  </div>
+
+  <div class="grid">
+    <!-- A -->
+    <div class="card recommended">
+      <h2>方案 A · 影院沉浸 <span class="tag pick">推荐</span></h2>
+      <div class="desc">
+        深黑 OLED 打底，把比赛当作"正在放映的片子"。直播中的赛事用红色光晕呼吸突出，
+        播放器做成沉浸式暗场，信号切换以半透明胶囊条贴在视频下方。观赛氛围最强。
+      </div>
+      <div class="shots">
+        <div class="shot"><img src="cinema/out/01-list-dark.png"><div class="cap">赛事列表</div></div>
+        <div class="shot"><img src="cinema/out/02-player-dark.png"><div class="cap">播放器</div></div>
+        <div class="shot"><img src="cinema/out/03-detail-dark.png"><div class="cap">赛事详情</div></div>
+      </div>
+      <div class="meta">
+        <dl>
+          <dt>风格</dt><dd>影院级沉浸 / OLED 纯黑 / 辉光</dd>
+          <dt>主色</dt><dd>#E11D48 播放红 + #0F0F23 深蓝黑</dd>
+          <dt>列表</dt><dd>大卡片 + 日期分段，直播卡横贯全宽</dd>
+          <dt>播放器</dt><dd>沉浸暗场 + 半透明胶囊信号条</dd>
+          <dt>适合</dt><dd>夜间长时间观赛，氛围优先</dd>
+        </dl>
+        <div class="swatches">
+          <div class="sw" style="background:#E11D48"></div>
+          <div class="sw" style="background:#0F0F23"></div>
+          <div class="sw" style="background:#000000"></div>
+          <div class="sw" style="background:#312E81"></div>
+          <div class="sw" style="background:#F8FAFC"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- B -->
+    <div class="card">
+      <h2>方案 B · 运动卡片 <span class="tag">SPORT CARD</span></h2>
+      <div class="desc">
+        明快、有活力的运动视觉。大圆角卡片 + 联赛色条 + 大字号开赛时间，
+        双列网格让一屏看到更多场次。播放器带"其他直播"推荐区，方便连着看。
+      </div>
+      <div class="shots">
+        <div class="shot"><img src="sportcard/out/01-list-dark.png"><div class="cap">赛事列表</div></div>
+        <div class="shot"><img src="sportcard/out/02-player-dark.png"><div class="cap">播放器</div></div>
+        <div class="shot"><img src="sportcard/out/03-detail-dark.png"><div class="cap">赛事详情</div></div>
+      </div>
+      <div class="meta">
+        <dl>
+          <dt>风格</dt><dd>运动卡片 / 高饱和 / 大圆角</dd>
+          <dt>主色</dt><dd>橙红渐变 + 联赛色标识</dd>
+          <dt>列表</dt><dd>双列网格，一屏 4-6 场</dd>
+          <dt>播放器</dt><dd>分段控件切信号 + 其他直播推荐</dd>
+          <dt>适合</dt><dd>快速扫赛程、多场切换的活跃用户</dd>
+        </dl>
+        <div class="swatches">
+          <div class="sw" style="background:#FF6B35"></div>
+          <div class="sw" style="background:#E11D48"></div>
+          <div class="sw" style="background:#1A1A2E"></div>
+          <div class="sw" style="background:#2D2D44"></div>
+          <div class="sw" style="background:#FFFFFF"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- C -->
+    <div class="card">
+      <h2>方案 C · 极简赛程表 <span class="tag">MINIMAL</span></h2>
+      <div class="desc">
+        完全反卡片化。把应用做成一份优雅的赛程表：一行一场，时间 / 联赛 / 对阵 / 线路数横向排布，
+        靠排版与留白建立秩序。信息密度最高，操作路径最短。
+      </div>
+      <div class="shots">
+        <div class="shot"><img src="minimal/out/list.png"><div class="cap">赛事列表</div></div>
+        <div class="shot"><img src="minimal/out/player.png"><div class="cap">播放器</div></div>
+        <div class="shot"><img src="minimal/out/detail.png"><div class="cap">赛事详情</div></div>
+      </div>
+      <div class="meta">
+        <dl>
+          <dt>风格</dt><dd>极简 / 无装饰 / 分割线秩序</dd>
+          <dt>主色</dt><dd>#E11D48 仅用于直播态 + 纯黑底</dd>
+          <dt>列表</dt><dd>单列紧凑行，一屏 8-10 场</dd>
+          <dt>播放器</dt><dd>下划线 Tab 切信号 + 赛事信息表</dd>
+          <dt>适合</dt><dd>只想快速找到比赛、不喜欢花哨的用户</dd>
+        </dl>
+        <div class="swatches">
+          <div class="sw" style="background:#E11D48"></div>
+          <div class="sw" style="background:#000000"></div>
+          <div class="sw" style="background:#111114"></div>
+          <div class="sw" style="background:#26262E"></div>
+          <div class="sw" style="background:#F8FAFC"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    三套方案均已完成：赛事列表 / 播放器 / 赛事详情 三核心屏 + 空态 / 加载态 / 错误态 + 浅色模式。<br>
+    选定方向后，我会把该方案的设计 token 与组件落到 Kotlin + Jetpack Compose 工程里。
+  </div>
+</body>
+</html>
