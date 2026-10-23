@@ -7,6 +7,7 @@ import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
 
@@ -130,6 +131,61 @@ class MatchRepositoryTest {
         val b = match("jrs-", "C队", "D队", null, "直播中")
         val merged = invokeMerge(listOf(a, b), emptyList())
         assertEquals(2, merged.map { it.id }.distinct().size)
+    }
+
+    // ---- 回归：单个数据源偶发失败不能静默消失（要重试） ----
+
+    @Test
+    fun `a source that fails once then succeeds still contributes its matches`() = runBlocking {
+        // 实测源站 20/20 稳定，单源消失是客户端瞬时失败被静默吞掉：
+        // fetchJrs 首次拿 null 直接 return emptyList()，且无重试 -> 列表只剩另一个源
+        var jrsAttempts = 0
+        val jrsHtml = """
+            <div class="list"><p class="list-title">2026-10-23</p>
+            <a href="/live/555.html" class="list-con">
+              <div class="list-team-con"><p class="list-team-name">湖人</p></div>
+              <div class="list-team-con"><p class="list-team-name">凯尔特人</p></div>
+              <p class="list-info-league">NBA</p><p class="list-info-time">07:00</p>
+            </a></div>
+        """.trimIndent()
+
+        val result = repo.loadMatches { url, _ ->
+            when {
+                url.contains("jrszbt") -> if (jrsAttempts++ == 0) null else jrsHtml
+                else -> null // JRKAN 这一轮也失败：只剩 JRS 可用
+            }
+        }
+
+        assertTrue("重试后 JRS 必须被成功拉取", jrsAttempts >= 2)
+        val matches = result.getOrNull() ?: error("loadMatches 失败: ${result.exceptionOrNull()}")
+        assertTrue(
+            "JRS 第一次瞬时失败后，列表必须仍含其赛事（实际: ${matches.map { it.id }}）",
+            matches.any { it.id == "jrs-555" },
+        )
+    }
+
+    @Test
+    fun `same game with home and away swapped between sources merges into one`() {
+        // 实测 JRS 列表主客顺序与 JRKAN 相反（骑士 vs 76人 / 76人 vs 骑士）：
+        // key 若按 "日期|主队|客队" 排列组合，两源永远对不上 -> 同一场拆成两张卡，
+        // 点 JRS 卡只有 JRS 信号、点 JRKAN 卡只有 JRKAN 信号
+        val jrs = match(
+            "jrs-99", "骑士", "76人", dayMillis(10, 23, 7), "07:00",
+            jrsDetailId = "99",
+        )
+        val jrkan = match(
+            "jrkan-1", "76人", "骑士", dayMillis(10, 23, 7), "10-23 07:00",
+            sources = listOf(
+                StreamSource("a", "信号1", Provider.JRKAN, "http://play.sportsteam356.com/play/steam1.html"),
+            ),
+        )
+        val merged = invokeMerge(listOf(jrs), listOf(jrkan))
+        assertEquals("主客对调必须合并成一张卡", 1, merged.size)
+        val m = merged.single()
+        // 合并后两张源的线路都在：点进详情能选任意一边
+        assertNotNull("JRS 详情页 id 不能丢", m.jrsDetailId)
+        assertEquals("99", m.jrsDetailId)
+        assertTrue("JRKAN 线路不能丢", m.sources.isNotEmpty())
     }
 
     // ---- 回归：源站把未开赛场次标成"直播中"时，本地时钟要能纠回未开赛 ----

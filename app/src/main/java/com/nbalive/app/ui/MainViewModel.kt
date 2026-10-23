@@ -9,6 +9,7 @@ import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.repository.MatchRepository
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -68,6 +69,11 @@ data class PlayerUiState(
 
 class MainViewModel(
     private val repository: MatchRepository = MatchRepository(),
+    /**
+     * 列表加载入口。生产默认走 [MatchRepository.loadMatches]；
+     * 测试注入它以可控地驱动"播放期间自动刷新"的时序（全程不触网）。
+     */
+    private val loadMatches: suspend () -> Result<List<Match>> = { repository.loadMatches() },
 ) : ViewModel() {
 
     private val _route = MutableStateFlow(Route.LIST)
@@ -95,33 +101,83 @@ class MainViewModel(
     private var loadJob: Job? = null
     private var refreshJob: Job? = null
 
+    /** 播放期间的列表自动刷新循环，见 [startAutoRefresh] */
+    private var autoRefreshJob: Job? = null
+
+    companion object {
+        /**
+         * 播放期间列表自动刷新间隔。
+         * 直播中场次随开赛/结束实时变化，两分钟足以让"同时在播"面板跟上现场。
+         */
+        const val AUTO_REFRESH_INTERVAL_MS = 2L * 60L * 1000L
+    }
+
     init {
         refresh()
     }
 
     // ---------- 列表 ----------
 
-    fun refresh() {
+    /**
+     * 刷新赛事列表。
+     *
+     * @param silent 静默刷新（播放期间的后台自动刷新用）：不转圈、失败也不弹错。
+     *   用户正在看球时被"加载中"遮住列表、或弹一个网络错误，体验都很差，
+     *   何况旧数据还能继续用。手动刷新/下拉刷新仍然给明确的加载与错误反馈。
+     */
+    fun refresh(silent: Boolean = false) {
         // 取消上一次：连点刷新会让多次 loadMatches 并发跑，
         // 每次都要为直播中的场次并发拉详情页，对源站是成倍的请求量
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
-            _listState.update { it.copy(loading = true, error = null) }
-            repository.loadMatches()
+            if (!silent) _listState.update { it.copy(loading = true, error = null) }
+            loadMatches()
                 .onSuccess { matches ->
                     _listState.update {
                         it.copy(loading = false, error = null, matches = matches)
                     }
                 }
                 .onFailure { e ->
-                    _listState.update {
-                        it.copy(
-                            loading = false,
-                            error = e.message ?: "网络异常，请稍后重试",
-                        )
+                    if (silent) {
+                        // 后台静默刷新失败：保留旧列表继续展示，不打扰用户
+                        _listState.update { it.copy(loading = false) }
+                    } else {
+                        _listState.update {
+                            it.copy(
+                                loading = false,
+                                error = e.message ?: "网络异常，请稍后重试",
+                            )
+                        }
                     }
                 }
         }
+    }
+
+    /**
+     * 播放期间自动刷新赛事列表。
+     *
+     * "同时在播"面板、"其他直播"列表和计数徽标的数据全部来自 listState，
+     * 而列表原来只在打开 App 和手动刷新时更新，播放页又没有刷新入口：
+     * 看一场两个小时的比赛，中途开赛的新场次永远不出现在面板里，
+     * 已经结束的也一直挂着。
+     *
+     * 进场立即刷一次（用户可能在列表页停留已久，快照已过期），之后按周期刷。
+     * 静默执行——理由见 [refresh]。
+     */
+    private fun startAutoRefresh() {
+        if (autoRefreshJob?.isActive == true) return
+        autoRefreshJob = viewModelScope.launch {
+            while (isActive) {
+                refresh(silent = true)
+                delay(AUTO_REFRESH_INTERVAL_MS)
+            }
+        }
+    }
+
+    /** 离开播放页：停掉后台循环，否则回到列表/详情后还在持续请求源站。 */
+    private fun stopAutoRefresh() {
+        autoRefreshJob?.cancel()
+        autoRefreshJob = null
     }
 
     fun selectLeague(league: League) {
@@ -158,6 +214,7 @@ class MainViewModel(
         val match = detail.match ?: return
         failedSources.clear()
         _route.value = Route.PLAYER
+        startAutoRefresh()
         _playerState.value = PlayerUiState(
             match = match,
             signals = detail.signals,
@@ -200,6 +257,7 @@ class MainViewModel(
         loadJob?.cancel()
         failedSources.clear()
         _route.value = Route.PLAYER
+        startAutoRefresh()
         _detailState.value = MatchDetailUiState(match = match, loadingSignals = true)
         _playerState.value = PlayerUiState(match = match, resolving = true)
         loadJob = viewModelScope.launch {
@@ -384,6 +442,7 @@ class MainViewModel(
             Route.PLAYER -> {
                 playJob?.cancel()
                 loadJob?.cancel()
+                stopAutoRefresh()
                 _route.value = Route.DETAIL
                 _playerState.update {
                     it.copy(streamUrl = null, streamReferer = null, webFallbackUrl = null, resolving = false)

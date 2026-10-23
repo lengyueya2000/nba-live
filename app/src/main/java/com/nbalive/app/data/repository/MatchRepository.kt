@@ -17,6 +17,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -40,6 +41,12 @@ class MatchRepository(
 
         /** 状态校正时并发拉详情页的上限：防止一次刷新把源站打爆。 */
         private const val MAX_DETAIL_CONCURRENCY = 4
+
+        /** 列表页单源拉取的最大尝试次数（含首次）。 */
+        private const val LIST_FETCH_ATTEMPTS = 3
+
+        /** 重试退避基数：第 n 次失败后等 n * LIST_RETRY_BACKOFF_MS。 */
+        private const val LIST_RETRY_BACKOFF_MS = 400L
     }
 
     /**
@@ -57,11 +64,19 @@ class MatchRepository(
         }
 
     /** 拉取并合并两个源的全部赛事。一个源抛异常不能带走另一个源的好数据。 */
-    suspend fun loadMatches(): Result<List<Match>> = withContext(Dispatchers.IO) {
+    suspend fun loadMatches(): Result<List<Match>> =
+        loadMatches { url, referer -> http.get(url, referer) }
+
+    /**
+     * 可注入 fetch 的实现，供单元测试覆盖"单源瞬时失败要重试"这类逻辑。
+     */
+    internal suspend fun loadMatches(
+        fetch: suspend (String, String?) -> String?,
+    ): Result<List<Match>> = withContext(Dispatchers.IO) {
         catching {
             supervisorScope {
-                val jrsDeferred = async { fetchJrs() }
-                val jrkanDeferred = async { fetchJrkan() }
+                val jrsDeferred = async { fetchJrs(fetch) }
+                val jrkanDeferred = async { fetchJrkan(fetch) }
                 val jrs = jrsDeferred.await().getOrElse {
                     Log.w("MatchRepo", "JRS fetch failed", it)
                     emptyList()
@@ -151,13 +166,34 @@ class MatchRepository(
                 .thenBy { it.leagueRawName }
         )
 
-    private suspend fun fetchJrs(): Result<List<Match>> = catching {
-        val html = http.get(JRS_LIST_URL) ?: return@catching emptyList()
+    /**
+     * 列表页单源拉取，带线性退避重试。
+     *
+     * 回归背景：实测源站 20/20 稳定，但此前 fetch 返回 null（非 2xx / 超时 / DNS 抖动）
+     * 会直接 return emptyList() 且不重试 —— 手机网络一次瞬时抖动就把整个源静默吞掉，
+     * 用户看到的正是"有时只剩 JRS、有时只剩 JRKAN"。
+     */
+    private suspend fun fetchListWithRetry(
+        fetch: suspend (String, String?) -> String?,
+        url: String,
+    ): String? {
+        repeat(LIST_FETCH_ATTEMPTS) { attempt ->
+            val body = fetch(url, null)
+            if (!body.isNullOrBlank()) return body
+            if (attempt < LIST_FETCH_ATTEMPTS - 1) {
+                delay(LIST_RETRY_BACKOFF_MS * (attempt + 1))
+            }
+        }
+        return null
+    }
+
+    private suspend fun fetchJrs(fetch: suspend (String, String?) -> String?): Result<List<Match>> = catching {
+        val html = fetchListWithRetry(fetch, JRS_LIST_URL) ?: return@catching emptyList()
         jrsParser.parseList(html)
     }
 
-    private suspend fun fetchJrkan(): Result<List<Match>> = catching {
-        val js = http.get(JRKAN_LIST_JS) ?: return@catching emptyList()
+    private suspend fun fetchJrkan(fetch: suspend (String, String?) -> String?): Result<List<Match>> = catching {
+        val js = fetchListWithRetry(fetch, JRKAN_LIST_JS) ?: return@catching emptyList()
         jrkanParser.parseList(js)
     }
 
@@ -205,12 +241,21 @@ class MatchRepository(
             .toList()
     }
 
-    /** 归一化队名用于跨源匹配（去掉空白差异），并带上开赛日期防止同队重复场次被合并。 */
+    /**
+     * 归一化队名用于跨源匹配（去掉空白差异），并带上开赛日期防止同队重复场次被合并。
+     *
+     * ⚠️ 主客队必须**排序后**拼接：实测 JRS 列表与 JRKAN 的主客顺序相反
+     * （JRS "骑士 vs 76人" / JRKAN "76人 vs 骑士"），按固定 "home|away" 排列
+     * 会让两源的 key 永远对不上——同一场被拆成两张卡，点进去各只有半边信号。
+     * 排序后顺序无关，仅日期+队名对决定归属（背靠背两场靠日期区分，仍然安全）。
+     */
     private fun normalizeKey(m: Match): String {
         val day = m.startAtMillis?.let {
             java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
         } ?: m.timeLabel.substringBefore(' ').ifBlank { "?" }
-        return "${day}|${m.homeTeam.replace(Regex("\\s+"), "")}|${m.awayTeam.replace(Regex("\\s+"), "")}"
+        val norm = { s: String -> s.replace(Regex("\\s+"), "") }
+        val (t1, t2) = listOf(norm(m.homeTeam), norm(m.awayTeam)).sorted()
+        return "$day|$t1|$t2"
     }
 
     /**
