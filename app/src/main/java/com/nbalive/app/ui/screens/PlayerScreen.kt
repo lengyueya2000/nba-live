@@ -9,6 +9,11 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -74,6 +79,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -140,6 +146,12 @@ fun PlayerScreen(
     /** 正在直播的其他场次（"同时在播"面板数据源） */
     liveMatches: List<Match> = emptyList(),
     onLiveMatchClick: (Match) -> Unit = {},
+    /**
+     * 播放期间列表由用户在"同时在播"面板上点按钮手动刷新（不自动刷）：
+     * 看球时背后持续请求源站既不发全，也会让面板内容不可控地跳变。
+     */
+    refreshing: Boolean = false,
+    onRefreshLive: () -> Unit = {},
     fullscreen: Boolean = false,
     inPip: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
@@ -635,6 +647,8 @@ fun PlayerScreen(
             LiveNowPanel(
                 matches = liveMatches,
                 currentMatchId = match?.id,
+                refreshing = refreshing,
+                onRefresh = onRefreshLive,
                 onSelect = {
                     showLivePanel = false
                     onLiveMatchClick(it)
@@ -793,6 +807,8 @@ private fun PickerRow(
 private fun LiveNowPanel(
     matches: List<Match>,
     currentMatchId: String?,
+    refreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onSelect: (Match) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -825,6 +841,36 @@ private fun LiveNowPanel(
                 maxLines = 1,
             )
             Spacer(Modifier.weight(1f))
+            // 手动刷新：看球期间不自动刷，用户点这个按钮才拉最新列表
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .clickable(enabled = !refreshing, onClick = onRefresh),
+                contentAlignment = Alignment.Center,
+            ) {
+                val spin by rememberInfiniteTransition(label = "refresh").animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(900, easing = LinearEasing),
+                    ),
+                    label = "refreshSpin",
+                )
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = "刷新同时在播列表",
+                    modifier = Modifier
+                        .size(16.dp)
+                        .then(if (refreshing) Modifier.rotate(spin) else Modifier),
+                    tint = if (refreshing) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            Spacer(Modifier.width(Space.sm))
             Box(
                 modifier = Modifier
                     .size(30.dp)
@@ -842,7 +888,11 @@ private fun LiveNowPanel(
         }
         Spacer(Modifier.height(Space.xs))
         Text(
-            text = if (others.isEmpty()) "暂无其他正在直播的场次" else "共 ${others.size} 场正在直播",
+            text = when {
+                refreshing -> "刷新中…"
+                others.isEmpty() -> "暂无其他正在直播的场次"
+                else -> "共 ${others.size} 场正在直播"
+            },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = Space.lg),

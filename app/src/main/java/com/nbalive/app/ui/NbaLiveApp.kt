@@ -271,6 +271,8 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     onReconnect = viewModel::reconnect,
                     liveMatches = listState.matches.filter { it.status == MatchStatus.LIVE },
                     onLiveMatchClick = viewModel::playMatch,
+                    refreshing = listState.loading,
+                    onRefreshLive = { viewModel.refresh() },
                     fullscreen = fullscreen,
                     inPip = inPip,
                     onToggleFullscreen = { fullscreen = !fullscreen },
