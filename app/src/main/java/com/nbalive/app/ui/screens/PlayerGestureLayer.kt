@@ -75,6 +75,14 @@ fun PlayerMediaGestures(
     modifier: Modifier = Modifier,
     /** 单击回调（全屏时切换浮层显隐）；null 表示不处理单击 */
     onTap: (() -> Unit)? = null,
+    /**
+     * 只响应单击、忽略滑动（锁定时用）。
+     *
+     * 锁定态下亮度/音量手势必须停用（否则"防误触锁"形同虚设），
+     * 但**单击仍要能唤出解锁按钮** —— 否则用户找不到解锁入口。
+     * 所以锁定时不是把整个手势层关掉，而是切到这个"只认单击"的模式。
+     */
+    tapOnly: Boolean = false,
 ) {
     if (!enabled) return
 
@@ -117,7 +125,7 @@ fun PlayerMediaGestures(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(enabled, activity, audio) {
+            .pointerInput(enabled, activity, audio, tapOnly) {
                 // 滑动距离 = 屏高的 70% 走完全量程：太长滑不到底，太短容易误触
                 val fullSwipe = PlayerGestureMath.fullSwipe(size.height.toFloat())
                 awaitEachGesture {
@@ -142,6 +150,13 @@ fun PlayerMediaGestures(
                         moved += change.positionChange().y
                         if (!dragging) {
                             if (abs(moved) > viewConfiguration.touchSlop) {
+                                // tapOnly（锁定态）：滑动不接管、不改亮度音量，
+                                // 也不算"单击"（用户确实滑了，只是被锁挡住）。
+                                // 直接结束本次手势，什么都不做。
+                                if (tapOnly) {
+                                    takenByOthers = true
+                                    break
+                                }
                                 dragging = true
                                 startValue = when (side) {
                                     Side.BRIGHTNESS -> readBrightness(activity)

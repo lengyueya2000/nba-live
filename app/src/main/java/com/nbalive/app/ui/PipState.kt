@@ -57,4 +57,21 @@ object PipState {
     fun setVideoSize(width: Int, height: Int) {
         _videoSize.value = VideoSize(width, height)
     }
+
+    /**
+     * 「按 Home 键是否该自动进小窗」的判定。
+     *
+     * 必须**播放页 + 确实有流可播**两条同时成立：
+     *  - 不在播放页（列表/详情）按 Home 应该正常回桌面，不该弹空小窗
+     *  - 在播放页但还没解析出流、或所有线路都失败（界面显示"暂无信号"）时，
+     *    弹出来是一块黑窗，比不进小窗更让人困惑
+     *
+     * 抽成纯函数是为了能被单测钉住 ——
+     * 真正的调用点在 MainActivity.onUserLeaveHint，实机很难覆盖全部分支。
+     *
+     * @param isPlayerRoute 当前是否停留在播放页
+     * @param hasStream 是否有可播的流（直连 m3u8 或网页兜底页）
+     */
+    fun shouldAutoEnterPip(isPlayerRoute: Boolean, hasStream: Boolean): Boolean =
+        isPlayerRoute && hasStream
 }

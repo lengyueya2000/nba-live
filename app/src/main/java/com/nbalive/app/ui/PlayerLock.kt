@@ -5,20 +5,27 @@ package com.nbalive.app.ui
  *
  * 锁定 = 防误触。看球时手放在屏幕上，很容易碰到返回键、切线路、换源。
  * 锁定后：
- *  - 所有浮层隐藏（时钟、画质、画中画/全屏、底部控制栏）
- *  - 手势层停用（滑动不再改亮度/音量，单击不再切换浮层）
- *  - 画面中央显示一个提示，说明现在是锁定态
+ *  - 所有浮层隐藏（时钟、画质、画中画/全屏、底部控制栏、锁按钮、提示）
+ *  - 手势停用（滑动不改亮度/音量）
  *  - 视频继续播，屏幕继续常亮（锁屏就熄屏还看什么）
  *
- * ⚠️ 用户明确要求：**只有点解锁键才能解锁**。
- * 所以锁定后画面不可点、返回键不退出播放页 —— 解锁入口唯一，就是右侧中间的锁按钮。
+ * 解锁方式：**单击画面**唤出锁按钮（3 秒后自动收起），点它解锁。
+ * 只单击画面本身不会解锁 —— 防误触的意义就在这：
+ * 手掌蹭一下屏幕不会把锁解开，必须看到按钮再精准点它。
+ *
+ * ⚠️ 返回键在锁定时**不退出播放页**（用户明确要求）。
  */
 object PlayerLock {
 
-    /** 浮层（顶部信息、右上角按钮、底部控制栏）是否显示 */
+    /**
+     * 浮层（顶部信息、右上角按钮、底部控制栏）是否显示。
+     *
+     * 锁定时浮层全隐藏，但单击画面后 [showUnlockUi] 为 true 时
+     * 锁按钮会单独出现（见 [showLockButton]）。
+     */
     fun showOverlays(locked: Boolean): Boolean = !locked
 
-    /** 手势层（亮度/音量滑动、单击画面）是否启用 */
+    /** 手势层（亮度/音量滑动）是否启用 */
     fun gesturesEnabled(locked: Boolean): Boolean = !locked
 
     /** 底部控制栏是否显示 */
@@ -27,18 +34,14 @@ object PlayerLock {
     /**
      * 锁按钮是否显示。
      *
-     * ⚠️ 锁定时**必须**仍然显示 —— 它是唯一的解锁入口。
-     */
-    fun showLockButton(locked: Boolean): Boolean = true
-
-    /**
-     * 锁按钮在**未锁定**时是否跟着浮层一起隐藏。
+     * @param locked 当前是否锁定
+     * @param unlockUiVisible 锁定态下"单击画面唤出的解锁 UI"是否处于显示期
      *
-     * 全屏直连下浮层默认是收起的（单击画面才显示），
-     * 锁按钮孤零零挂在画面右侧中间，既挡画面又破坏了"单击清空画面"的预期。
-     * 锁定时反过来 —— 它必须常显，否则用户没法解锁。
+     * 未锁定 → 跟随浮层（全屏默认收起，单击才出现）；
+     * 锁定 → **只在 unlockUiVisible 时显示**，其余时间画面完全干净。
      */
-    fun hideLockButtonWhenOverlaysHidden(locked: Boolean): Boolean = !locked
+    fun showLockButton(locked: Boolean, unlockUiVisible: Boolean): Boolean =
+        if (locked) unlockUiVisible else true
 
     /**
      * 返回键在当前状态下该不该退出播放页。
@@ -54,8 +57,24 @@ object PlayerLock {
      */
     fun backExitsPlayer(locked: Boolean): Boolean = !locked
 
-    /** 画面中央的锁定提示是否显示 */
-    fun showLockHint(locked: Boolean): Boolean = locked
+    /**
+     * 顶部「已锁定 · 点右侧锁按钮解锁」提示是否显示。
+     *
+     * 只在单击画面唤出解锁 UI 时跟着出现 —— 锁定时常驻的话，
+     * 画面顶部永远挂一条黑条，与"锁定是为了画面干净"自相矛盾。
+     */
+    fun showLockHint(locked: Boolean, unlockUiVisible: Boolean): Boolean =
+        locked && unlockUiVisible
+
+    /**
+     * 锁定态下，单击画面是否应该唤出解锁 UI。
+     *
+     * 未锁定时单击由调用方处理（切换浮层显隐），不归这里管。
+     */
+    fun tapShowsUnlockUi(locked: Boolean): Boolean = locked
+
+    /** 解锁 UI 自动收起的延时（毫秒）。太短来不及点，太长又破坏画面干净 */
+    const val UNLOCK_UI_TIMEOUT_MS: Long = 3_000
 
     /**
      * 锁定是否对当前这场比赛生效。

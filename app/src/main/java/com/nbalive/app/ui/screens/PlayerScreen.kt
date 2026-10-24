@@ -105,7 +105,6 @@ import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlayerLock
-import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
@@ -177,14 +176,56 @@ fun PlayerScreen(
     val videoHandle = remember(streamUrl) { VideoPlayerHandle() }
 
     // 全屏时界面默认干净：所有浮层（顶部信息、右上按钮、底部控制栏）隐藏，
-    // 单击画面显示、再单击隐藏。非全屏时始终显示。
-    // 沉浸式只适用于 ExoPlayer 直连路径：网页线路的触摸要留给源站播放器自己。
-    val immersive = fullscreen && !inPip && streamUrl != null
+    // 单击画面显示、再单击隐藏；显示后 10 秒无操作自动收起。
+    // 直连与网页两条路径的显隐行为一致。
     // 网页线路全屏：源站 H5 播放器自带底部控制条，我们的底部栏盖上去就没法用了，
-    // 而且网页路径不能接管触摸（点画面必须交给源站播放器），
-    // 所以网页全屏不画顶部信息条和底部控制栏，只留右上角的 PIP / 退出全屏。
+    // 所以网页全屏不画底部控制栏，只留顶部信息与右上角的 PIP / 退出全屏。
+    // ⚠️ 但**浮层显隐行为要和直连一致**：单击显示、10 秒无操作自动收起。
+    // 早先这里被硬编码成"常显"（webFullscreen 直接跳过 controlsVisible），
+    // 结果是网页全屏时按钮一直挂在画面上，盖住源站画面右上角。
     val webFullscreen = fullscreen && !inPip && streamUrl == null
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
+    // 浮层上的"用户操作"计数：每次点按钮/开面板就 +1，
+    // 用来重置"10 秒无操作自动收起"的计时。
+    // 否则用户在全屏里慢慢挑线路，挑到一半控制栏自己消失了。
+    var controlsTouchSeq by remember { mutableStateOf(0) }
+    // 包装一层：所有"用户操作浮层"的点击都走这里，自动续期
+    fun touchControls() {
+        controlsVisible = true
+        controlsTouchSeq++
+    }
+    // 锁定态下"单击画面唤出的解锁 UI"是否显示。
+    // 锁定后画面完全干净（无按钮、无提示），单击才唤出锁按钮，3 秒后自动收起。
+    // 用 remember 而不是 saveable：这是瞬时交互态，进程重建后重新收起才合理。
+    var unlockUiVisible by remember { mutableStateOf(false) }
+    // 解锁 UI 的自动收起计时；每次单击重新计时
+    LaunchedEffect(locked, unlockUiVisible) {
+        if (locked && unlockUiVisible) {
+            delay(PlayerLock.UNLOCK_UI_TIMEOUT_MS)
+            unlockUiVisible = false
+        }
+    }
+    // 解除锁定后立刻收起解锁 UI，避免下次进入锁定态时它还是"亮着"的
+    LaunchedEffect(locked) {
+        if (!locked) unlockUiVisible = false
+    }
+
+    // 浮层"显示后 10 秒无操作自动收起"。
+    //
+    // ⚠️ 只在**全屏**且浮层可见时计时：
+    //  - 非全屏时浮层是常驻的（有滚动内容要读），不该自己消失
+    //  - 锁定时浮层本来就全隐藏，由 unlockUiVisible 那套 3 秒计时负责
+    //
+    // key 里带 controlsVisible 和 controlsTouchSeq：
+    //  - controlsVisible 变化 → 每次"显示"重新计时
+    //  - controlsTouchSeq 变化 → 用户在浮层上做了操作（点按钮/开面板）
+    //    也重新计时，否则操作到一半浮层自己消失
+    LaunchedEffect(fullscreen, controlsVisible, locked, inPip, controlsTouchSeq) {
+        if (fullscreen && !inPip && controlsVisible && !locked) {
+            delay(FULLSCREEN_CONTROLS_TIMEOUT_MS)
+            controlsVisible = false
+        }
+    }
     // ⚠️ 只在**进入全屏**时收起浮层，key 里不能有 streamUrl：
     // 原来的 `LaunchedEffect(fullscreen, streamUrl)` 在换线路时也会重跑，
     // 把 controlsVisible 重置成 false —— 用户刚点完"线路"胶囊，
@@ -265,26 +306,35 @@ fun PlayerScreen(
 
             // 手势层（必须压在视频之上、按钮之下）：
             //  - 左半屏上下滑调亮度，右半屏上下滑调音量
-            //  - 全屏直连时单击画面显示/隐藏浮层
-            //  - 网页线路也启用手势：只在**发生垂直拖动**时才消费事件，
+            //  - 全屏时单击画面显示/隐藏浮层（直连与网页两条路径一致）
+            //  - 网页线路只在**发生垂直拖动**时才消费事件，
             //    单击依旧透传给源站播放器（否则网页线路根本没法调亮度音量）
-            // ⚠️ 锁定时整个手势层停用：滑动/单击都不该再有反应，
-            //    否则"防误触锁"形同虚设。
+            // ⚠️ 锁定时不是整层关掉，而是切到 tapOnly：
+            //    滑动一律不接管（防误触的核心），但**单击要能唤出解锁按钮** ——
+            //    否则锁定后用户找不到任何解锁入口，等于把播放页锁死。
             PlayerMediaGestures(
-                enabled = !inPip && PlayerLock.gesturesEnabled(locked),
+                enabled = !inPip,
+                tapOnly = locked,
                 modifier = Modifier.fillMaxSize(),
-                onTap = if (immersive) ({ controlsVisible = !controlsVisible }) else null,
+                onTap = when {
+                    locked -> ({ unlockUiVisible = !unlockUiVisible })
+                    // 全屏（含网页线路）单击切换浮层显隐；
+                    // 非全屏时浮层常驻，不处理单击（网页线路交给源站播放器）
+                    fullscreen -> ({ controlsVisible = !controlsVisible })
+                    else -> null
+                },
             )
 
             // 视频区顶部浮层：**只留实时时钟**。
             // 原来这里还画"直播中/未开赛"+联赛名（左上的 NBA 药丸），
             // 那两枚信息在播放页里没有决策价值，反而挡住画面左上角，
             // 用户明确要求去掉。
-            // 网页全屏也显示：时钟只是一枚小药丸，且在左上角，
-            // 不与源站播放器（控制条在底部）冲突；画中画里不显示。
+            // 网页全屏同样受 controlsVisible 控制（单击显示、10 秒后自动收起）：
+            // 早先这里用 `|| webFullscreen` 硬编码常显，结果网页全屏时
+            // 时钟和按钮一直压在源站画面上，用户要求改掉。
             // ⚠️ 锁定时浮层全部隐藏（防误触）：只留右侧的解锁按钮。
             if (match != null && !inPip && PlayerLock.showOverlays(locked) &&
-                (!fullscreen || controlsVisible || webFullscreen)
+                (!fullscreen || controlsVisible)
             ) {
                 Row(
                     modifier = Modifier
@@ -307,10 +357,11 @@ fun PlayerScreen(
 
             // 右上角：画中画 / 全屏（画中画窗口内不再显示按钮）
             // 网页线路全屏时保留：这两个是"逃生按钮"，在右上角，
-            // 不与源站播放器底部的控制条冲突
+            // 不与源站播放器底部的控制条冲突。
+            // 网页全屏同样受 controlsVisible 控制（单击显示、10 秒后自动收起）。
             // ⚠️ 锁定时隐藏：防误触，锁住期间不该能误触画中画/全屏
             if (!inPip && PlayerLock.showOverlays(locked) &&
-                (!fullscreen || controlsVisible || webFullscreen)
+                (!fullscreen || controlsVisible)
             ) {
                 Row(
                     modifier = Modifier
@@ -321,12 +372,18 @@ fun PlayerScreen(
                     VideoControlButton(
                         icon = Icons.Filled.PictureInPictureAlt,
                         description = "画中画",
-                        onClick = onEnterPip,
+                        onClick = {
+                            touchControls()
+                            onEnterPip()
+                        },
                     )
                     VideoControlButton(
                         icon = if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
                         description = if (fullscreen) "退出全屏" else "全屏",
-                        onClick = onToggleFullscreen,
+                        onClick = {
+                            touchControls()
+                            onToggleFullscreen()
+                        },
                     )
                 }
             }
@@ -335,17 +392,18 @@ fun PlayerScreen(
             // ⚠️ 位置选右侧中间而不是底部控制栏：
             //  1) 底部控制栏只在全屏时出现，非全屏时没地方放
             //  2) 锁定后底部控制栏要隐藏，按钮会跟着消失 → 用户没法解锁
-            // 锁按钮**永远可见**（锁定时也显示），它就是唯一的解锁入口。
             //
             // 右侧滑出的面板（同时在播 / 源·线路）会盖住这个位置，
             // 面板打开时把它藏起来，面板自己的关闭按钮承担退出。
             //
-            // ⚠️ **锁定时无条件常显**（它是唯一的解锁入口）；
-            // 未锁定时跟随浮层一起隐藏 —— 全屏直连下浮层默认是收起的，
-            // 锁按钮孤零零挂在画面中间，既挡画面又破坏了"单击清空画面"的预期。
-            if (!inPip && PlayerLock.showLockButton(locked) && picker == null && !showLivePanel &&
-                (locked || !PlayerLock.hideLockButtonWhenOverlaysHidden(locked) ||
-                    !fullscreen || controlsVisible || webFullscreen)
+            // 显示规则：
+            //  - 未锁定：跟随浮层（全屏直连下浮层默认收起，单击才出现）
+            //  - 锁定：**默认不显示**，单击画面唤出，3 秒后自动收起。
+            //    锁定后画面完全干净，这是"防误触"该有的样子；
+            //    但单击必须能唤出它，否则用户找不到解锁入口。
+            if (!inPip && picker == null && !showLivePanel &&
+                PlayerLock.showLockButton(locked, unlockUiVisible) &&
+                (locked || !fullscreen || controlsVisible)
             ) {
                 VideoControlButton(
                     icon = if (locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
@@ -359,14 +417,14 @@ fun PlayerScreen(
             }
 
             // ---------- 锁定提示 ----------
-            // 锁定后画面不可点，只有右侧的锁按钮能解锁。
-            // 这里给出明确提示，告诉用户"现在是锁着的、去点右边那个锁"。
+            // 只在单击唤出解锁 UI 时跟着出现，告诉用户"现在是锁着的、点右边那个锁"。
+            // 锁定时常驻的话，画面顶部永远挂一条黑条，与"锁定让画面干净"自相矛盾。
             //
             // ⚠️ 放在**顶部居中**而不是画面中央：
             // 画面正中央经常已经有"该线路暂无信号"之类的提示，
             // 两者叠在一起会糊成一团（实机截图确认过）。
             // 顶部居中那块是空的（时钟在左上、按钮在右上），不会撞车。
-            if (!inPip && PlayerLock.showLockHint(locked)) {
+            if (!inPip && PlayerLock.showLockHint(locked, unlockUiVisible)) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -412,8 +470,10 @@ fun PlayerScreen(
             // 右侧白描边功能胶囊（画面/源/线路/同时在播），一眼能读、按得准。
             // 关键：不再使用 Media3 原生控制条 —— 它自带快进/后退/进度条，
             // 直播流上误触会跳离直播边缘，而且不支持"重连/换源"这类直播操作。
-            // 网页线路全屏不画：源站播放器自己的底部控制条会被它盖死，
-            // 网页路径又没法接管点击把浮层收起来。
+            //
+            // ⚠️ 网页线路全屏**不画这条栏**：源站播放器自己的底部控制条在同一个位置，
+            // 我们的栏盖上去会把它压死（用户在网页线路里就没法暂停/拖进度了）。
+            // 网页全屏只保留顶部时钟 + 右上角逃生按钮，它们和源站控制条不冲突。
             if (fullscreen && !inPip && controlsVisible && !webFullscreen &&
                 PlayerLock.showBottomBar(locked)
             ) {
@@ -441,13 +501,19 @@ fun PlayerScreen(
                                     icon = if (videoHandle.isPlaying) Icons.Filled.Pause
                                     else Icons.Filled.PlayArrow,
                                     description = if (videoHandle.isPlaying) "暂停" else "播放",
-                                    onClick = { videoHandle.togglePlay() },
+                                    onClick = {
+                                        touchControls()
+                                        videoHandle.togglePlay()
+                                    },
                                 )
                             }
                             PlayerIconButton(
                                 icon = Icons.Filled.Refresh,
                                 description = "重连",
-                                onClick = onReconnect,
+                                onClick = {
+                                    touchControls()
+                                    onReconnect()
+                                },
                             )
                         }
                         // 右：功能胶囊
@@ -459,6 +525,7 @@ fun PlayerScreen(
                             PlayerChip(
                                 label = "画面 ${aspectMode.label}",
                                 onClick = {
+                                    touchControls()
                                     val next = AspectMode.entries[
                                         (aspectMode.ordinal + 1) % AspectMode.entries.size,
                                     ]
@@ -470,16 +537,25 @@ fun PlayerScreen(
                                 val safeIndex = selectedIndex.coerceIn(0, signals.lastIndex)
                                 PlayerChip(
                                     label = "源 ${signals.getOrNull(safeIndex)?.provider?.displayName ?: "-"}",
-                                    onClick = { picker = PickerKind.SOURCE },
+                                    onClick = {
+                                        touchControls()
+                                        picker = PickerKind.SOURCE
+                                    },
                                 )
                                 PlayerChip(
                                     label = "线路 ${safeIndex + 1}/${signals.size}",
-                                    onClick = { picker = PickerKind.LINE },
+                                    onClick = {
+                                        touchControls()
+                                        picker = PickerKind.LINE
+                                    },
                                 )
                             }
                             PlayerChip(
                                 label = "同时在播 ${liveMatches.count { it.id != match?.id }}",
-                                onClick = { showLivePanel = true },
+                                onClick = {
+                                    touchControls()
+                                    showLivePanel = true
+                                },
                             )
                         }
                     }
@@ -639,30 +715,6 @@ fun PlayerScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.weight(1f),
-                )
-            }
-        }
-
-        // ---------- 画面设置 ----------
-        if (streamUrl != null) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.lg)
-                    .padding(top = Space.md)
-                    .clip(RoundedCornerShape(Radius.card))
-                    .background(MaterialTheme.colorScheme.surface)
-                    .padding(Space.md),
-            ) {
-                Text(
-                    text = "画面",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(Space.sm))
-                AspectModeSelector(
-                    aspectMode = aspectMode,
-                    onAspectChange = onAspectChange,
                 )
             }
         }
@@ -903,9 +955,13 @@ private fun LiveNowPanel(
     val others = matches.filter { it.id != currentMatchId }
     Column(
         modifier = Modifier
+            // ⚠️ 宽度只保留"屏幕的一半"，不再叠加 widthIn(max=320.dp)：
+            // 两者同时用时 fillMaxWidth(0.78f) 会先把宽度定成 499dp（横屏 640dp 的 78%），
+            // 后接的 widthIn 只约束"上限"，在尺寸已确定后不会回缩 ——
+            // 实测面板占了 450dp（约 70% 屏宽），把直播画面压得只剩左侧一条。
+            // 横屏看球时面板最多占一半，画面留一半才看得清。
             .fillMaxHeight()
-            .fillMaxWidth(0.78f)
-            .widthIn(max = 320.dp)
+            .fillMaxWidth(0.5f)
             .background(MaterialTheme.colorScheme.surface)
             .padding(vertical = Space.md),
     ) {
@@ -1607,3 +1663,13 @@ private fun WebSurface(
         }
     }
 }
+
+
+/**
+ * 全屏浮层「显示后多久无操作自动收起」。
+ *
+ * 10 秒是可用性与画面干净的折中：
+ * 太短（3 秒）用户还没找到要点的按钮就消失了；
+ * 太长（20 秒+）按钮一直压在画面上，等于没隐藏。
+ */
+private const val FULLSCREEN_CONTROLS_TIMEOUT_MS: Long = 10_000

@@ -152,11 +152,16 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     // 直连 HLS 与 WebView 两条播放路径都算"正在看"
     val playingNow = playerState.streamUrl != null || playerState.webFallbackUrl != null
     DisposableEffect(route, playingNow) {
-        // ⚠️ 进了播放页就算"正在看"，**包括解析中的那几秒**：
-        // 解析时 streamUrl/webFallbackUrl 都还是 null，
-        // 如果按 playingNow 判定，用户点进播放页后马上按 Home 就不会进小窗，
-        // 表现为"小窗坏了"。
-        PipState.setPlayerActive(route == Route.PLAYER)
+        // 只有**真的在看视频**时才允许「按 Home 自动进小窗」。
+        // 判定集中在 PipState.shouldAutoEnterPip（可单测），
+        // 早先只看 route == PLAYER，导致解析中/无信号/比赛已结束时
+        // 按 Home 也会弹出一块空小窗。
+        PipState.setPlayerActive(
+            PipState.shouldAutoEnterPip(
+                isPlayerRoute = route == Route.PLAYER,
+                hasStream = playingNow,
+            ),
+        )
         onDispose { PipState.setPlayerActive(false) }
     }
     // 离开播放页自动退出全屏，避免下次进来是横屏
