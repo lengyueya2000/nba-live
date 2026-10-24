@@ -77,8 +77,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
@@ -144,9 +142,7 @@ fun PlayerScreen(
     /** 嗅探升级失败退回网页：不再弹"暂无信号"提示 */
     sniffFailed: Boolean = false,
     aspectMode: AspectMode = AspectMode.FIT,
-    keepScreenOn: Boolean = true,
     onAspectChange: (AspectMode) -> Unit = {},
-    onKeepScreenOnChange: (Boolean) -> Unit = {},
     /** 重连：重新解析当前线路（直播地址带时效签名，过期后需要换新地址） */
     onReconnect: () -> Unit = {},
     /** 正在直播的其他场次（"同时在播"面板数据源） */
@@ -668,31 +664,6 @@ fun PlayerScreen(
                     aspectMode = aspectMode,
                     onAspectChange = onAspectChange,
                 )
-                Spacer(Modifier.height(Space.sm))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            text = "屏幕常亮",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = if (keepScreenOn) "观赛期间不自动熄屏" else "跟随系统熄屏设置",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = keepScreenOn,
-                        onCheckedChange = onKeepScreenOnChange,
-                        colors = SwitchDefaults.colors(
-                            checkedTrackColor = MaterialTheme.colorScheme.primary,
-                        ),
-                    )
-                }
             }
         }
 
@@ -1434,6 +1405,11 @@ private fun VideoSurface(
                 useController = false
                 resizeMode = aspectMode.resizeMode
                 this.player = player
+                // 屏幕常亮加在 View 上而不是 Activity 的 window 上：
+                // View.keepScreenOn 随这个 View 的可见性自动生效/失效，
+                // 进画中画、退后台、切页面都不需要手动清标志——
+                // window flag 要靠外部状态手动 add/clear，漏一次就一直亮着。
+                keepScreenOn = true
                 playerView = this
                 handle.attach(player)
             }
@@ -1509,6 +1485,9 @@ private fun WebSurface(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                     )
                     setBackgroundColor(AndroidColor.BLACK)
+                    // 网页线路没有 PlayerView，常亮标志加在 WebView 上。
+                    // 与直连路径同理：绑在 View 上，随可见性自动生效/失效。
+                    keepScreenOn = true
                     settings.apply {
                         javaScriptEnabled = true
                         domStorageEnabled = true

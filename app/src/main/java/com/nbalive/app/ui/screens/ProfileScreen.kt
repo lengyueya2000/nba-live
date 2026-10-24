@@ -39,17 +39,20 @@ import com.nbalive.app.ui.theme.Space
 /**
  * "我的"标签页：播放偏好 + 外观 + 关于。
  *
- * 这里放的都是**真的会生效**的设置项：画面模式、屏幕常亮直接改 PlayerPrefs，
+ * 这里放的都是**真的会生效**的设置项：画面模式直接改 PlayerPrefs，
  * 深色模式直接切主题；不做纯展示的假开关。
+ *
+ * ⚠️ 屏幕常亮不在这里：它是产品固定行为（默认开启、不提供关闭），
+ * 由播放页的 PlayerView / WebView 各自设 keepScreenOn 保证。
+ * 早先这里有个开关，现在需求改成"默认开启且不暴露给用户"，
+ * 所以开关本身也一并移除了。
  */
 @Composable
 fun ProfileScreen(
     aspectMode: AspectMode,
-    keepScreenOn: Boolean,
     darkMode: Boolean,
     versionName: String,
     onAspectChange: (AspectMode) -> Unit,
-    onKeepScreenOnChange: (Boolean) -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -87,13 +90,6 @@ fun ProfileScreen(
             AspectModeSelector(
                 aspectMode = aspectMode,
                 onAspectChange = onAspectChange,
-            )
-            Spacer(Modifier.height(Space.md))
-            SwitchRow(
-                title = "屏幕常亮",
-                subtitle = if (keepScreenOn) "观赛期间不自动熄屏" else "跟随系统熄屏设置",
-                checked = keepScreenOn,
-                onCheckedChange = onKeepScreenOnChange,
             )
         }
 

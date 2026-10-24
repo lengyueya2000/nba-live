@@ -34,18 +34,19 @@ enum class AspectMode(val label: String) {
 }
 
 /**
- * 播放偏好：画面模式 + 屏幕常亮。
+ * 播放偏好：画面模式。
  * 用 SharedPreferences 持久化，进程内以 StateFlow 供 Compose 观察。
+ *
+ * ⚠️ 屏幕常亮**不在这里**：它已经是产品固定行为（默认开启、不提供关闭），
+ * 由播放页的 PlayerView / WebView 各自设 `keepScreenOn = true` 保证。
+ * 早先这里存过 keep_screen_on 开关，现在开关移除了 ——
+ * 保留一个没人读的偏好项只会让后来的人以为"它还有用"。
  */
 object PlayerPrefs {
     private const val KEY_ASPECT = "aspect_mode"
-    private const val KEY_KEEP_ON = "keep_screen_on"
 
     private val _aspect = MutableStateFlow(AspectMode.FIT)
     val aspect: StateFlow<AspectMode> = _aspect.asStateFlow()
-
-    private val _keepScreenOn = MutableStateFlow(true)
-    val keepScreenOn: StateFlow<Boolean> = _keepScreenOn.asStateFlow()
 
     fun init(context: Context) {
         // ⚠️ 不要用 loaded 短路：
@@ -54,17 +55,11 @@ object PlayerPrefs {
         // SharedPreferences 本身已在内存里，读一次开销可忽略，所以每次都读。
         val sp = sp(context)
         _aspect.value = AspectMode.of(sp.getString(KEY_ASPECT, null))
-        _keepScreenOn.value = sp.getBoolean(KEY_KEEP_ON, true)
     }
 
     fun setAspect(context: Context, mode: AspectMode) {
         _aspect.value = mode
         sp(context).edit().putString(KEY_ASPECT, mode.name).apply()
-    }
-
-    fun setKeepScreenOn(context: Context, enabled: Boolean) {
-        _keepScreenOn.value = enabled
-        sp(context).edit().putBoolean(KEY_KEEP_ON, enabled).apply()
     }
 
     private fun sp(context: Context) =

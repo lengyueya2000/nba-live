@@ -121,9 +121,11 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         BuildConfig.VERSION_NAME
     }
 
-    // ---------- 播放偏好：画面模式 / 屏幕常亮 ----------
+    // ---------- 播放偏好：画面模式 ----------
+    // 屏幕常亮不在这里：它是产品固定行为（默认开启、无开关），
+    // 由播放页的 PlayerView / WebView 自己设 keepScreenOn，
+    // 不需要 Compose 状态，也不该出现在设置界面里。
     val aspectMode by PlayerPrefs.aspect.collectAsStateWithLifecycle()
-    val keepScreenOn by PlayerPrefs.keepScreenOn.collectAsStateWithLifecycle()
 
     // ---------- 深色模式 ----------
     // 与 MainActivity 保持一致：设计是深色优先，没手动设置过就按深色算
@@ -157,8 +159,6 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         PipState.setPlayerActive(route == Route.PLAYER)
         onDispose { PipState.setPlayerActive(false) }
     }
-    // 观看直播期间保持屏幕常亮，避免球赛看着看着自动熄屏
-    KeepScreenOnEffect(enabled = route == Route.PLAYER && playingNow && keepScreenOn)
     // 离开播放页自动退出全屏，避免下次进来是横屏
     // 同时解除锁定：锁是"看当前这场"的状态，换场/退出就该恢复
     LaunchedEffect(route) {
@@ -272,11 +272,9 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     // 我的：真实生效的播放/外观设置
                     Tab.PROFILE -> ProfileScreen(
                         aspectMode = aspectMode,
-                        keepScreenOn = keepScreenOn,
                         darkMode = darkMode,
                         versionName = versionName,
                         onAspectChange = { PlayerPrefs.setAspect(context, it) },
-                        onKeepScreenOnChange = { PlayerPrefs.setKeepScreenOn(context, it) },
                         onDarkModeChange = { AppPrefs.setDarkMode(context, it) },
                     )
                 }
@@ -311,9 +309,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     onStreamSniffed = viewModel::onStreamSniffed,
                     sniffFailed = playerState.failedSniffUrl != null,
                     aspectMode = aspectMode,
-                    keepScreenOn = keepScreenOn,
                     onAspectChange = { PlayerPrefs.setAspect(context, it) },
-                    onKeepScreenOnChange = { PlayerPrefs.setKeepScreenOn(context, it) },
                     onReconnect = viewModel::reconnect,
                     liveMatches = liveMatches,
                     onLiveMatchClick = viewModel::playMatch,
@@ -591,26 +587,6 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
-}
-
-/**
- * 观看直播期间保持屏幕常亮；退出播放/停止播放时恢复系统熄屏策略。
- */
-@Composable
-private fun KeepScreenOnEffect(enabled: Boolean) {
-    val context = LocalContext.current
-    val activity = remember(context) { context.findActivity() }
-    DisposableEffect(enabled, activity) {
-        val window = activity?.window ?: return@DisposableEffect onDispose { }
-        if (enabled) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        } else {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
-        onDispose {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
-    }
 }
 
 /**
