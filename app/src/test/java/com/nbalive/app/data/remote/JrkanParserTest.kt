@@ -27,6 +27,43 @@ class JrkanParserTest {
         document.write('</ul>');
     """.trimIndent()
 
+    /**
+     * 上游给 li 多加属性 / 换行时也要能解析出来。
+     *
+     * 回归：早先 home/away 用的是写死字面量 `lab_team_home"><strong class="name">`，
+     * 源站哪天在 li 上加个 class 就整场（其实是**全部**场次）静默消失。
+     */
+    @Test
+    fun `tolerates extra attributes on team li`() {
+        val variant = indexJs
+            .replace(
+                """<li class="lab_team_home"><strong class="name">凯尔特人</strong>""",
+                """<li class="lab_team_home hot" data-x="1">
+                     <strong class="name">凯尔特人</strong>""",
+            )
+            .replace(
+                """<li class="lab_team_away"><strong class="name">老鹰</strong>""",
+                """<li class="lab_team_away hot" data-x="2">
+                     <strong class="name">老鹰</strong>""",
+            )
+            .replace(
+                """<li class="lab_events" style="background-color:#FF0000"><span class="name">NBA</span></li>""",
+                """<li class="lab_events hot" style="background-color:#FF0000">
+                     <span class="name">NBA</span></li>""",
+            )
+            .replace(
+                """<li class="lab_time">10-22 07:00</li>""",
+                """<li class="lab_time" data-t="1">10-22 07:00</li>""",
+            )
+
+        val m = parser.parseList(variant).firstOrNull()
+        assertTrue("上游加属性不能让整场消失", m != null)
+        assertEquals("凯尔特人", m!!.homeTeam)
+        assertEquals("老鹰", m.awayTeam)
+        assertEquals("NBA", m.leagueRawName)
+        assertEquals("10-22 07:00", m.timeLabel)
+    }
+
     @Test
     fun `parses NBA match with league teams and time`() {
         val matches = parser.parseList(indexJs)
@@ -137,7 +174,12 @@ class JrkanParserTest {
         assertEquals(MatchStatus.LIVE, m.status)
     }
 
-    /** 单场结构，带源站恒在的 lab_vs active / spin_ant 静态类。 */
+    /**
+     * 上游给 li 多加属性 / 换行时也要能解析出来。
+     *
+     * 回归：早先 home/away 用的是写死字面量 `lab_team_home"><strong class="name">`，
+     * 源站哪天在 li 上加个 class 就整场（其实是**全部**场次）静默消失。
+     */
     private fun statusBlock(timeLabel: String): String = """
         document.write('<ul class="item play d-touch active hot" data-lid="1,2,3" data-stype="zqlq">');
         document.write('  <li class="lab_events"><span class="name">NBA</span></li>');

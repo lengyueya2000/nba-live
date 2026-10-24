@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 7.x（API 24/25）的启动器图标兜底。
+  API 26+ 会命中 mipmap-anydpi-v26 里的自适应图标，这里只服务老系统。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/ic_launcher_background" />
+    <item android:drawable="@drawable/ic_launcher_legacy" />
+</layer-list>

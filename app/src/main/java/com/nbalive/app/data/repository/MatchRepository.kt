@@ -6,7 +6,9 @@ import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
+import com.nbalive.app.data.remote.FetchResult
 import com.nbalive.app.data.remote.HttpClient
+import com.nbalive.app.data.remote.debugLog
 import com.nbalive.app.data.remote.JrsParser
 import com.nbalive.app.data.remote.JrkanParser
 import com.nbalive.app.data.remote.StreamUrlResolver
@@ -35,20 +37,6 @@ class MatchRepository(
     private val jrkanParser: JrkanParser = JrkanParser(),
     private val resolver: StreamUrlResolver = StreamUrlResolver(),
 ) {
-    companion object {
-        const val JRS_LIST_URL = "https://jrszbt.com/"
-        const val JRKAN_LIST_JS = "https://im-imgs-bucket.oss-accelerate.aliyuncs.com/index.js?t_5"
-
-        /** 状态校正时并发拉详情页的上限：防止一次刷新把源站打爆。 */
-        private const val MAX_DETAIL_CONCURRENCY = 4
-
-        /** 列表页单源拉取的最大尝试次数（含首次）。 */
-        private const val LIST_FETCH_ATTEMPTS = 3
-
-        /** 重试退避基数：第 n 次失败后等 n * LIST_RETRY_BACKOFF_MS。 */
-        private const val LIST_RETRY_BACKOFF_MS = 400L
-    }
-
     /**
      * runCatching 会把 [CancellationException] 也吞掉，
      * 协程被取消后还会继续跑完剩下的逻辑。
@@ -65,13 +53,25 @@ class MatchRepository(
 
     /** 拉取并合并两个源的全部赛事。一个源抛异常不能带走另一个源的好数据。 */
     suspend fun loadMatches(): Result<List<Match>> =
-        loadMatches { url, referer -> http.get(url, referer) }
+        loadMatchesInternal { url, referer -> http.fetch(url, referer) }
 
     /**
      * 可注入 fetch 的实现，供单元测试覆盖"单源瞬时失败要重试"这类逻辑。
      */
     internal suspend fun loadMatches(
         fetch: suspend (String, String?) -> String?,
+    ): Result<List<Match>> = loadMatchesInternal { url, _ ->
+        val body = fetch(url, null)
+        if (body != null) FetchResult.Ok(body) else FetchResult.Unreachable(null)
+    }
+
+    /**
+     * 真正干活的实现：区分"源站拒绝"与"网络不通"，据此决定要不要重试。
+     *
+     * @param fetch 返回 [FetchResult]：403/429 明确拒绝 → 不重试；网络故障 → 重试
+     */
+    internal suspend fun loadMatchesInternal(
+        fetch: suspend (String, String?) -> FetchResult,
     ): Result<List<Match>> = withContext(Dispatchers.IO) {
         catching {
             supervisorScope {
@@ -90,7 +90,9 @@ class MatchRepository(
                     throw IOException("两个数据源都没有返回赛事，请检查网络")
                 }
                 // 先校正再排序：源站列表的"直播中"会滞后，不修就全堆在最前面
-                sort(correctLiveStatuses(merge(jrs, jrkan)))
+                // ⚠️ 校正拉详情页与列表 fetch 走**同一个缓存**：
+                // 否则"刷新列表"和"点进播放页"会把同一个详情页拉两遍。
+                sort(correctLiveStatuses(merge(jrs, jrkan), fetch))
             }
         }
     }
@@ -103,7 +105,16 @@ class MatchRepository(
      * - 无详情页可查的场次（JRKAN 等）：列表自带 "MM-dd HH:mm"，startAtMillis 可信，
      *   本地时钟双向校正——超时判已结束，未到点判未开赛（源站会提前把未开赛标成"直播中"）。
      */
-    internal suspend fun correctLiveStatuses(matches: List<Match>): List<Match> = coroutineScope {
+    internal suspend fun correctLiveStatuses(matches: List<Match>): List<Match> =
+        correctLiveStatuses(matches) { url, referer -> http.fetch(url, referer) }
+
+    /**
+     * 带 fetch 注入口的实现：让单元测试能整条链路不触网。
+     */
+    internal suspend fun correctLiveStatuses(
+        matches: List<Match>,
+        fetch: suspend (String, String?) -> FetchResult,
+    ): List<Match> = coroutineScope {
         val live = matches.filter { it.status == MatchStatus.LIVE }
         if (live.isEmpty()) return@coroutineScope matches
 
@@ -114,7 +125,7 @@ class MatchRepository(
             async {
                 gate.withPermit {
                     catching {
-                        val html = http.get("https://jrszbt.com/live/${m.jrsDetailId}.html", JRS_LIST_URL)
+                        val html = fetchJrsDetail(m.jrsDetailId!!, fetch)
                         val c = html?.let { jrsParser.correctedStatus(m, jrsParser.parseScheduledTime(it)) }
                         m.id to c
                     }.getOrNull()
@@ -152,6 +163,85 @@ class MatchRepository(
         }
     }
 
+    /**
+     * 拉取 JRS 详情页，带一个**短 TTL 的进程内缓存**。
+     *
+     * 同一个详情页在一条用户操作链里会被请求 2~3 次：
+     *  1) 列表状态校正（每场一个）
+     *  2) 进入播放页 loadSignals（同一场又来一次）
+     *  3) 详情页点"刷新线路"（再来一次）
+     *
+     * 详情页内容是"计划开赛时间"，一场比赛在几小时内不会变，
+     * 用 TTL 缓存直接消掉重复请求 —— 这是对源站最有效的一次减负。
+     *
+     * TTL 取 5 分钟：足够覆盖"打开 App → 点直播 → 刷新线路"这一串操作，
+     * 又短到不会让用户手动刷新时看到过期数据（状态校正本身会重新拉）。
+     */
+    private suspend fun fetchJrsDetail(
+        detailId: String,
+        fetch: suspend (String, String?) -> FetchResult,
+    ): String? {
+        val url = "https://jrszbt.com/live/$detailId.html"
+        val now = System.currentTimeMillis()
+        synchronized(detailCache) {
+            val hit = detailCache[url]
+            if (hit != null) {
+                if (now - hit.first < DETAIL_CACHE_TTL_MS) return hit.second
+                detailCache.remove(url)
+            }
+        }
+        val body = when (val r = fetch(url, JRS_LIST_URL)) {
+            is FetchResult.Ok -> r.body
+            else -> null
+        }
+        if (!body.isNullOrBlank()) {
+            synchronized(detailCache) {
+                detailCache[url] = now to body
+            }
+        }
+        return body
+    }
+
+    companion object {
+        const val JRS_LIST_URL = "https://jrszbt.com/"
+        const val JRKAN_LIST_JS = "https://im-imgs-bucket.oss-accelerate.aliyuncs.com/index.js?t_5"
+
+        /** 状态校正时并发拉详情页的上限：防止一次刷新把源站打爆。 */
+        private const val MAX_DETAIL_CONCURRENCY = 4
+
+        /** 列表页单源拉取的最大尝试次数（含首次）。 */
+        private const val LIST_FETCH_ATTEMPTS = 3
+
+        /** 重试退避基数：第 n 次失败后等 n * LIST_RETRY_BACKOFF_MS。 */
+        private const val LIST_RETRY_BACKOFF_MS = 400L
+
+        /** 详情页缓存有效期：覆盖"打开 App → 点直播 → 刷新线路"这一串操作。 */
+        private const val DETAIL_CACHE_TTL_MS = 5 * 60 * 1000L
+
+        /** 详情页缓存的最大条数：防止长时间运行后无限增长。 */
+        private const val DETAIL_CACHE_MAX_ENTRIES = 64
+    }
+
+    /**
+     * 详情页短缓存：URL -> (缓存时刻, 正文)。
+     *
+     * ⚠️ 会被多个协程并发访问（状态校正并发 4 路 + loadSignals），
+     * 所以用 synchronized 保护，不能用普通 LinkedHashMap。
+     *
+     * ⚠️ 必须有**条数上限**：MatchRepository 跟着 ViewModel 活整个进程，
+     * 而一场比赛一个详情页 —— 一天下来几十上百个 URL 会一直堆着。
+     * 超过上限就淘汰最旧的（LinkedHashMap 的 accessOrder=true 就是 LRU）。
+     */
+    private val detailCache = object : LinkedHashMap<String, Pair<Long, String>>(
+        /* initialCapacity = */ 16,
+        /* loadFactor = */ 0.75f,
+        /* accessOrder = */ true,
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, Pair<Long, String>>?,
+        ): Boolean = size > DETAIL_CACHE_MAX_ENTRIES
+    }
+
     /** 直播中优先，其余按开赛时间。 */
     private fun sort(matches: List<Match>): List<Match> =
         matches.sortedWith(
@@ -172,27 +262,39 @@ class MatchRepository(
      * 回归背景：实测源站 20/20 稳定，但此前 fetch 返回 null（非 2xx / 超时 / DNS 抖动）
      * 会直接 return emptyList() 且不重试 —— 手机网络一次瞬时抖动就把整个源静默吞掉，
      * 用户看到的正是"有时只剩 JRS、有时只剩 JRKAN"。
+     *
+     * ⚠️ 但**被源站拒绝（403/429）时不能重试**：
+     * 那是限流信号，再打 3 次只会让限流窗口越拖越长，退避 400/800ms 也太短。
+     * 详见 [FetchResult]。
      */
     private suspend fun fetchListWithRetry(
-        fetch: suspend (String, String?) -> String?,
+        fetch: suspend (String, String?) -> FetchResult,
         url: String,
     ): String? {
         repeat(LIST_FETCH_ATTEMPTS) { attempt ->
-            val body = fetch(url, null)
-            if (!body.isNullOrBlank()) return body
-            if (attempt < LIST_FETCH_ATTEMPTS - 1) {
-                delay(LIST_RETRY_BACKOFF_MS * (attempt + 1))
+            when (val result = fetch(url, null)) {
+                is FetchResult.Ok -> return result.body
+                is FetchResult.Rejected -> {
+                    // 明确拒绝：不重试。这是最容易被忽略的"限流放大器"
+                    Log.w("MatchRepo", "源站拒绝请求(HTTP ${result.code})，放弃重试: $url")
+                    return null
+                }
+                is FetchResult.Unreachable -> {
+                    if (attempt < LIST_FETCH_ATTEMPTS - 1) {
+                        delay(LIST_RETRY_BACKOFF_MS * (attempt + 1))
+                    }
+                }
             }
         }
         return null
     }
 
-    private suspend fun fetchJrs(fetch: suspend (String, String?) -> String?): Result<List<Match>> = catching {
+    private suspend fun fetchJrs(fetch: suspend (String, String?) -> FetchResult): Result<List<Match>> = catching {
         val html = fetchListWithRetry(fetch, JRS_LIST_URL) ?: return@catching emptyList()
         jrsParser.parseList(html)
     }
 
-    private suspend fun fetchJrkan(fetch: suspend (String, String?) -> String?): Result<List<Match>> = catching {
+    private suspend fun fetchJrkan(fetch: suspend (String, String?) -> FetchResult): Result<List<Match>> = catching {
         val js = fetchListWithRetry(fetch, JRKAN_LIST_JS) ?: return@catching emptyList()
         jrkanParser.parseList(js)
     }
@@ -268,20 +370,21 @@ class MatchRepository(
      * JRS：信号在详情页的 a.toLive 里。
      */
     suspend fun loadSignals(match: Match): Detail =
-        loadSignals(match) { url, referer -> http.get(url, referer) }
+        loadSignals(match) { url, referer -> http.fetch(url, referer) }
 
     /**
      * 可注入 fetch 的实现，供单元测试覆盖"多个播放页展开后 id 是否唯一"这类逻辑。
      */
     internal suspend fun loadSignals(
         match: Match,
-        fetch: suspend (String, String?) -> String?,
+        fetch: suspend (String, String?) -> FetchResult,
     ): Detail = withContext(Dispatchers.IO) {
         var correction: JrsParser.StatusCorrection? = null
 
         val jrsSignals = match.jrsDetailId?.let { id ->
-            val detailUrl = "https://jrszbt.com/live/$id.html"
-            val html = fetch(detailUrl, JRS_LIST_URL)
+            // ⚠️ 必须走缓存版 fetchJrsDetail：
+            // 列表状态校正刚拉过同一个详情页，不复用就是白打源站一次。
+            val html = fetchJrsDetail(id, fetch)
             if (html != null) {
                 correction = jrsParser.correctedStatus(match, jrsParser.parseScheduledTime(html))
                 jrsParser.parseDetail(html, match)
@@ -295,8 +398,10 @@ class MatchRepository(
         // 两个页面共用前缀会产出重复 id —— 播放器把 id 当 LazyColumn 的 key，
         // 重复 key 会直接抛 IllegalArgumentException 崩掉（这个仓库已经崩过两次）。
         val jrkanSignals = jrkanSources.flatMapIndexed { index, source ->
-            val html = fetch(source.pageUrl, http.refererOf(source.pageUrl))
-                ?: return@flatMapIndexed emptyList()
+            val html = when (val r = fetch(source.pageUrl, http.refererOf(source.pageUrl))) {
+                is FetchResult.Ok -> r.body
+                else -> null
+            } ?: return@flatMapIndexed emptyList()
             jrkanParser.parseChannels(html, "${match.id}-jr$index")
         }
         // 展开失败时退回列表页给的播放页，至少还能用 WebView 打开
@@ -331,7 +436,7 @@ class MatchRepository(
             for (candidate in resolved.m3u8Candidates) {
                 val playlist = http.get(candidate, resolved.referer, fastFail = true)
                 if (playlist != null && playlist.contains("#EXTM3U")) {
-                    Log.d("MatchRepo", "m3u8 OK: $candidate")
+                    debugLog("MatchRepo", "m3u8 OK: $candidate")
                     return@withContext resolved.copy(m3u8Url = candidate)
                 }
                 Log.w("MatchRepo", "m3u8 candidate rejected: $candidate")

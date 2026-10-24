@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -55,6 +57,8 @@ fun MatchDetailScreen(
     loadingSignals: Boolean,
     onSignalClick: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    error: String? = null,
+    onRetry: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -155,17 +159,23 @@ fun MatchDetailScreen(
                 )
             }
         } else if (signals.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(Space.xxl),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = "该赛事暂无可用线路",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            // 加载失败与"确实没有线路"必须分开：混成一句"暂无可用线路"
+            // 会把故障说成产品事实，而且用户没有重试入口
+            if (error != null) {
+                SignalErrorState(message = error, onRetry = onRetry)
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(Space.xxl),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "该赛事暂无可用线路",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         } else {
             Column(
@@ -325,6 +335,51 @@ private fun SignalRow(
                 .size(13.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun SignalErrorState(message: String, onRetry: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(Space.xxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = "加载线路失败",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(Space.xs))
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(Space.lg))
+        Surface(
+            onClick = onRetry,
+            shape = RoundedCornerShape(Radius.btn),
+            color = MaterialTheme.colorScheme.primary,
+        ) {
+            Box(
+                modifier = Modifier
+                    // 触摸目标不小于 48dp
+                    .heightIn(min = 48.dp)
+                    .padding(horizontal = Space.xl),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "重试",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
+        }
     }
 }
 

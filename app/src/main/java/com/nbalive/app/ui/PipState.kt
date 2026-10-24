@@ -19,4 +19,16 @@ object PipState {
      */
     @Volatile
     var playerActive: Boolean = false
+
+    /**
+     * 当前视频的宽高（像素）。
+     *
+     * 画中画窗口用真实视频比例才不会给非 16:9 的源加黑边；
+     * 拿不到时（还没起播）用 16:9 兜底。
+     */
+    @Volatile
+    var videoWidth: Int = 0
+
+    @Volatile
+    var videoHeight: Int = 0
 }

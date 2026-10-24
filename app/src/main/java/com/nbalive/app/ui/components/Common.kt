@@ -25,14 +25,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -43,13 +45,19 @@ import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.theme.GradCba
-import com.nbalive.app.ui.theme.GradLive
+import com.nbalive.app.ui.theme.GradCbaOnWhite
+import com.nbalive.app.ui.theme.GradLiveOnWhite
 import com.nbalive.app.ui.theme.GradNba
+import com.nbalive.app.ui.theme.GradNbaOnWhite
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
 
 /**
  * 队徽：白底圆形 + contain 适配（设计稿 .logo），加载失败回退队名首字色块。
+ *
+ * ⚠️ 默认可被无障碍忽略（[contentDescription] 为 null）：
+ * 队徽旁边永远紧跟着球队名文本，两边都带语义时 TalkBack 会把队名连读两遍
+ *（"湖人，湖人"）。只有当图标是**唯一**信息载体时才传 contentDescription。
  */
 @Composable
 fun TeamLogo(
@@ -57,11 +65,14 @@ fun TeamLogo(
     teamName: String,
     size: Dp = 40.dp,
     modifier: Modifier = Modifier,
+    contentDescription: String? = null,
 ) {
+    // 回退块里的首字是纯装饰（真正的队名就在旁边），清掉语义避免重复朗读
     val fallback: @Composable () -> Unit = {
         Box(
             modifier = Modifier
                 .size(size)
+                .clearAndSetSemantics { }
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
@@ -85,7 +96,7 @@ fun TeamLogo(
             .data(url)
             .crossfade(true)
             .build(),
-        contentDescription = teamName,
+        contentDescription = contentDescription,
         contentScale = ContentScale.Fit,
         modifier = modifier
             .size(size)
@@ -96,7 +107,7 @@ fun TeamLogo(
     )
 }
 
-/** 联赛渐变色条（设计稿 .strip，高 5dp） */
+/** 联赛渐变色条（设计稿 .strip，高 5dp，纯装饰不压字） */
 @Composable
 fun LeagueStrip(league: League, modifier: Modifier = Modifier) {
     Box(
@@ -124,10 +135,11 @@ fun LeagueChip(
             .height(20.dp)
             .clip(RoundedCornerShape(Radius.chip))
             .background(
+                // 9.5sp 白字：必须用压暗过的白字安全版，原始渐变只有 3.2~3.6:1
                 when (league) {
-                    League.NBA -> GradNba
-                    League.CBA -> GradCba
-                    else -> GradCba
+                    League.NBA -> GradNbaOnWhite
+                    League.CBA -> GradCbaOnWhite
+                    else -> GradCbaOnWhite
                 },
             )
             .padding(horizontal = 7.dp),
@@ -185,27 +197,31 @@ fun StatusChip(
     liveLabel: String = "直播中",
 ) {
     val (bg, fg, border) = when (status) {
-        MatchStatus.LIVE -> Triple<Brush, Color, Color>(GradLive, Color.White, Color.Transparent)
-        MatchStatus.UPCOMING -> Triple(
-            Brush.linearGradient(
-                listOf(
-                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
-                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
-                ),
-            ),
-            MaterialTheme.colorScheme.secondary,
-            MaterialTheme.colorScheme.secondary.copy(alpha = 0.30f),
-        )
-        MatchStatus.FINISHED -> Triple(
-            Brush.linearGradient(
-                listOf(
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    MaterialTheme.colorScheme.surfaceVariant,
-                ),
-            ),
-            MaterialTheme.colorScheme.onSurfaceVariant,
-            MaterialTheme.colorScheme.outlineVariant,
-        )
+        // LIVE 用压暗版：这条渐变上压的是 10.5sp 白字，原始渐变只有 2.3~2.7:1
+        MatchStatus.LIVE -> Triple<Brush, Color, Color>(GradLiveOnWhite, Color.White, Color.Transparent)
+        MatchStatus.UPCOMING -> {
+            // remember：Brush 每帧新建会让背景节点持续失效（列表里每行一个 chip）
+            val secondary = MaterialTheme.colorScheme.secondary
+            Triple(
+                remember(status, secondary) {
+                    Brush.linearGradient(
+                        listOf(secondary.copy(alpha = 0.16f), secondary.copy(alpha = 0.16f)),
+                    )
+                },
+                secondary,
+                secondary.copy(alpha = 0.30f),
+            )
+        }
+        MatchStatus.FINISHED -> {
+            val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
+            Triple(
+                remember(status, surfaceVariant) {
+                    Brush.linearGradient(listOf(surfaceVariant, surfaceVariant))
+                },
+                MaterialTheme.colorScheme.onSurfaceVariant,
+                MaterialTheme.colorScheme.outlineVariant,
+            )
+        }
     }
     val label = when (status) {
         MatchStatus.LIVE -> liveLabel
@@ -284,7 +300,13 @@ fun AspectModeSelector(
     }
 }
 
-/** 呼吸红点：颜色之外还有"直播中"文字，不依赖颜色单独传达信息。 */
+/**
+ * 呼吸红点：颜色之外还有"直播中"文字，不依赖颜色单独传达信息。
+ *
+ * ⚠️ 透明度走 [graphicsLayer] 的 lambda 而不是 `Modifier.alpha(a)`：
+ * 前者只在**绘制阶段**读状态，不触发重组；后者每帧都会重组这个节点。
+ * 列表里可能有十几颗红点同时呼吸，差别是可观的。
+ */
 @Composable
 fun LiveDot(size: Dp = 6.dp) {
     val t = rememberInfiniteTransition(label = "live-dot")
@@ -297,7 +319,7 @@ fun LiveDot(size: Dp = 6.dp) {
     Box(
         Modifier
             .size(size)
-            .alpha(a)
+            .graphicsLayer { alpha = a }
             .clip(CircleShape)
             .background(Color.White),
     )

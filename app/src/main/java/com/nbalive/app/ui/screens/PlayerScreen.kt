@@ -92,6 +92,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -101,6 +102,7 @@ import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.ui.AspectMode
+import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
@@ -170,6 +172,10 @@ fun PlayerScreen(
     // 单击画面显示、再单击隐藏。非全屏时始终显示。
     // 沉浸式只适用于 ExoPlayer 直连路径：网页线路的触摸要留给源站播放器自己。
     val immersive = fullscreen && !inPip && streamUrl != null
+    // 网页线路全屏：源站 H5 播放器自带底部控制条，我们的底部栏盖上去就没法用了，
+    // 而且网页路径不能接管触摸（点画面必须交给源站播放器），
+    // 所以网页全屏不画顶部信息条和底部控制栏，只留右上角的 PIP / 退出全屏。
+    val webFullscreen = fullscreen && !inPip && streamUrl == null
     var controlsVisible by remember { mutableStateOf(true) }
     LaunchedEffect(fullscreen, streamUrl) {
         if (fullscreen && streamUrl != null) controlsVisible = false
@@ -242,35 +248,35 @@ fun PlayerScreen(
                 }
             }
 
-            // 全屏时单击画面：显示/隐藏全部浮层。
-            // 放在所有浮层之前（z 序在按钮之下），点按钮不会误触此层。
-            // 仅直连路径：网页线路的触摸必须留给源站播放器。
-            if (immersive) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable { controlsVisible = !controlsVisible },
-                )
-            }
+            // 手势层（必须压在视频之上、按钮之下）：
+            //  - 左半屏上下滑调亮度，右半屏上下滑调音量
+            //  - 全屏直连时单击画面显示/隐藏浮层
+            //  - 网页线路也启用手势：只在**发生垂直拖动**时才消费事件，
+            //    单击依旧透传给源站播放器（否则网页线路根本没法调亮度音量）
+            PlayerMediaGestures(
+                enabled = !inPip,
+                modifier = Modifier.fillMaxSize(),
+                onTap = if (immersive) ({ controlsVisible = !controlsVisible }) else null,
+            )
 
-            // 视频区顶部浮层：直播态 + 联赛（画中画里不显示，避免遮挡画面）
-            if (match != null && !inPip && (!fullscreen || controlsVisible)) {
-                Row(
+            // 视频区顶部浮层：**只留实时时钟**。
+            // 原来这里还画"直播中/未开赛"+联赛名（左上的 NBA 药丸），
+            // 那两枚信息在播放页里没有决策价值，反而挡住画面左上角，
+            // 用户明确要求去掉。
+            // 网页全屏也显示：时钟只是一枚小药丸，且在左上角，
+            // 不与源站播放器（控制条在底部）冲突；画中画里不显示。
+            if (match != null && !inPip && (!fullscreen || controlsVisible || webFullscreen)) {
+                PlayerClock(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(Space.md),
-                    horizontalArrangement = Arrangement.spacedBy(Space.sm),
-                ) {
-                    StatusChip(status = match.status)
-                    LeagueChip(
-                        text = match.leagueLabel(),
-                        league = match.league,
-                    )
-                }
+                )
             }
 
             // 右上角：画中画 / 全屏（画中画窗口内不再显示按钮）
-            if (!inPip && (!fullscreen || controlsVisible)) {
+            // 网页线路全屏时保留：这两个是"逃生按钮"，在右上角，
+            // 不与源站播放器底部的控制条冲突
+            if (!inPip && (!fullscreen || controlsVisible || webFullscreen)) {
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -306,7 +312,9 @@ fun PlayerScreen(
             // 右侧白描边功能胶囊（画面/源/线路/同时在播），一眼能读、按得准。
             // 关键：不再使用 Media3 原生控制条 —— 它自带快进/后退/进度条，
             // 直播流上误触会跳离直播边缘，而且不支持"重连/换源"这类直播操作。
-            if (fullscreen && !inPip && controlsVisible) {
+            // 网页线路全屏不画：源站播放器自己的底部控制条会被它盖死，
+            // 网页路径又没法接管点击把浮层收起来。
+            if (fullscreen && !inPip && controlsVisible && !webFullscreen) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -849,26 +857,34 @@ private fun LiveNowPanel(
                     .clickable(enabled = !refreshing, onClick = onRefresh),
                 contentAlignment = Alignment.Center,
             ) {
-                val spin by rememberInfiniteTransition(label = "refresh").animateFloat(
-                    initialValue = 0f,
-                    targetValue = 360f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(900, easing = LinearEasing),
-                    ),
-                    label = "refreshSpin",
-                )
-                Icon(
-                    Icons.Filled.Refresh,
-                    contentDescription = "刷新同时在播列表",
-                    modifier = Modifier
-                        .size(16.dp)
-                        .then(if (refreshing) Modifier.rotate(spin) else Modifier),
-                    tint = if (refreshing) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
+                // 旋转动画只在真正刷新时存在：
+                // rememberInfiniteTransition 会一直按帧取值，
+                // 放在 if 外面等于面板一打开就 60fps 重组、白耗电
+                if (refreshing) {
+                    val spin by rememberInfiniteTransition(label = "refresh").animateFloat(
+                        initialValue = 0f,
+                        targetValue = 360f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(900, easing = LinearEasing),
+                        ),
+                        label = "refreshSpin",
+                    )
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "刷新同时在播列表",
+                        modifier = Modifier
+                            .size(16.dp)
+                            .rotate(spin),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "刷新同时在播列表",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Spacer(Modifier.width(Space.sm))
             Box(
@@ -1168,9 +1184,28 @@ private fun VideoSurface(
     // 否则球赛声音在后台一直响。
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
+        // ⚠️ ON_STOP 造成的暂停，回到前台必须自动恢复：
+        // 只停不恢复的话，锁屏/切走再回来直播就停在暂停态（边缘已经漂移），
+        // 用户还得手动点一次播放。
+        // 但用户自己按了暂停（playWhenReady=false）就不能替他继续播——
+        // 用这个标志区分"被系统停的"和"用户主动停的"。
+        var pausedByStop = false
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_STOP -> playerView?.player?.pause()
+                Lifecycle.Event.ON_STOP -> {
+                    val player = playerView?.player
+                    if (player != null && player.playWhenReady) {
+                        pausedByStop = true
+                        player.pause()
+                    }
+                }
+                Lifecycle.Event.ON_START -> {
+                    val player = playerView?.player
+                    if (pausedByStop && player != null) {
+                        pausedByStop = false
+                        player.play()
+                    }
+                }
                 else -> Unit
             }
         }
@@ -1232,6 +1267,14 @@ private fun VideoSurface(
                 // 自定义控制栏要读播放/缓冲状态
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     handle.isPlaying = isPlaying
+                }
+
+                // 上报视频宽高：画中画窗口按真实比例算，非 16:9 的源不用加黑边
+                override fun onVideoSizeChanged(videoSize: VideoSize) {
+                    if (videoSize.width > 0 && videoSize.height > 0) {
+                        PipState.videoWidth = videoSize.width
+                        PipState.videoHeight = videoSize.height
+                    }
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {

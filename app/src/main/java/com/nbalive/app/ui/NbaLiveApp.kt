@@ -8,6 +8,7 @@ import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +71,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nbalive.app.BuildConfig
 import com.nbalive.app.MainActivity
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.screens.LiveNowScreen
@@ -97,16 +99,26 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var tab by remember { mutableStateOf(Tab.MATCHES) }
+    // ⚠️ 这些原来是 `listState.visibleMatches` / `listState.counts` 这类
+    // **getter**：每次重组都新建 List/Map 实例，下游的 remember(key) 永远命中不了，
+    // 等于每次重组都全量过滤 + groupByDay。提到这里按输入 remember 住。
+    val visibleMatches = remember(listState.matches, listState.selectedLeague) {
+        listState.visibleMatches
+    }
+    val leagueCounts = remember(listState.matches) { listState.counts }
+    val liveMatches = remember(listState.matches) {
+        listState.matches.filter { it.status == MatchStatus.LIVE }
+    }
+
+    var tab by rememberSaveable { mutableStateOf(Tab.MATCHES) }
     // 搜索页：全屏覆盖层，不占用路由，返回键先关它
     var searchOpen by rememberSaveable { mutableStateOf(false) }
 
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() as? MainActivity }
-    val versionName = remember(context) {
-        runCatching {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "—"
+    val versionName = remember {
+        // BuildConfig.VERSION_NAME：PackageManager.getPackageInfo(pkg, 0) 在 API 33+ 已废弃
+        BuildConfig.VERSION_NAME
     }
 
     // ---------- 播放偏好：画面模式 / 屏幕常亮 ----------
@@ -140,7 +152,9 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     FullscreenSystemEffect(enabled = fullscreen && !inPip)
 
     // 系统返回键：搜索页 > 全屏 > 路由
-    BackHandler(enabled = searchOpen || route != Route.LIST || fullscreen) {
+    // ⚠️ 画中画时要放行：部分系统版本在关小窗时会把返回键派发给界面，
+    // 被这里吃掉就会变成"先退详情页、再退列表"，小窗关不掉。
+    BackHandler(enabled = !inPip && (searchOpen || route != Route.LIST || fullscreen)) {
         when {
             searchOpen -> searchOpen = false
             fullscreen -> fullscreen = false
@@ -149,11 +163,12 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     }
 
     // 播放降级提示：只在播放页呈现，避免用户已经返回列表还弹出"直连线路不可用"
-    LaunchedEffect(route, playerState.errorMessage) {
+    // ⚠️ key 用 errorId（每次报错自增），不能只拿文案当 key：
+    // 同样的文案连着报两次时，StateFlow 会把相等值合并掉，
+    // LaunchedEffect 不重启，第二次就再也弹不出来了。
+    LaunchedEffect(route, playerState.errorId) {
         if (route == Route.PLAYER) {
-            playerState.errorMessage?.let {
-                snackbarHostState.showSnackbar(it)
-            }
+            playerState.errorMessage?.let { snackbarHostState.showSnackbar(it) }
         }
     }
 
@@ -203,11 +218,12 @@ fun NbaLiveApp(viewModel: MainViewModel) {
             when (route) {
                 Route.LIST -> when (tab) {
                     Tab.MATCHES -> MatchListScreen(
-                        matches = listState.visibleMatches,
+                        matches = visibleMatches,
                         loading = listState.loading,
+                        refreshing = listState.refreshing,
                         error = listState.error,
                         selectedLeague = listState.selectedLeague,
-                        counts = listState.counts,
+                        counts = leagueCounts,
                         onLeagueSelected = viewModel::selectLeague,
                         // 点比赛直接全屏自动播放，不再先跳详情页选线路
                         onMatchClick = { m ->
@@ -221,6 +237,9 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     Tab.LIVE -> LiveNowScreen(
                         matches = listState.matches,
                         loading = listState.loading,
+                        error = listState.error,
+                        refreshing = listState.refreshing,
+                        onRetry = viewModel::refresh,
                         onMatchClick = { m ->
                             fullscreen = true
                             viewModel.playMatch(m)
@@ -244,6 +263,10 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     signals = detailState.signals,
                     loadingSignals = detailState.loadingSignals,
                     onSignalClick = viewModel::openPlayer,
+                    // 拉线路失败必须让用户看见并能重试：
+                    // 原来只传 loading，失败就被渲染成"该赛事暂无可用线路"
+                    error = detailState.error,
+                    onRetry = viewModel::refreshSignals,
                 )
 
                 Route.PLAYER -> PlayerScreen(
@@ -269,9 +292,9 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     onAspectChange = { PlayerPrefs.setAspect(context, it) },
                     onKeepScreenOnChange = { PlayerPrefs.setKeepScreenOn(context, it) },
                     onReconnect = viewModel::reconnect,
-                    liveMatches = listState.matches.filter { it.status == MatchStatus.LIVE },
+                    liveMatches = liveMatches,
                     onLiveMatchClick = viewModel::playMatch,
-                    refreshing = listState.loading,
+                    refreshing = listState.busy,
                     onRefreshLive = { viewModel.refresh() },
                     fullscreen = fullscreen,
                     inPip = inPip,
@@ -489,9 +512,14 @@ private fun SportBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(Radius.sheet))
-                    // Role.Tab 让 TalkBack 把它读成"标签页"；图标本身是装饰，
-                    // 可读名称由下方的文字标签提供（避免同一名字被读两遍）。
-                    .clickable(role = Role.Tab) { onSelect(item) }
+                    // ⚠️ 必须用 selectable 而不是 clickable：
+                    // 只有 clickable(role=Role.Tab) 时 TalkBack 读不出"已选中"，
+                    // 视障用户无法判断当前在哪个标签页。
+                    .selectable(
+                        selected = active,
+                        role = Role.Tab,
+                        onClick = { onSelect(item) },
+                    )
                     // 触摸目标高度不小于 48dp
                     .heightIn(min = 48.dp)
                     .padding(vertical = Space.sm),

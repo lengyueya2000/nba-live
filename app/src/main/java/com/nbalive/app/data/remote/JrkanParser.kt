@@ -1,5 +1,6 @@
 package com.nbalive.app.data.remote
 
+import android.util.Log
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
@@ -36,9 +37,17 @@ class JrkanParser {
         /** 实测存活的播放主机；失效域名不再使用。 */
         const val PLAY_HOST = "http://play.sportsteam356.com"
 
+        /** 队徽相对路径的补全基准（源站目前给的是绝对 URL，这里只是兜底） */
+        private const val SITE_ORIGIN = "https://m.jrkan.com"
+
+        private const val TAG = "JrkanParser"
+
         /** 线路名里出现这些词就从界面名称中隐去（主播个人推流，不展示其名义）。 */
         private val EXCLUDED_CHANNEL_KEYWORDS = listOf("主播", "解说", "美女", "聊天")
     }
+
+    /** 队徽地址补全：相对路径按源站 origin 补齐 */
+    private fun absUrl(raw: String): String? = HttpClient.absUrl(raw, SITE_ORIGIN)
 
     fun parseList(js: String): List<Match> {
         val result = mutableListOf<Match>()
@@ -49,22 +58,30 @@ class JrkanParser {
             val block = m.value
             val lid = Regex("""data-lid="(\d+),(\d+),(\d+)"""").find(block)?.groupValues ?: return@forEach
             val eventId = lid[1]
-            val sportId = lid[2]
 
-            val leagueRaw = Regex("""lab_events"[^>]*><span class="name">([^<]*)""")
+            val leagueRaw = Regex("""lab_events\b[^>]*>.*?<span class="name">([^<]*)""", RegexOption.DOT_MATCHES_ALL)
                 .find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            val timeRaw = Regex("""lab_time">([^<]*)""").find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            val home = Regex("""lab_team_home"><strong class="name">([^<]*)""")
+            val timeRaw = Regex("""lab_time\b[^>]*>([^<]*)""").find(block)?.groupValues?.get(1)?.trim().orEmpty()
+            // ⚠️ 不要写死 `lab_team_home"><strong class="name">`：
+            // 那个精确字面量只要上游给 li 多加一个属性（或换行/空格）就整场丢失，
+            // 而且丢的是**全部**场次（列表直接空）。放宽到"本 li 内第一个 strong.name"。
+            val home = Regex("""lab_team_home\b[^>]*>.*?<strong class="name">([^<]*)""", RegexOption.DOT_MATCHES_ALL)
                 .find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            val away = Regex("""lab_team_away"><strong class="name">([^<]*)""")
+            val away = Regex("""lab_team_away\b[^>]*>.*?<strong class="name">([^<]*)""", RegexOption.DOT_MATCHES_ALL)
                 .find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            if (home.isBlank() || away.isBlank()) return@forEach
+            if (home.isBlank() || away.isBlank()) {
+                // 上游改版时这里会静默吞掉整场比赛，必须留痕
+                Log.w(TAG, "JRKAN 场次缺队名，跳过：eventId=$eventId")
+                return@forEach
+            }
 
             // 锚定到本方 li 内（跨行匹配），避免主队无图时误拿客队队徽
             val homeLogo = Regex("""lab_team_home[^>]*>.*?<img[^>]*src="([^"]+)""", RegexOption.DOT_MATCHES_ALL)
                 .find(block.substringBefore("lab_team_away"))?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+                ?.let { absUrl(it) }
             val awayLogo = Regex("""lab_team_away[^>]*>.*?<img[^>]*src="([^"]+)""", RegexOption.DOT_MATCHES_ALL)
                 .find(block)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+                ?.let { absUrl(it) }
 
             // 列表页只给一个 playId；具体线路在播放页内部，进详情页再展开。
             val playId = Regex("""getPlayUrl\("line\d",\s*"(\d+)"\)""")

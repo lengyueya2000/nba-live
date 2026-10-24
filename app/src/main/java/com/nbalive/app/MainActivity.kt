@@ -1,12 +1,15 @@
 package com.nbalive.app
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.util.Rational
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -24,6 +27,11 @@ import com.nbalive.app.ui.theme.NbaLiveTheme
 import kotlin.math.min
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        /** 系统允许的画中画宽高比上下限（超出 enterPictureInPictureMode 会抛异常） */
+        private const val MAX_PIP_RATIO = 2.39f
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,13 +56,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 进入画中画（16:9，与视频区比例一致） */
+    /**
+     * 复用已有实例（launchMode=singleTask）：从桌面图标再次点进来时，
+     * 系统不会再建一个 Activity，而是把已有实例调到前台。
+     *
+     * 不这样做的话：标准启动模式会在栈顶再叠一个 MainActivity，
+     * 两份 Compose 树、两份 ViewModel 同时存在，进程级单例 PipState
+     * 被新实例复位成 false（旧实例还在小窗里，状态就打架了）。
+     *
+     * 这里没有深链，但仍然要 setIntent：系统默认不会把新 Intent
+     * 写回 getIntent()，后续读取会拿到过期的那个。
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
+    /** 进入画中画（比例取真实视频宽高，没有则 16:9） */
     fun enterPip() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            // minSdk 是 24：Android 7.x 根本没有画中画，按钮点了必须给个说法
+            toast("当前系统版本不支持画中画")
+            return
+        }
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+            toast("当前设备不支持画中画")
+            return
+        }
         runCatching {
             val params = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
+                .setAspectRatio(pipAspectRatio())
                 .apply {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         // Android 12+：系统在手势缩小/按 Home 时自动进小窗
@@ -67,7 +98,36 @@ class MainActivity : ComponentActivity() {
                 .build()
             setPictureInPictureParams(params)
             enterPictureInPictureMode(params)
+        }.onFailure {
+            // 静默失败会让用户以为按钮坏了
+            Log.w("MainActivity", "enterPip failed: ${it.message}", it)
+            toast("进入画中画失败")
         }
+    }
+
+    /**
+     * 画中画窗口比例：优先用真实视频宽高（非 16:9 的源不该加黑边），
+     * 拿不到时回退 16:9。
+     *
+     * 系统要求比例必须落在 1/2.39 ~ 2.39 之间，超出会直接抛异常。
+     */
+    private fun pipAspectRatio(): Rational {
+        val w = PipState.videoWidth
+        val h = PipState.videoHeight
+        if (w <= 0 || h <= 0) return Rational(16, 9)
+        val ratio = w.toFloat() / h.toFloat()
+        if (ratio > MAX_PIP_RATIO) return Rational(239, 100)
+        if (ratio < 1f / MAX_PIP_RATIO) return Rational(100, 239)
+        // 约分：Rational 对超大整数不友好（系统内部会做乘法）
+        val g = gcd(w, h)
+        return Rational(w / g, h / g)
+    }
+
+    private fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
+
+    /** 轻提示：画中画这类系统级操作失败时必须让用户知道 */
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
     /**

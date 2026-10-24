@@ -1,5 +1,6 @@
 package com.nbalive.app.data.remote
 
+import android.util.Log
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
@@ -35,6 +36,11 @@ class JrsParser {
     companion object {
         /** 源站使用的播放器域名特征（已验证：play.sportsteam368.com 等）。 */
         private val PLAYER_HOST_MARKERS = listOf("sportsteam", "jrkan", "jrs")
+
+        /** 队徽相对路径的补全基准（源站目前给的是绝对 URL，这里只是兜底） */
+        private const val SITE_ORIGIN = "https://jrszbt.com"
+
+        private const val TAG = "JrsParser"
     }
 
     fun parseList(html: String): List<Match> {
@@ -44,17 +50,25 @@ class JrsParser {
         doc.select("div.list").forEach { group ->
             val dateLabel = group.selectFirst("p.list-title")?.text()?.trim()
             group.select("a.list-con").forEach { anchor ->
+                val path = anchor.attr("href")
                 val home = anchor.selectFirst(".list-team-con:nth-of-type(1) .list-team-name")?.text()?.trim()
                     ?: anchor.select(".list-team-name").firstOrNull()?.text()?.trim()
                 val away = anchor.select(".list-team-name").getOrNull(1)?.text()?.trim()
-                if (home.isNullOrBlank() || away.isNullOrBlank()) return@forEach
+                if (home.isNullOrBlank() || away.isNullOrBlank()) {
+                    // 上游改版时这里会静默吞掉整场比赛，必须留痕
+                    Log.w(TAG, "JRS 列表项缺队名，跳过：$path")
+                    return@forEach
+                }
 
                 val leagueRaw = anchor.selectFirst(".list-info-league")?.text()?.trim().orEmpty()
                 val timeRaw = anchor.selectFirst(".list-info-time")?.text()?.trim().orEmpty()
-                val path = anchor.attr("href")
                 // 只接受 /live/{数字}.html；javascript: 等异常 href 会得到空 id，
                 // 而空 id 会让 LazyVerticalGrid 的 key 重复并崩溃，必须跳过
-                val id = Regex("""/live/(\d+)\.html""").find(path)?.groupValues?.get(1) ?: return@forEach
+                val id = Regex("""/live/(\d+)\.html""").find(path)?.groupValues?.get(1)
+                if (id == null) {
+                    Log.w(TAG, "JRS 列表项 href 不合预期，跳过：$path")
+                    return@forEach
+                }
 
                 val logos = anchor.select(".list-team-image")
                 result += Match(
@@ -63,8 +77,8 @@ class JrsParser {
                     leagueRawName = leagueRaw,
                     homeTeam = home,
                     awayTeam = away,
-                    homeLogo = logos.getOrNull(0)?.attr("src")?.takeIf { it.isNotBlank() },
-                    awayLogo = logos.getOrNull(1)?.attr("src")?.takeIf { it.isNotBlank() },
+                    homeLogo = logos.getOrNull(0)?.attr("src")?.takeIf { it.isNotBlank() }?.let { absUrl(it) },
+                    awayLogo = logos.getOrNull(1)?.attr("src")?.takeIf { it.isNotBlank() }?.let { absUrl(it) },
                     timeLabel = timeRaw,
                     startAtMillis = parseDateTime(dateLabel, timeRaw),
                     status = MatchStatus.fromSource(timeRaw),
@@ -124,6 +138,9 @@ class JrsParser {
         val host = runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("")
         return PLAYER_HOST_MARKERS.any { host.contains(it, ignoreCase = true) }
     }
+
+    /** 队徽地址补全：相对路径按源站 origin 补齐 */
+    private fun absUrl(raw: String): String? = HttpClient.absUrl(raw, SITE_ORIGIN)
 
     /**
      * 详情页里的计划开赛时间（如 "07:00"）。

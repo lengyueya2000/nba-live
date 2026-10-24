@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,13 +19,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,8 +59,11 @@ fun LiveNowScreen(
     loading: Boolean,
     onMatchClick: (Match) -> Unit,
     modifier: Modifier = Modifier,
+    error: String? = null,
+    refreshing: Boolean = false,
+    onRetry: () -> Unit = {},
 ) {
-    val live = matches.filter { it.status == MatchStatus.LIVE }
+    val live = remember(matches) { matches.filter { it.status == MatchStatus.LIVE } }
 
     Column(modifier = modifier.fillMaxSize()) {
         Row(
@@ -81,7 +88,11 @@ fun LiveNowScreen(
             )
             Spacer(Modifier.width(Space.sm))
             Text(
-                text = if (loading) "加载中…" else "${live.size} 场",
+                text = when {
+                    loading -> "加载中…"
+                    refreshing -> "刷新中…"
+                    else -> "${live.size} 场"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -97,20 +108,121 @@ fun LiveNowScreen(
                 )
             }
 
+            // ⚠️ 加载失败必须单独成态：不能混进"空列表"，
+            // 否则用户看到的是"当前没有正在直播的比赛"——把故障说成"今天没球"，
+            // 而且这一页原本还没有任何重试入口。
+            // 但"已有直播列表 + 刷新失败"不该整屏遮掉：那种情况用顶部横幅（见下）
+            error != null && live.isEmpty() -> LiveErrorState(message = error, onRetry = onRetry)
+
             live.isEmpty() -> EmptyLiveState()
 
-            else -> LazyColumn(
-                contentPadding = PaddingValues(
-                    start = Space.lg,
-                    end = Space.lg,
-                    bottom = Space.xxl,
-                ),
-                verticalArrangement = Arrangement.spacedBy(Space.md),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                items(live, key = { it.id }) { match ->
-                    LiveNowCard(match = match, onClick = { onMatchClick(match) })
+            else -> Column(Modifier.fillMaxSize()) {
+                if (error != null) LiveErrorBanner(message = error, onRetry = onRetry)
+                LazyColumn(
+                    contentPadding = PaddingValues(
+                        start = Space.lg,
+                        end = Space.lg,
+                        bottom = Space.xxl,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(Space.md),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    items(live, key = { it.id }) { match ->
+                        LiveNowCard(match = match, onClick = { onMatchClick(match) })
+                    }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 刷新失败横幅：列表还在时用它，别把正在看的场次全遮掉。
+ * 点一下即重试。
+ */
+@Composable
+private fun LiveErrorBanner(message: String, onRetry: () -> Unit) {
+    Surface(
+        onClick = onRetry,
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = RoundedCornerShape(Radius.chip),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.lg)
+            .padding(bottom = Space.sm),
+    ) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .padding(horizontal = Space.md, vertical = Space.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Text(
+                text = "刷新失败：$message",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "重试",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
+    }
+}
+
+/** 加载失败态：说明白是真出错了，并给一个重试入口 */
+@Composable
+private fun LiveErrorState(message: String, onRetry: () -> Unit) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = Space.xl),
+        ) {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                modifier = Modifier.size(44.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(Space.md))
+            Text(
+                text = "加载失败",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(Space.xs))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(Space.lg))
+            Surface(
+                onClick = onRetry,
+                shape = RoundedCornerShape(Radius.chip),
+                color = MaterialTheme.colorScheme.primary,
+            ) {
+                Text(
+                    text = "重试",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .padding(horizontal = Space.xl, vertical = Space.md),
+                )
             }
         }
     }

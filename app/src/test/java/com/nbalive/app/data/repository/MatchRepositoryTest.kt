@@ -5,6 +5,7 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
+import com.nbalive.app.data.remote.FetchResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -223,7 +224,8 @@ class MatchRepositoryTest {
         }
 
         val detail = repo.loadSignals(m) { url, _ ->
-            if (url.contains("steam1")) page("439", "919") else page("111", "222")
+            val body = if (url.contains("steam1")) page("439", "919") else page("111", "222")
+            FetchResult.Ok(body)
         }
 
         assertEquals("两个播放页各展开出 2 条线路", 4, detail.signals.size)

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.SportsBasketball
@@ -51,7 +53,7 @@ import com.nbalive.app.ui.components.TeamLogo
 import com.nbalive.app.ui.hhmm
 import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.mmdd
-import com.nbalive.app.ui.theme.GradLive
+import com.nbalive.app.ui.theme.GradLiveOnWhite
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.Space
@@ -91,6 +93,7 @@ fun MatchListScreen(
     onMatchClick: (Match) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    refreshing: Boolean = false,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
         LeagueSelector(
@@ -99,10 +102,19 @@ fun MatchListScreen(
             onSelect = onLeagueSelected,
         )
         when {
+            // 首载：还没有任何数据，整屏 loading
             loading -> LoadingState()
-            error != null -> ErrorState(error = error, onRetry = onRetry)
+            // 刷新失败：给出错误 + 重试（但已有列表还在下面，不清空）
+            error != null && matches.isEmpty() -> ErrorState(error = error, onRetry = onRetry)
             matches.isEmpty() -> EmptyState()
-            else -> MatchGrid(matches = matches, onMatchClick = onMatchClick)
+            else -> {
+                // 刷新中：保留旧列表，只在顶部挂一条细进度条。
+                // 原来刷新时整屏换成转圈，已有卡片全消失、滚动位置也丢。
+                if (refreshing) RefreshingBar()
+                // 有旧数据但这次刷新失败了：错误要看得见（还能点重试）
+                if (error != null) ErrorBanner(message = error, onRetry = onRetry)
+                MatchGrid(matches = matches, onMatchClick = onMatchClick)
+            }
         }
     }
 }
@@ -252,7 +264,9 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.card))
-            .background(GradLive)
+            // 整张卡上全是白字（队名、时间、"立即观看"），必须用压暗过的白字安全版：
+            // 原始红橙渐变只有 2.3~2.7:1，远达不到 AA 4.5:1
+            .background(GradLiveOnWhite)
             .clickable(onClick = onClick)
             .padding(Space.lg),
     ) {
@@ -471,6 +485,75 @@ private fun GridTeam(name: String, logo: String?, modifier: Modifier = Modifier)
 
 // ---------- 三态 ----------
 
+/** 刷新中的细进度条：保留旧列表，只在最上方提示"正在刷新" */
+@Composable
+private fun RefreshingBar() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.lg)
+            .padding(bottom = Space.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.sm),
+    ) {
+        CircularProgressIndicator(
+            color = MaterialTheme.colorScheme.primary,
+            strokeWidth = 2.dp,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            text = "正在刷新…",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * 刷新失败横幅：列表还有旧数据时用它（整屏错误态会把旧数据全遮掉）。
+ * 点一下就能重试。
+ */
+@Composable
+private fun ErrorBanner(message: String, onRetry: () -> Unit) {
+    Surface(
+        onClick = onRetry,
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = RoundedCornerShape(Radius.chip),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.lg)
+            .padding(bottom = Space.sm),
+    ) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .padding(horizontal = Space.md, vertical = Space.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Text(
+                text = "刷新失败：$message",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "重试",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
+    }
+}
+
 @Composable
 private fun LoadingState() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -546,7 +629,10 @@ private fun ErrorState(error: String, onRetry: () -> Unit) {
                 Box(
                     modifier = Modifier
                         .background(accentBrush(), RoundedCornerShape(Radius.btn))
+                        // 触摸目标不小于 48dp：原来 12dp+12dp+17sp 文本 ≈ 41dp，偏小
+                        .heightIn(min = 48.dp)
                         .padding(horizontal = 32.dp, vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         text = "重试",

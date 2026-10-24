@@ -60,11 +60,11 @@ class StreamUrlResolver {
                 Log.w(TAG, "fetch failed: $current")
                 return null
             }
-            Log.d(TAG, "fetched len=${html.length}: $current")
+            debugLog(TAG, "fetched len=${html.length}: $current")
 
             val candidates = extractM3u8Candidates(html)
             if (candidates.isNotEmpty()) {
-                Log.d(TAG, "m3u8 candidates: $candidates")
+                debugLog(TAG, "m3u8 candidates: $candidates")
                 return Resolved(
                     m3u8Url = candidates.first(),
                     referer = refererFor(pageUrl),
@@ -78,7 +78,7 @@ class StreamUrlResolver {
                 Log.w(TAG, "no m3u8 and no next hop in: $current")
                 return null
             }
-            Log.d(TAG, "hop -> $next")
+            debugLog(TAG, "hop -> $next")
             current = next
         }
         return null
@@ -109,7 +109,10 @@ class StreamUrlResolver {
         }
 
         // 兜底：页面里直接出现 .m3u8
-        Regex("""(https?:)?//[^\s"'<>]+\.m3u8[^\s"'<>]*""").find(html)?.let { m ->
+        // ⚠️ `.m3u8` 后面必须紧跟 query/hash 或分隔符/结尾：
+        // 早先用 `\.m3u8[^\s"'<>]*` 会从 "a.m3u8path=1" 里抠出
+        // "http://cdn/a.m3u8path=1" 这类垃圾候选，调用方逐个探测时白费请求。
+        Regex("""(https?:)?//[^\s"'<>]*?\.m3u8(?:[?#][^\s"'<>]*)?(?=["'<>\s]|$)""").find(html)?.let { m ->
             var u = m.value
             if (u.startsWith("//")) u = "http:$u"
             restoreObfuscatedHost(u)?.let { out.add(it) }

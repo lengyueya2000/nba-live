@@ -1,0 +1,19 @@
+<!--
+  API 24/25（Android 7.x）用的传统启动器图标前景。
+
+  自适应图标（adaptive-icon）要 API 26 才有；只提供 mipmap-anydpi-v26 时，
+  Android 7.x 上 @mipmap/ic_launcher 解析不到任何配置，桌面图标会缺失或
+  回落到系统默认图标。这里画一份铺满画布的静态版本。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path
+        android:fillColor="#E11D48"
+        android:pathData="M54,16a38,38 0 1,0 0.1,0zM54,27a27,27 0 1,1 -0.1,0z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F8FAFC"
+        android:strokeWidth="3"
+        android:pathData="M54,16v76M16,54h76M24,32l60,44M84,32l-60,44" />
+</vector>

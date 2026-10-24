@@ -59,7 +59,9 @@ enum class MatchStatus {
             raw.contains("未开始") || raw.contains("未开赛") || raw.contains("未赛") -> UPCOMING
             raw.contains("延期") || raw.contains("推迟") || raw.contains("待定") -> UPCOMING
             raw.contains("直播中") || raw.contains("直播") -> LIVE
-            raw.contains("开赛") -> LIVE
+            // "开赛"表示已经开打，但"即将开赛"是没开始——不能一律当 LIVE，
+            // 否则还没开球的场次在列表里就亮红了
+            raw.contains("开赛") && !raw.contains("即将") -> LIVE
             else -> UPCOMING
         }
     }

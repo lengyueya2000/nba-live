@@ -41,7 +41,6 @@ import androidx.core.view.WindowCompat
 // ---------- 暗色（默认） ----------
 object SportDark {
     val Bg = Color(0xFF0A0D18)
-    val Bg2 = Color(0xFF0F1424)
     val Card = Color(0xFF161C33)
     val Card2 = Color(0xFF1E2542)
     val Card3 = Color(0xFF252D4E)
@@ -61,7 +60,6 @@ object SportDark {
 // ---------- 浅色 ----------
 object SportLight {
     val Bg = Color(0xFFEDF0F8)
-    val Bg2 = Color(0xFFFFFFFF)
     val Card = Color(0xFFFFFFFF)
     val Card2 = Color(0xFFF4F6FC)
     val Card3 = Color(0xFFE9EDF8)
@@ -78,25 +76,33 @@ object SportLight {
     val Warn = Color(0xFFC9820A)
 }
 
-/** 渐变：直播 / 主 CTA（135deg 红→橙） */
+/**
+ * 把一组颜色逐档压暗到"白字可读"，再拼成渐变。
+ *
+ * 这些渐变的原始色（设计稿值）压白字只有 2.6~3.6:1，达不到 WCAG AA 的 4.5:1。
+ * 但界面又不能全部换成主色（联赛色/直播红是产品识别的一部分），
+ * 所以保留色相、只压亮度——视觉上仍是"红→橙""蓝"，白字却真的能读。
+ *
+ * 注意：只该用在**真的压白字**的地方（状态标签、联赛标签、hero 卡）。
+ * 纯装饰（渐变色条、图标底）不需要压暗，继续用原始的 [GradNba] / [GradCba]。
+ */
+private fun safeOnWhite(colors: List<Color>): Brush =
+    Brush.linearGradient(colors = colors.map { it.whiteTextSafe() })
+
+/** 渐变：直播 / 主 CTA（135deg 红→橙）——**原始亮度**，不要在上面压白字 */
 val GradLive = Brush.linearGradient(
     colors = listOf(Color(0xFFFF2E4D), Color(0xFFFF6B2C), Color(0xFFFF8A3D)),
 )
 
-/**
- * 渐变：主 CTA（红→橙）。
- *
- * ⚠️ 这条渐变**不适合压白字**：#FF3B4E 处白字对比度 3.51:1、#FF7A2F 处只有 2.60:1，
- * 达不到 WCAG AA 的 4.5:1（12sp 小字）。界面上要放白字的按钮请用 [accentBrush]。
- */
-val GradRed = Brush.linearGradient(
-    colors = listOf(Color(0xFFFF3B4E), Color(0xFFFF7A2F)),
+/** 渐变：直播 / 主 CTA 的**白字安全版**（状态标签、hero 卡用这条） */
+val GradLiveOnWhite = safeOnWhite(
+    listOf(Color(0xFFFF2E4D), Color(0xFFFF6B2C), Color(0xFFFF8A3D)),
 )
 
 /**
  * 强调渐变（白字底色）：按主题主色生成，并逐档压暗到"白字可读"。
  *
- * 用来替换设计稿里的 [GradRed] —— 那条渐变压白字只有 2.6~3.5:1。
+ * 用于主 CTA 按钮：写死的红橙渐变压白字只有 2.6~3.5:1，达不到 AA。
  */
 @Composable
 fun accentBrush(): Brush {
@@ -124,12 +130,17 @@ fun Color.whiteTextSafe(scale: Float = 1f): Color {
     }
     return color
 }
+/** 联赛渐变色 —— 装饰用（色条 / 图标底），不压字 */
 val GradNba = Brush.linearGradient(
     colors = listOf(Color(0xFF2563EB), Color(0xFF60A5FA)),
 )
 val GradCba = Brush.linearGradient(
     colors = listOf(Color(0xFFE11D48), Color(0xFFFB923C)),
 )
+
+/** 联赛渐变的**白字安全版**：联赛标签（LeagueChip）压的是 9.5sp 白字，必须压暗 */
+val GradNbaOnWhite = safeOnWhite(listOf(Color(0xFF2563EB), Color(0xFF60A5FA)))
+val GradCbaOnWhite = safeOnWhite(listOf(Color(0xFFE11D48), Color(0xFFFB923C)))
 
 /** 8dp 间距节奏（设计稿实测 6/8/10/11/16 混用，这里归一到 4 的倍数） */
 object Space {

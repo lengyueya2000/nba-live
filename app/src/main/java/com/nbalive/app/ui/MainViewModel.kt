@@ -8,6 +8,8 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.repository.MatchRepository
+import com.nbalive.app.data.remote.StreamUrlResolver
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,11 +22,17 @@ import kotlinx.coroutines.launch
 enum class Route { LIST, DETAIL, PLAYER }
 
 data class MatchListUiState(
+    /** 首载中（还没有任何数据）：整屏 loading */
     val loading: Boolean = true,
+    /** 刷新中（已有数据）：保留旧列表，只在角落显示进度，不闪空 */
+    val refreshing: Boolean = false,
     val error: String? = null,
     val matches: List<Match> = emptyList(),
     val selectedLeague: League = League.ALL,
 ) {
+    /** 列表是否正忙（首载或刷新中）：供刷新按钮显示进度 */
+    val busy: Boolean get() = loading || refreshing
+
     val visibleMatches: List<Match>
         get() = when (selectedLeague) {
             League.ALL -> matches
@@ -46,6 +54,8 @@ data class MatchDetailUiState(
     val match: Match? = null,
     val signals: List<StreamSource> = emptyList(),
     val loadingSignals: Boolean = false,
+    /** 拉信号失败的原因；null 表示没有错误（加载中/空列表是另外的分支） */
+    val error: String? = null,
 )
 
 data class PlayerUiState(
@@ -63,7 +73,19 @@ data class PlayerUiState(
     val sniffedStream: Boolean = false,
     /** 嗅探到但直连失败的地址：不再重试同一个，避免 嗅探→失败→退回→再嗅探 的死循环 */
     val failedSniffUrl: String? = null,
+    /**
+     * 升级失败过的**播放页**（m3u8 每轮签名不同，只挡 URL 挡不住回环）：
+     * 同一播放页本轮不再嗅探升级，退回网页后就老实待在网页里。
+     */
+    val failedSniffPage: String? = null,
     val errorMessage: String? = null,
+    /**
+     * 错误提示的自增序号。
+     *
+     * 界面用它当 LaunchedEffect 的 key：只拿 [errorMessage] 当 key 时，
+     * 同样的文案连着报两次，StateFlow 会合并相等值 → 第二次不再弹提示。
+     */
+    val errorId: Long = 0,
 )
 
 class MainViewModel(
@@ -73,7 +95,29 @@ class MainViewModel(
      * 测试注入它以可控地驱动刷新时序（全程不触网）。
      */
     private val loadMatches: suspend () -> Result<List<Match>> = { repository.loadMatches() },
+    /**
+     * 信号加载入口。测试注入它以驱动"进场期间返回/抛异常"等时序，
+     * 也覆盖 loadSignals 的取消与失败路径（与 [loadMatches] 同一个理由）。
+     */
+    private val loadSignals: suspend (Match) -> MatchRepository.Detail = { repository.loadSignals(it) },
+    /**
+     * 直连接解入口。测试注入它以覆盖故障切换状态机，
+     * 以及"畸形地址抛异常时必须落错误态而不是闪退"这条契约。
+     */
+    private val resolveStream: suspend (StreamSource) -> StreamUrlResolver.Resolved? = {
+        repository.resolveStream(it)
+    },
 ) : ViewModel() {
+
+    companion object {
+        /**
+         * 一次故障切换最多尝试几条直连线路。
+         *
+         * 每条直连线路的解析代价 = 最多 4 跳 + 最多 5 个候选 ≈ 9 次 HTTP 请求。
+         * 全部扫完是 9D 次；不设上限时看门狗与"重连"按钮会把这一轮反复重放。
+         */
+        private const val MAX_FALLBACK_CANDIDATES = 3
+    }
 
     private val _route = MutableStateFlow(Route.LIST)
     val route: StateFlow<Route> = _route.asStateFlow()
@@ -84,11 +128,25 @@ class MainViewModel(
     private val _detailState = MutableStateFlow(MatchDetailUiState())
     val detailState: StateFlow<MatchDetailUiState> = _detailState.asStateFlow()
 
-    /** 已确认播不出来的线路，重试时跳过，避免死循环 */
+    /**
+     * 已确认播不出来的线路，重试时跳过，避免死循环。
+     *
+     * ⚠️ 只在主线程读写：所有写点都在 viewModelScope 的协程里（Main 调度器），
+     * 不要把它挪到后台线程访问——普通 MutableSet 并发写会损坏内部结构。
+     */
     private val failedSources = mutableSetOf<String>()
 
     private val _playerState = MutableStateFlow(PlayerUiState())
     val playerState: StateFlow<PlayerUiState> = _playerState.asStateFlow()
+
+    /**
+     * 写错误提示：顺带把 [PlayerUiState.errorId] 自增。
+     *
+     * 界面拿 errorId 当提示的 key——只拿文案当 key 时，同样的文案连着报两次，
+     * StateFlow 会合并相等值，第二次就再也弹不出来了。
+     */
+    private fun PlayerUiState.withError(message: String?): PlayerUiState =
+        copy(errorMessage = message, errorId = errorId + 1)
 
     /**
      * 同一时刻只允许一个解析任务：用户快速连点线路时，
@@ -111,21 +169,41 @@ class MainViewModel(
         // 每次都要为直播中的场次并发拉详情页，对源站是成倍的请求量
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
-            _listState.update { it.copy(loading = true, error = null) }
-            loadMatches()
-                .onSuccess { matches ->
-                    _listState.update {
-                        it.copy(loading = false, error = null, matches = matches)
+            // 刷新时**保留旧列表**：整屏换成转圈会把已有卡片全抹掉（滚动位置也丢）。
+            // 只有首载（一条数据都还没有）才用全屏 loading。
+            val firstLoad = _listState.value.matches.isEmpty()
+            _listState.update {
+                it.copy(loading = firstLoad, refreshing = !firstLoad, error = null)
+            }
+            try {
+                loadMatches()
+                    .onSuccess { matches ->
+                        _listState.update {
+                            it.copy(loading = false, refreshing = false, error = null, matches = matches)
+                        }
                     }
-                }
-                .onFailure { e ->
-                    _listState.update {
-                        it.copy(
-                            loading = false,
-                            error = e.message ?: "网络异常，请稍后重试",
-                        )
+                    .onFailure { e ->
+                        _listState.update {
+                            it.copy(
+                                loading = false,
+                                refreshing = false,
+                                error = e.message ?: "网络异常，请稍后重试",
+                            )
+                        }
                     }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                // 注入的加载入口抛异常时也不能闪退，更不能把列表清空
+                Log.w("MainViewModel", "refresh failed: ${t.message}", t)
+                _listState.update {
+                    it.copy(
+                        loading = false,
+                        refreshing = false,
+                        error = t.message ?: "网络异常，请稍后重试",
+                    )
                 }
+            }
         }
     }
 
@@ -142,9 +220,21 @@ class MainViewModel(
     fun refreshSignals() {
         val match = _detailState.value.match ?: return
         detailJob?.cancel()
-        _detailState.update { it.copy(loadingSignals = true) }
+        _detailState.update { it.copy(loadingSignals = true, error = null) }
         detailJob = viewModelScope.launch {
-            val detail = repository.loadSignals(match)
+            val detail = try {
+                loadSignals(match)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                // 拉信号失败必须落成可见的错误态：
+                // 否则 loadingSignals 永远停在 true，详情页一直转圈且没有重试入口
+                Log.w("MainViewModel", "loadSignals failed: ${t.message}", t)
+                _detailState.update {
+                    it.copy(loadingSignals = false, error = "加载线路失败：${t.message ?: "网络异常"}")
+                }
+                return@launch
+            }
             val c = detail.correction
             if (c != null && (c.status != match.status || c.startAtMillis != match.startAtMillis)) {
                 fun fix(m: Match): Match =
@@ -177,8 +267,15 @@ class MainViewModel(
         if (index !in state.signals.indices) return
         // 用户明确点了这条线，就再给它一次机会（此前被自动故障切换拉黑过）
         state.signals.getOrNull(index)?.let { failedSources.remove(it.pageUrl) }
+        // 用户主动换线 = 换了个播放页，"这个页升级失败过"的记录不再适用。
+        // 不清的话：用户手动切到另一条线路后仍会被旧记录挡住 sniffedStream 升级。
+        val newPage = state.signals[index].pageUrl
         _playerState.update {
-            it.copy(selectedIndex = index, resolving = true, errorMessage = null)
+            it.copy(
+                selectedIndex = index,
+                resolving = true,
+                failedSniffPage = if (it.failedSniffPage == newPage) null else it.failedSniffPage,
+            ).withError(null)
         }
         play(index)
     }
@@ -187,6 +284,12 @@ class MainViewModel(
      * 重连：按当前线路重新解析并播放。
      * 直播地址带时效签名，过期后画面卡住/黑屏，重连可拿新地址；
      * 同时清除该线路的失败记录（用户主动重连 = 再给一次机会）。
+     *
+     * ⚠️ 这里**不清** failedSniffPage：
+     * 嗅探升级失败过的播放页，重连时重新嗅探一遍又会把整条页面链重放一次
+     * （WebView 销毁重建 + 4~6 个文档 + 1 个 m3u8），
+     * 用户每点一次"重连"就是一轮完整重放 —— 这是最容易把源站打出限流的路径。
+     * 真要恢复这条线，用户可以主动切走再切回来（selectSignal）。
      */
     fun reconnect() {
         val state = _playerState.value
@@ -203,12 +306,40 @@ class MainViewModel(
     fun playMatch(match: Match) {
         playJob?.cancel()
         loadJob?.cancel()
+        // 详情页那条拉线路的任务也要停：否则它晚回来会把**上一场**的线路
+        // 写进当前详情页
+        detailJob?.cancel()
+        // 在途的列表刷新也要停：它和本场校正都在写 _listState，
+        // 两边整表替换会互相抹掉对方的修正结果
+        refreshJob?.cancel()
+        _listState.update { it.copy(loading = false, refreshing = false) }
         failedSources.clear()
         _route.value = Route.PLAYER
         _detailState.value = MatchDetailUiState(match = match, loadingSignals = true)
         _playerState.value = PlayerUiState(match = match, resolving = true)
         loadJob = viewModelScope.launch {
-            val detail = repository.loadSignals(match)
+            val detail = try {
+                loadSignals(match)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                // 畸形地址 / 解析器回归会让拉线路抛异常：
+                // 没有兜底时它会逃逸出 viewModelScope 直接闪退
+                Log.w("MainViewModel", "loadSignals failed: ${t.message}", t)
+                _detailState.update {
+                    it.copy(loadingSignals = false, error = "加载线路失败：${t.message ?: "网络异常"}")
+                }
+                _playerState.update {
+                    it.copy(resolving = false)
+                        .withError("加载线路失败：${t.message ?: "网络异常"}")
+                }
+                return@launch
+            }
+            // 拉线路是挂起点：期间用户可能已经按返回离开了播放页。
+            // 取消发生在挂起返回之后时，后面的同步代码仍会跑完，
+            // 所以写状态前必须确认自己还是"当前那个"，也不能擅自起播。
+            if (!isActive) return@launch
+            if (_route.value != Route.PLAYER) return@launch
             // 详情页带回来的开赛时间可用于校正列表里滞后的"直播中"
             val fixed = detail.correction
                 ?.let { c -> match.copy(status = c.status, startAtMillis = c.startAtMillis) }
@@ -223,7 +354,7 @@ class MainViewModel(
             _playerState.update { it.copy(match = fixed, signals = detail.signals) }
             if (detail.signals.isEmpty()) {
                 _playerState.update {
-                    it.copy(resolving = false, errorMessage = "该赛事暂无可用线路")
+                    it.copy(resolving = false).withError("该赛事暂无可用线路")
                 }
             } else {
                 // 默认线路：优先选能直连的那条，省一次 WebView 往返。
@@ -250,7 +381,9 @@ class MainViewModel(
         playJob = viewModelScope.launch {
             val state = _playerState.value
             if (state.signals.isEmpty()) {
-                _playerState.update { it.copy(resolving = false, errorMessage = "该赛事暂无可用线路") }
+                _playerState.update {
+                    it.copy(resolving = false).withError("该赛事暂无可用线路")
+                }
                 return@launch
             }
             val start = index.coerceIn(0, state.signals.lastIndex)
@@ -260,8 +393,8 @@ class MainViewModel(
 
             _playerState.update {
                 it.copy(resolving = true, streamUrl = null, streamReferer = null,
-                    webFallbackUrl = null, sniffedStream = false, failedSniffUrl = null,
-                    errorMessage = null)
+                    webFallbackUrl = null, sniffedStream = false, failedSniffUrl = null)
+                    .withError(null)
             }
 
             // 候选顺序：用户选中的那条优先，其余可直连线路依次兜底。
@@ -275,8 +408,28 @@ class MainViewModel(
                 }
             }
 
-            for ((offset, candidate) in ordered.withIndex()) {
-                val resolved = repository.resolveStream(candidate)
+            // ⚠️ 故障切换有**次数上限**：
+            // 每条直连线路的解析代价是"最多 4 跳 + 最多 5 个候选"≈ 9 次请求，
+            // 全部扫一遍就是 9D 次。没有上限时：
+            //  - 15 秒看门狗每次触发都会重扫一遍 → 9D²
+            //  - 用户每点一次"重连"再扫一遍 → 9D × 点击次数
+            // 这些请求全打在源站上，是最容易触发限流的路径。
+            // 扫完一轮还不行就直接降级到网页承载（那条路不消耗解析请求）。
+            val candidates = ordered.take(MAX_FALLBACK_CANDIDATES)
+
+            // 解析过程中出的异常（畸形 m3u8 地址会让 OkHttp 抛 IllegalArgumentException）
+            // 不能逃逸出协程：那会直接闪退。记下来，落到错误提示里。
+            var resolveError: String? = null
+            for ((offset, candidate) in candidates.withIndex()) {
+                val resolved = try {
+                    resolveStream(candidate)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Log.w("MainViewModel", "resolveStream failed: ${t.message}", t)
+                    resolveError = t.message
+                    null
+                }
                 // 解析是挂起点：期间用户可能已切线路（本协程被 cancel）。
                 // 取消发生在挂起返回之后时，剩余同步代码仍会跑完，
                 // 所以写终态前必须再确认自己还是"最新的那个"。
@@ -290,9 +443,10 @@ class MainViewModel(
                             streamUrl = resolved.m3u8Url,
                             streamReferer = resolved.referer,
                             webFallbackUrl = null,
+                        ).withError(
                             // 只有"选中的那条确实失败过"才提示切换；
                             // 否则用户会看到一条自己从没点过的线路被说成"不可用"
-                            errorMessage = if (offset > 0 || !chosenUsable) {
+                            if (offset > 0 || !chosenUsable) {
                                 "${chosen.label} 不可用，已自动切换到 ${candidate.label}"
                             } else {
                                 null
@@ -303,7 +457,8 @@ class MainViewModel(
                 }
             }
 
-            // 走 WebView 承载。注意区分两种情况：
+            // 走 WebView 承载。注意区分三种情况：
+            //  - 解析抛了异常：告诉用户是解析失败（可能是源站改版）
             //  - 本来就没有直连候选（JRS / 加密线路）：这是该线路的正常播放方式，不打扰用户
             //  - 有直连候选但全部解析失败：才提示"直连不可用"
             if (!isActive) return@launch
@@ -319,10 +474,11 @@ class MainViewModel(
                     selectedIndex = start,
                     webFallbackUrl = chosen.pageUrl,
                     sniffedStream = false,
-                    errorMessage = if (hadDirectCandidates) {
-                        "所有直连线路均不可用，已切换为内嵌播放"
-                    } else {
-                        null
+                ).withError(
+                    when {
+                        resolveError != null -> "解析失败：${resolveError}"
+                        hadDirectCandidates -> "所有直连线路均不可用，已切换为内嵌播放"
+                        else -> null
                     },
                 )
             }
@@ -342,14 +498,18 @@ class MainViewModel(
         if (state.webFallbackUrl == null || state.streamUrl != null || state.resolving) return
         // 同一个坏地址不重复升级（防回环）
         if (m3u8Url == state.failedSniffUrl) return
+        // ⚠️ 同一播放页升级失败过就不再升级：
+        // m3u8 带时效签名，每轮嗅探到的地址都不同，
+        // 只挡"同一个 URL"挡不住 升级→直连失败→退回网页→再嗅探→再升级 的回环
+        // （每轮都销毁重建 WebView、重载源站页，画面闪黑、耗流量）
+        if (state.failedSniffPage != null && state.failedSniffPage == state.webFallbackUrl) return
         _playerState.update {
             it.copy(
                 streamUrl = m3u8Url,
                 streamReferer = referer ?: it.streamReferer,
                 webFallbackUrl = null,
                 sniffedStream = true,
-                errorMessage = null,
-            )
+            ).withError(null)
         }
     }
 
@@ -370,6 +530,9 @@ class MainViewModel(
                     streamReferer = null,
                     sniffedStream = false,
                     failedSniffUrl = it.streamUrl,
+                    // 记下是**哪个播放页**升级失败的：
+                    // m3u8 每轮签名都不同，只记 URL 挡不住回环
+                    failedSniffPage = pageUrl ?: it.failedSniffPage,
                     webFallbackUrl = pageUrl,
                 )
             }
@@ -390,13 +553,28 @@ class MainViewModel(
                 playJob?.cancel()
                 loadJob?.cancel()
                 _route.value = Route.DETAIL
+                // 播放态要清干净：直连地址、兜底地址、错误提示都不能留在状态里
+                // （错误提示原来只靠 UI 层的 route==PLAYER 条件遮住，是隐性不变量）
                 _playerState.update {
-                    it.copy(streamUrl = null, streamReferer = null, webFallbackUrl = null, resolving = false)
+                    it.copy(
+                        streamUrl = null,
+                        streamReferer = null,
+                        webFallbackUrl = null,
+                        resolving = false,
+                        sniffedStream = false,
+                        failedSniffUrl = null,
+                        failedSniffPage = null,
+                    ).withError(null)
                 }
+                // ⚠️ 进场拉线路途中按返回：loadJob 被取消，它尾部那句
+                // loadingSignals=false 永远不会执行——这里必须复位，
+                // 否则详情页信号区永久停在"正在获取信号列表…"
+                _detailState.update { it.copy(loadingSignals = false, error = null) }
             }
             Route.DETAIL -> {
                 detailJob?.cancel()
                 _route.value = Route.LIST
+                _detailState.update { it.copy(loadingSignals = false, error = null) }
             }
             Route.LIST -> Unit
         }

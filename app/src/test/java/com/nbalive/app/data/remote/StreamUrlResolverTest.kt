@@ -91,6 +91,30 @@ class StreamUrlResolverTest {
         assertEquals("http://hdl2.qiuximing.com/live/a.m3u8", resolved!!.m3u8Candidates.first())
     }
 
+    // ---- 回归：兜底正则不能把 ".m3u8" 后面的非分隔字符一起吞掉 ----
+
+    @Test
+    fun `fallback regex does not produce garbage candidates`() = runBlocking {
+        // 页面里出现 "xxx.m3u8path=1" 这种字面量时，旧的 `\.m3u8[^\s"'<>]*`
+        // 会产出 "http://cdn.example.com/a.m3u8path=1" 这种垃圾地址，
+        // 虽然调用方会逐个探测校验掉，但每次都白费一次请求。
+        val html = """<script>var u="http://cdn.example.com/a.m3u8path=1";</script>"""
+        val resolved = resolver.resolve("http://play.example.com/play/sm.html?id=1") { html }
+        assertNull("没有真正可用的 m3u8 时应返回 null，而不是垃圾候选", resolved)
+    }
+
+    @Test
+    fun `fallback regex keeps query string of a real m3u8`() = runBlocking {
+        // 真正的 m3u8 后面常跟 ?auth_key=...，不能被上面的收紧误伤
+        val html = """<script>var u="http://cdn.example.com/live/a.m3u8?auth_key=xyz";</script>"""
+        val resolved = resolver.resolve("http://play.example.com/play/sm.html?id=1") { html }
+        assertNotNull(resolved)
+        assertTrue(
+            "带 query 的真实 m3u8 必须保留: ${resolved!!.m3u8Candidates}",
+            resolved.m3u8Candidates.any { it == "http://cdn.example.com/live/a.m3u8?auth_key=xyz" },
+        )
+    }
+
     /** 等价于 JS 的 encodeURIComponent */
     private fun encode(raw: String): String = buildString {
         for (ch in raw) {

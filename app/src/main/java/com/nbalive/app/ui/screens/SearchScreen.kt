@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -109,7 +110,10 @@ fun SearchScreen(
         if (results.isNotEmpty()) listState.scrollToItem(0)
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
+    // imePadding：键盘弹出后把结果列表顶到键盘之上。
+    // 搜索页是 Scaffold 的兄弟节点，拿不到它的 insets；不补这一层的话
+    // 输入法会直接盖住下面几条搜索结果，而且滚不到底。
+    Column(modifier = modifier.fillMaxSize().imePadding()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
