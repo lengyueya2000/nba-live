@@ -9,6 +9,7 @@ import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.remote.FetchResult
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.data.remote.debugLog
+import com.nbalive.app.data.remote.redactUrl
 import com.nbalive.app.data.remote.JrsParser
 import com.nbalive.app.data.remote.JrkanParser
 import com.nbalive.app.data.remote.StreamUrlResolver
@@ -121,7 +122,18 @@ class MatchRepository(
         // JRS：详情页校正。并发数要封顶——直播中的场次可能十几场，
         // 一次全开就是把源站当 DDoS 源打；同时单个详情失败不能连累其它场次。
         val gate = Semaphore(MAX_DETAIL_CONCURRENCY)
-        val fixes = live.filter { it.jrsDetailId != null }.map { m ->
+        // ⚠️ 并发封顶不够，还要封**总量**：
+        // 并发 4 意味着"同时 4 个"，但队列里排着 15 个时总量还是 15 次请求，
+        // 只是分批打出去 —— 对源站的压力没变，还多撑了几秒。
+        // 超出预算的场次保留源站状态（多半是"直播中"），不做时钟校正：
+        // JRS 的"直播中"行没有真实开赛时间（startAtMillis 是分组日期的 00:00 占位），
+        // 套时钟校正会把正在直播的比赛全判成"已结束"，比标错严重得多。
+        val toFix = live.filter { it.jrsDetailId != null }
+        val skipped = toFix.size - MAX_DETAIL_FETCH
+        if (skipped > 0) {
+            Log.w("MatchRepo", "详情页校正超预算：$skipped 场跳过（本次最多 $MAX_DETAIL_FETCH 场）")
+        }
+        val fixes = toFix.take(MAX_DETAIL_FETCH).map { m ->
             async {
                 gate.withPermit {
                     catching {
@@ -180,14 +192,17 @@ class MatchRepository(
     private suspend fun fetchJrsDetail(
         detailId: String,
         fetch: suspend (String, String?) -> FetchResult,
+        forceRefresh: Boolean = false,
     ): String? {
         val url = "https://jrszbt.com/live/$detailId.html"
         val now = System.currentTimeMillis()
-        synchronized(detailCache) {
-            val hit = detailCache[url]
-            if (hit != null) {
-                if (now - hit.first < DETAIL_CACHE_TTL_MS) return hit.second
-                detailCache.remove(url)
+        if (!forceRefresh) {
+            synchronized(detailCache) {
+                val hit = detailCache[url]
+                if (hit != null) {
+                    if (now - hit.first < DETAIL_CACHE_TTL_MS) return hit.second
+                    detailCache.remove(url)
+                }
             }
         }
         val body = when (val r = fetch(url, JRS_LIST_URL)) {
@@ -208,6 +223,24 @@ class MatchRepository(
 
         /** 状态校正时并发拉详情页的上限：防止一次刷新把源站打爆。 */
         private const val MAX_DETAIL_CONCURRENCY = 4
+
+        /**
+         * 状态校正时**总**拉详情页的上限。
+         *
+         * 并发封顶只限"同时几个"，不限"一共几个"：
+         * 直播中的场次有十几场时，即使并发 4，总量仍是十几次请求，
+         * 只是分批打出去 —— 对源站的压力没变，还把界面多撑了几秒。
+         */
+        private const val MAX_DETAIL_FETCH = 8
+
+        /**
+         * m3u8 候选校验预算：最多试几个候选。
+         *
+         * 每个候选 = 1 次 HTTP 请求，且坏域名会吃满 fastFail 的超时（8s 连接 + 12s 读）。
+         * 反混淆版 + 原文版两个足够覆盖真实情况，
+         * 全量试完只是让用户多等几个超时。
+         */
+        private const val MAX_M3U8_CANDIDATES = 2
 
         /** 列表页单源拉取的最大尝试次数（含首次）。 */
         private const val LIST_FETCH_ATTEMPTS = 3
@@ -276,7 +309,7 @@ class MatchRepository(
                 is FetchResult.Ok -> return result.body
                 is FetchResult.Rejected -> {
                     // 明确拒绝：不重试。这是最容易被忽略的"限流放大器"
-                    Log.w("MatchRepo", "源站拒绝请求(HTTP ${result.code})，放弃重试: $url")
+                    Log.w("MatchRepo", "源站拒绝请求(HTTP ${result.code})，放弃重试: ${redactUrl(url)}")
                     return null
                 }
                 is FetchResult.Unreachable -> {
@@ -373,6 +406,22 @@ class MatchRepository(
         loadSignals(match) { url, referer -> http.fetch(url, referer) }
 
     /**
+     * 用户显式点「刷新线路」时，让该场详情页的 TTL 缓存失效。
+     *
+     * ⚠️ 为什么不加 forceRefresh 参数：
+     * 那样要改 MainViewModel 注入的 loadSignals lambda 签名，
+     * 而那是个测试用的注入口，改签名会连带改一堆测试。
+     * 清缓存是纯内存操作、不触网，注入测试下也安全。
+     *
+     * 只清这一场，不动其它场次（其它场次的缓存仍在 TTL 内，继续省请求）。
+     */
+    fun invalidateDetailCache(detailId: String) {
+        synchronized(detailCache) {
+            detailCache.remove("https://jrszbt.com/live/$detailId.html")
+        }
+    }
+
+    /**
      * 可注入 fetch 的实现，供单元测试覆盖"多个播放页展开后 id 是否唯一"这类逻辑。
      */
     internal suspend fun loadSignals(
@@ -407,7 +456,17 @@ class MatchRepository(
         // 展开失败时退回列表页给的播放页，至少还能用 WebView 打开
         val jrkanFinal = jrkanSignals.ifEmpty { jrkanSources }
 
-        Detail((jrsSignals + jrkanFinal).distinctBy { it.pageUrl }, correction)
+        // ⚠️ 最后一道防线：保证信号 id 全局唯一。
+        // 播放器把 id 当 LazyColumn 的 key，重复 key 直接 IllegalStateException 闪退
+        // （这个仓库已经崩过两次）。
+        // 上游的 id 生成（JrkanParser / JrsParser）已经各自带来源维度了，
+        // 但那是"约定"不是"保证"——这里再兜一次底，
+        // 以后任何一处改了 id 规则都不会把 App 弄崩。
+        val deduped = (jrsSignals + jrkanFinal)
+            .distinctBy { it.pageUrl }
+            .mapIndexed { index, s -> s.copy(id = "${s.id}#$index") }
+
+        Detail(deduped, correction)
     }
 
     /** loadSignals 的结果：信号列表 + 可选校正（源站列表"直播中"滞后时用） */
@@ -433,15 +492,24 @@ class MatchRepository(
                 http.get(url, http.refererOf(url))
             } ?: return@withContext null
 
-            for (candidate in resolved.m3u8Candidates) {
+            // ⚠️ 候选校验有预算：反混淆版 + 原文版两个足够，
+            // 全量试完 = 每个坏域名一次超时等待（fastFail 也要 8s+12s），
+            // 乘上故障切换的 3 条线路就是几十秒静默。
+            val budget = resolved.m3u8Candidates.take(MAX_M3U8_CANDIDATES)
+            for (candidate in budget) {
                 val playlist = http.get(candidate, resolved.referer, fastFail = true)
                 if (playlist != null && playlist.contains("#EXTM3U")) {
                     debugLog("MatchRepo", "m3u8 OK: $candidate")
                     return@withContext resolved.copy(m3u8Url = candidate)
                 }
-                Log.w("MatchRepo", "m3u8 candidate rejected: $candidate")
+                // ⚠️ 脱敏：m3u8 的签名在 query 里，直接打出来等于公开播放凭证
+                Log.w("MatchRepo", "m3u8 candidate rejected: ${redactUrl(candidate)}")
             }
-            Log.w("MatchRepo", "all m3u8 candidates failed: ${resolved.m3u8Candidates}")
+            Log.w(
+                "MatchRepo",
+                "all m3u8 candidates failed: " +
+                    budget.joinToString { redactUrl(it) },
+            )
             null
         }
 }

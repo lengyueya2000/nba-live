@@ -61,8 +61,26 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** 日期分组 */
-private data class DayGroup(val label: String, val matches: List<Match>)
+/**
+ * 日期分组。
+ *
+ * ⚠️ 分组按**绝对日期**，标签在渲染时现算：
+ *  - 只存 label 的话，标签里的"今天/明天"是生成那一刻的 today 算出来的，
+ *    App 跨零点后还停在列表页，标签就永远停在旧值（今天被继续标成"明天"）。
+ *  - 只存 label 还会在**跨年**时退化：两个不同日期可能都是 "1月1日"，
+ *    而列表的 key 用的是 label → 重复 key → LazyVerticalGrid 直接崩
+ *    （这个仓库已经崩过两次）。
+ * 所以这里存 date，label 由 [dayLabel] 在渲染时算。
+ */
+private data class DayGroup(val date: LocalDate, val matches: List<Match>)
+
+/** 日期分组标签：渲染时按当前日期现算，跨零点自动正确 */
+private fun dayLabel(date: LocalDate, today: LocalDate): String = when (date) {
+    today -> "今天 · ${date.monthValue}月${date.dayOfMonth}日"
+    today.plusDays(1) -> "明天 · ${date.monthValue}月${date.dayOfMonth}日"
+    today.minusDays(1) -> "昨天 · ${date.monthValue}月${date.dayOfMonth}日"
+    else -> "${date.monthValue}月${date.dayOfMonth}日"
+}
 
 private fun groupByDay(matches: List<Match>, today: LocalDate): List<DayGroup> {
     val zone = ZoneId.systemDefault()
@@ -71,15 +89,7 @@ private fun groupByDay(matches: List<Match>, today: LocalDate): List<DayGroup> {
             m.startAtMillis?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalDate() } ?: today
         }
         .toSortedMap()
-        .map { (date, list) ->
-            val label = when (date) {
-                today -> "今天 · ${date.monthValue}月${date.dayOfMonth}日"
-                today.plusDays(1) -> "明天 · ${date.monthValue}月${date.dayOfMonth}日"
-                today.minusDays(1) -> "昨天 · ${date.monthValue}月${date.dayOfMonth}日"
-                else -> "${date.monthValue}月${date.dayOfMonth}日"
-            }
-            DayGroup(label, list)
-        }
+        .map { (date, list) -> DayGroup(date, list) }
 }
 
 @Composable
@@ -190,10 +200,14 @@ private fun MatchGrid(matches: List<Match>, onMatchClick: (Match) -> Unit) {
     val liveMatch = matches.firstOrNull { it.status == MatchStatus.LIVE }
     // 直播中的比赛已用全宽 hero 卡呈现，网格里不再重复
     val gridMatches = if (liveMatch != null) matches.filter { it.id != liveMatch.id } else matches
-    // 分组要 remember：里面读系统时钟，每次重组都重算既浪费，
-    // 跨零点时还会让 "day-…" 的 key 突变导致网格整体重建
-    val today = remember { LocalDate.now(ZoneId.systemDefault()) }
-    val groups = remember(gridMatches, today) { groupByDay(gridMatches, today) }
+    // 分组要 remember：里面读系统时钟，每次重组都重算既浪费。
+    // ⚠️ key 用**绝对日期**而不是标签字符串：
+    // 标签是"今天/明天/1月1日"这种展示文案，跨年时两个日期可能撞成同一个"1月1日"，
+    // 用它当 LazyVerticalGrid 的 key 就会重复 key 崩溃（这个仓库崩过两次）。
+    // 用绝对日期做 key，跨零点 key 不变，网格也不会整体重建。
+    val groups = remember(gridMatches) { groupByDay(gridMatches, LocalDate.now(ZoneId.systemDefault())) }
+    // 标签在渲染时现算：App 跨零点后不用切走页面，标签也会自动变成新的"今天"
+    val today = LocalDate.now(ZoneId.systemDefault())
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -210,9 +224,9 @@ private fun MatchGrid(matches: List<Match>, onMatchClick: (Match) -> Unit) {
         }
 
         groups.forEach { group ->
-            item(span = { GridItemSpan(maxLineSpan) }, key = "day-${group.label}") {
+            item(span = { GridItemSpan(maxLineSpan) }, key = "day-${group.date}") {
                 DayHeader(
-                    label = group.label,
+                    label = dayLabel(group.date, today),
                     count = group.matches.size,
                     liveCount = group.matches.count { it.status == MatchStatus.LIVE },
                 )

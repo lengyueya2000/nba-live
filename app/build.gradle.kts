@@ -65,6 +65,22 @@ android {
         }
     }
 
+    // ⚠️ 未签名包必须换个名字：
+    // 否则它和正式包**同名同路径**（app-release.apk），
+    // 手工往 GitHub Release 上传时根本分不出哪个是能装的，
+    // 发上去用户装不上（"应用未安装"）——发布事故。
+    // 文件名里带 UNSIGNED，看一眼就知道不能发。
+    if (missingKeystoreKeys.isNotEmpty() || skipSigning) {
+        androidComponents {
+            onVariants(selector().withBuildType("release")) { variant ->
+                variant.outputs.forEach { output ->
+                    (output as? com.android.build.api.variant.impl.VariantOutputImpl)?.outputFileName =
+                        "app-UNSIGNED-${variant.name}.apk"
+                }
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

@@ -192,6 +192,11 @@ class MainViewModel(
                         }
                     }
             } catch (ce: CancellationException) {
+                // 协程被取消：收尾 loading/refreshing。
+                // 取消发生的两个地方（refresh 自身重发、playMatch 切场）都会复位这两个标志，
+                // 所以这条目前是**冗余保险**——但它让"取消必须收尾"这条约定落在代码里，
+                // 以后新增取消点时不会忘了收尾。
+                _listState.update { it.copy(loading = false, refreshing = false) }
                 throw ce
             } catch (t: Throwable) {
                 // 注入的加载入口抛异常时也不能闪退，更不能把列表清空
@@ -219,6 +224,11 @@ class MainViewModel(
      */
     fun refreshSignals() {
         val match = _detailState.value.match ?: return
+        // ⚠️ 用户显式刷新：先让详情页缓存失效，随后的 loadSignals 才会真的回源。
+        // playMatch()（首次进场）走缓存 —— 这两条路径就此分开，
+        // 否则 5 分钟 TTL 内点"刷新线路"拿到的是同一份旧 HTML，
+        // 源站后补的线路永远看不到，按钮成了摆设。
+        match.jrsDetailId?.let { repository.invalidateDetailCache(it) }
         detailJob?.cancel()
         _detailState.update { it.copy(loadingSignals = true, error = null) }
         detailJob = viewModelScope.launch {
@@ -268,13 +278,16 @@ class MainViewModel(
         // 用户明确点了这条线，就再给它一次机会（此前被自动故障切换拉黑过）
         state.signals.getOrNull(index)?.let { failedSources.remove(it.pageUrl) }
         // 用户主动换线 = 换了个播放页，"这个页升级失败过"的记录不再适用。
-        // 不清的话：用户手动切到另一条线路后仍会被旧记录挡住 sniffedStream 升级。
-        val newPage = state.signals[index].pageUrl
+        // ⚠️ 必须**无条件清空**：
+        // 之前写成 `if (it.failedSniffPage == newPage) null else it.failedSniffPage`
+        // 只会清掉"切回同一个页"的情况 —— 用户切到**另一条**线时旧记录还在，
+        // 之后切回那条线时嗅探升级会被静默拒绝，用户看不到任何提示。
+        // 用户主动选择 = 给它一次新机会。
         _playerState.update {
             it.copy(
                 selectedIndex = index,
                 resolving = true,
-                failedSniffPage = if (it.failedSniffPage == newPage) null else it.failedSniffPage,
+                failedSniffPage = null,
             ).withError(null)
         }
         play(index)
@@ -534,7 +547,11 @@ class MainViewModel(
                     // m3u8 每轮签名都不同，只记 URL 挡不住回环
                     failedSniffPage = pageUrl ?: it.failedSniffPage,
                     webFallbackUrl = pageUrl,
-                )
+                    // ⚠️ 必须给用户一句提示：
+                    // 这里只 copy 不 withError 的话 errorId 不变，
+                    // 界面的 LaunchedEffect 不会重启 —— 用户只看到画面从直连变回网页，
+                    // 完全不知道发生了什么（实测：静默退回，没有任何提示）。
+                ).withError("直连播放失败，已退回网页播放")
             }
             return
         }

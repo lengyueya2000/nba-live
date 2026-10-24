@@ -57,7 +57,8 @@ class StreamUrlResolver {
         repeat(MAX_HOPS) {
             val html = fetch(current)
             if (html == null) {
-                Log.w(TAG, "fetch failed: $current")
+                // ⚠️ 脱敏：播放页地址里带 playId，query 里可能还有签名
+                Log.w(TAG, "fetch failed: ${redactUrl(current)}")
                 return null
             }
             debugLog(TAG, "fetched len=${html.length}: $current")
@@ -75,7 +76,7 @@ class StreamUrlResolver {
             // 中间跳：/play/sm.html?id=439 会再套一层 /play/439.html
             val next = nextHop(current, html)
             if (next == null) {
-                Log.w(TAG, "no m3u8 and no next hop in: $current")
+                Log.w(TAG, "no m3u8 and no next hop in: ${redactUrl(current)}")
                 return null
             }
             debugLog(TAG, "hop -> $next")

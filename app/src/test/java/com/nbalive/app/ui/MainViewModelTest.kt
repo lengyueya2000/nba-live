@@ -292,8 +292,7 @@ class MainViewModelTest {
     }
 
     @Test
-    fun `嗅探升级失败后：同一播放页不再反复升级`() = vmTest {
-        // m3u8 带时效签名，每轮嗅探到的地址都不同。
+    fun `嗅探升级失败后：同一播放页不再反复升级`() = vmTest {        // m3u8 带时效签名，每轮嗅探到的地址都不同。
         // 只挡"同一个 URL"（failedSniffUrl）挡不住回环：
         // 升级→直连失败→退回 WebView→再嗅探→再升级，每轮销毁重建 WebView、闪黑、耗流量。
         // 修法：记下升级失败的**播放页**，同页本轮不再升级。
@@ -347,6 +346,45 @@ class MainViewModelTest {
         settle()
         assertEquals("失败不能清空已有列表", listOf("watching"), vm.listState.value.matches.map { it.id })
         assertEquals("两个数据源都没有返回赛事", vm.listState.value.error)
+    }
+
+    @Test
+    fun `用户手动换线后 嗅探升级的封禁要解除`() = vmTest {
+        // 回归：failedSniffPage 的清理条件写反了 ——
+        // 旧写法 `if (it.failedSniffPage == newPage) null else it.failedSniffPage`
+        // 只会清掉"切回同一个页"的情况。
+        // 用户切到**另一条**线时旧记录还在，之后切回那条线时
+        // 嗅探升级会被静默拒绝，用户看不到任何提示。
+        val watching = match("watching", "湖人", "勇士", MatchStatus.LIVE)
+        val vm = MainViewModel(
+            loadMatches = { Result.success(listOf(watching)) },
+            loadSignals = {
+                MatchRepository.Detail(
+                    signals = listOf(
+                        source("watching-s0", WEB_PAGE),
+                        source("watching-s1", "http://play.example.com/other.html"),
+                    ),
+                )
+            },
+        )
+        settle()
+
+        vm.playMatch(watching)
+        waitForLoadSignals(vm)
+        settle()
+
+        // 第一条线嗅探升级失败 -> 记下 failedSniffPage
+        vm.onStreamSniffed("http://cdn.example.com/aaa.m3u8", WEB_PAGE)
+        vm.onPlaybackFailed()
+        assertEquals(WEB_PAGE, vm.playerState.value.failedSniffPage)
+
+        // 用户手动切到另一条线：封禁应该解除
+        vm.selectSignal(1)
+        settle()
+        assertNull(
+            "用户主动换线后不该再留着旧播放页的嗅探封禁",
+            vm.playerState.value.failedSniffPage,
+        )
     }
 
     @Test

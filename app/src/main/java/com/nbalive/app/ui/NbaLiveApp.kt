@@ -131,22 +131,41 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     val darkMode = darkPref ?: true
 
     // ---------- 全屏 / 画中画 ----------
-    // saveable：字体缩放/语言变化会重建 Activity（不在 configChanges 里），不能丢全屏
+    // saveable：进程被杀后重建（不要在后台）再回来，全屏状态不该丢。
+    // ⚠️ 早先的注释写的是"字体缩放/语言变化会重建 Activity"——
+    // 那不对：Manifest 的 configChanges 已经包含 fontScale|locale，
+    // 这两种变化不会重建 Activity。真正需要 saveable 的是进程被杀重建。
     var fullscreen by rememberSaveable { mutableStateOf(false) }
+    // 锁定（防误触）：只认解锁键解锁，所以返回键在锁定时不该退出播放页。
+    //
+    // ⚠️ 锁绑定到**比赛 id**，而不是一个裸布尔：
+    // 「同时在播」面板切到另一场时 route 一直是 PLAYER，
+    // 裸布尔会跟着漏到新的一场（用户看着新比赛却是锁着的、浮层全没了）。
+    // 换成"锁住哪一场"，切场时自然失效。
+    var lockedMatchId by remember { mutableStateOf<String?>(null) }
+    val playerLocked = PlayerLock.isLocked(lockedMatchId, playerState.match?.id)
     val inPip by PipState.inPip.collectAsStateWithLifecycle()
     val videoOnly = route == Route.PLAYER && (fullscreen || inPip)
 
     // 直连 HLS 与 WebView 两条播放路径都算"正在看"
     val playingNow = playerState.streamUrl != null || playerState.webFallbackUrl != null
     DisposableEffect(route, playingNow) {
-        PipState.playerActive = route == Route.PLAYER && playingNow
+        // ⚠️ 进了播放页就算"正在看"，**包括解析中的那几秒**：
+        // 解析时 streamUrl/webFallbackUrl 都还是 null，
+        // 如果按 playingNow 判定，用户点进播放页后马上按 Home 就不会进小窗，
+        // 表现为"小窗坏了"。
+        PipState.playerActive = route == Route.PLAYER
         onDispose { PipState.playerActive = false }
     }
     // 观看直播期间保持屏幕常亮，避免球赛看着看着自动熄屏
     KeepScreenOnEffect(enabled = route == Route.PLAYER && playingNow && keepScreenOn)
     // 离开播放页自动退出全屏，避免下次进来是横屏
+    // 同时解除锁定：锁是"看当前这场"的状态，换场/退出就该恢复
     LaunchedEffect(route) {
-        if (route != Route.PLAYER) fullscreen = false
+        if (route != Route.PLAYER) {
+            fullscreen = false
+            lockedMatchId = null
+        }
     }
     // 全屏时横屏 + 隐藏系统栏
     FullscreenSystemEffect(enabled = fullscreen && !inPip)
@@ -154,9 +173,13 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     // 系统返回键：搜索页 > 全屏 > 路由
     // ⚠️ 画中画时要放行：部分系统版本在关小窗时会把返回键派发给界面，
     // 被这里吃掉就会变成"先退详情页、再退列表"，小窗关不掉。
+    // ⚠️ 锁定时返回键不退出播放页：用户明确要求「只有点解锁键才会解锁」，
+    // 锁定期间返回键被吃掉（而不是退出播放页），否则用户会被困在锁定态。
     BackHandler(enabled = !inPip && (searchOpen || route != Route.LIST || fullscreen)) {
         when {
             searchOpen -> searchOpen = false
+            // 锁定中：吃掉这次返回，什么都不做
+            route == Route.PLAYER && !PlayerLock.backExitsPlayer(playerLocked) -> Unit
             fullscreen -> fullscreen = false
             else -> viewModel.back()
         }
@@ -300,6 +323,12 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     inPip = inPip,
                     onToggleFullscreen = { fullscreen = !fullscreen },
                     onEnterPip = { activity?.enterPip() },
+                    locked = playerLocked,
+                    onToggleLock = {
+                        val id = playerState.match?.id
+                        // 锁/解锁都作用于当前这场
+                        lockedMatchId = if (playerLocked) null else id
+                    },
                 )
             }
         }

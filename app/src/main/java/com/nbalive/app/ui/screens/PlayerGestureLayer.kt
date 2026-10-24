@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BrightnessHigh
 import androidx.compose.material.icons.filled.BrightnessLow
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.Icon
@@ -32,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,6 +83,15 @@ fun PlayerMediaGestures(
     var osd by remember { mutableStateOf<MediaOsd?>(null) }
     // 每次数值变化自增，用来重启"松手 800ms 后收起指示器"的计时
     var osdToken by remember { mutableStateOf(0) }
+
+    // ⚠️ onTap 用 rememberUpdatedState 包一层：
+    // pointerInput 的 key 是 (enabled, activity, audio)，不含 onTap。
+    // 调用点传的 onTap 是 `if (immersive) {...} else null`，
+    // immersive 会随 fullscreen / streamUrl 变化 —— 如果手势块拿着旧值，
+    // 进全屏后单击画面会没有反应（旧的 onTap 是 null）。
+    // rememberUpdatedState 让手势块每次都读到最新的回调，
+    // 不必把 onTap 塞进 pointerInput 的 key（那会导致整个手势块重启、丢状态）。
+    val currentOnTap by rememberUpdatedState(onTap)
 
     LaunchedEffect(osdToken) {
         if (osdToken > 0) {
@@ -144,7 +153,7 @@ fun PlayerMediaGestures(
                         osdToken++
                     } else if (!takenByOthers) {
                         // 全程没超过 touchSlop 且没被别人消费 = 单击（浮层显隐）
-                        onTap?.invoke()
+                        currentOnTap?.invoke()
                     }
                 }
             },
@@ -358,7 +367,12 @@ private fun nowClockText(): String {
     )
 }
 
-/** 时钟药丸：半透明深底 + 白字，压在视频上也看得清 */
+/**
+ * 时钟药丸：半透明深底 + 白字，压在视频上也看得清。
+ *
+ * ⚠️ 原来左边还有个闹钟图标（Icons.Filled.Schedule），用户明确要求去掉：
+ * 对着数字看就知道是时间，图标只是多占位置。
+ */
 @Composable
 fun PlayerClock(modifier: Modifier = Modifier) {
     Row(
@@ -369,12 +383,6 @@ fun PlayerClock(modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Icon(
-            imageVector = Icons.Filled.Schedule,
-            contentDescription = null,
-            tint = Color.White.copy(alpha = 0.9f),
-            modifier = Modifier.size(13.dp),
-        )
         Text(
             text = rememberClockText(),
             color = Color.White,
@@ -383,6 +391,38 @@ fun PlayerClock(modifier: Modifier = Modifier) {
             maxLines = 1,
         )
         Spacer(Modifier.width(1.dp))
+    }
+}
+
+/**
+ * 画质药丸：显示当前分辨率（如 1080P）。
+ *
+ * 取值两条路径：
+ *  - ExoPlayer 直连：拿真实视频宽高，最准
+ *  - WebView 承载：App 看不到画面，只能从嗅探到的 m3u8 地址里抠源站标注的分辨率
+ *
+ * 解析不到就不渲染这个药丸（不显示空的标签）。
+ */
+@Composable
+fun PlayerQualityPill(
+    label: String?,
+    modifier: Modifier = Modifier,
+) {
+    if (label == null) return
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(Radius.chip))
+            .background(Color.Black.copy(alpha = 0.48f))
+            .padding(horizontal = Space.sm, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            color = Color.White.copy(alpha = 0.9f),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+        )
     }
 }
 

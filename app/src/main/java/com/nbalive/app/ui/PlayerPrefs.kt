@@ -50,6 +50,10 @@ object PlayerPrefs {
     private var loaded = false
 
     fun init(context: Context) {
+        // ⚠️ 不要用 loaded 短路：
+        // PlayerPrefs 是 object 单例，任何早于 MainActivity.onCreate 的读取
+        // （比如将来加了 Service/Receiver）都会拿到初值而不是用户设置的值。
+        // SharedPreferences 本身已在内存里，读一次开销可忽略。
         if (loaded) return
         loaded = true
         val sp = sp(context)

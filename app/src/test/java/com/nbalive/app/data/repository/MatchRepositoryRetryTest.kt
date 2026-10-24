@@ -173,6 +173,40 @@ class MatchRepositoryRetryTest {
         )
     }
 
+    @Test
+    fun `用户点刷新线路时绕过缓存 真的回源`() = runBlocking {
+        // 回归：5 分钟 TTL 内点"刷新线路"拿到的是同一份旧 HTML，
+        // 源站后补的线路永远看不到 —— 按钮成了摆设。
+        // 用户显式刷新必须清掉该场缓存。
+        var detailFetches = 0
+        val fetch: suspend (String, String?) -> FetchResult = { url, _ ->
+            if (url.contains("/live/")) {
+                detailFetches++
+                FetchResult.Ok(detailHtml())
+            } else {
+                FetchResult.Ok(jrsHtml("555"))
+            }
+        }
+        val m = matchOf("jrs-555", "jrsDetailId" to "555")
+
+        // 第一次进场：走缓存路径
+        repo.loadSignals(m, fetch)
+        val afterFirst = detailFetches
+
+        // 第二次进场（未过期）：命中缓存，不回源
+        repo.loadSignals(m, fetch)
+        assertEquals("缓存期内不该重复请求", afterFirst, detailFetches)
+
+        // 用户显式点"刷新线路"：清缓存 -> 必须回源
+        repo.invalidateDetailCache("555")
+        repo.loadSignals(m, fetch)
+        assertEquals(
+            "用户显式刷新必须真的回源，否则源站后补的线路永远看不到",
+            afterFirst + 1,
+            detailFetches,
+        )
+    }
+
     private fun detailHtml() = """
         <div class="match-iframe"><iframe src="https://play.example.com/play/kbs/?id=1"></iframe></div>
         <p class="match-info-time">2026-10-23 07:00</p>

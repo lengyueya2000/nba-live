@@ -57,7 +57,10 @@ class HttpClient(
         cont.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.w(TAG, "GET failed: $url (${e.message})")
+                // ⚠️ 不打 e.message：OkHttp 部分异常消息内嵌完整 URL
+                // （如 "unexpected end of stream on https://...?auth_key=..."），
+                // 照样泄露播放凭证。只打异常类型。
+                Log.w(TAG, "GET failed: ${redactUrl(url)} (${e.javaClass.simpleName})")
                 if (cont.isActive) cont.resume(null)
             }
 
@@ -65,7 +68,8 @@ class HttpClient(
                 response.use { resp ->
                     if (!resp.isSuccessful) {
                         // 状态码要留在日志里：403（Referer 被拒/限流）和 404（线路下线）处置完全不同
-                        Log.w(TAG, "GET ${resp.code}: $url")
+                        // ⚠️ URL 必须脱敏：播放地址的签名在 query 里
+                        Log.w(TAG, "GET ${resp.code}: ${redactUrl(url)}")
                         runCatching { onStatus(resp.code) }
                         if (cont.isActive) cont.resume(null)
                         return
@@ -86,8 +90,14 @@ class HttpClient(
         referer: String? = null,
         fastFail: Boolean = false,
     ): FetchResult {
-        var status = 0
-        val body = get(url, referer, fastFail) { code -> status = code }
+        // ⚠️ status 被 OkHttp 的回调线程写、被协程线程读：
+        // 没有 volatile 时理论上可能读到旧值（把 403 误判成 Unreachable，
+        // 触发本不该有的重试 —— 正好是"限流不重试"这条修复要防的事）。
+        // 实际上 suspendCancellableCoroutine 的 resume 提供了 happens-before，
+        // 但加 volatile 是零成本的保险。
+        val statusHolder = java.util.concurrent.atomic.AtomicInteger(0)
+        val body = get(url, referer, fastFail) { code -> statusHolder.set(code) }
+        val status = statusHolder.get()
         return when {
             body != null -> FetchResult.Ok(body)
             // 403/429 是源站明确拒绝：再打只会加剧限流

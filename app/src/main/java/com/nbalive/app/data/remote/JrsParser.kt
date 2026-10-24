@@ -106,7 +106,14 @@ class JrsParser {
             if (!seen.add(candidate)) return@forEach
 
             sources += StreamSource(
-                id = "${match.id}-s${sources.size}",
+                // ⚠️ id 必须带上**来源**维度，不能直接用 match.id：
+                // 跨源合并后 match.id 取自 JRKAN（先合并的那个源），
+                // 于是 JRS 信号 id = "jrkan-<eventId>-s0"，
+                // 与 JRKAN 列表页信号 id "jrkan-<eventId>-s0" **完全相同**。
+                // 播放器把 id 当 LazyColumn 的 key，重复 key 直接 IllegalStateException 闪退
+                // （这个仓库已经崩过两次）。两者的 pageUrl 不同，
+                // 所以 distinctBy { pageUrl } 去不掉这个冲突。
+                id = "${match.id}-jrs-s${sources.size}",
                 label = a.text().trim().ifBlank { "信号${sources.size + 1}" },
                 provider = Provider.JRS,
                 pageUrl = candidate,
@@ -118,7 +125,7 @@ class JrsParser {
             val iframeSrc = doc.selectFirst("iframe#pp")?.attr("src")?.trim()
             if (!iframeSrc.isNullOrBlank() && isPlayableUrl(iframeSrc)) {
                 sources += StreamSource(
-                    id = "${match.id}-s0",
+                    id = "${match.id}-jrs-s0",
                     label = "信号1",
                     provider = Provider.JRS,
                     pageUrl = iframeSrc,

@@ -24,13 +24,3 @@ sealed interface FetchResult {
     /** 网络层失败：超时、DNS 抖动、连接被重置，可以重试 */
     data class Unreachable(val reason: String?) : FetchResult
 }
-
-/** 成功时取 body，其余返回 null */
-fun FetchResult.bodyOrNull(): String? = when (this) {
-    is FetchResult.Ok -> body
-    else -> null
-}
-
-/** 是否值得重试：只有网络层失败才值得 */
-val FetchResult.retryable: Boolean
-    get() = this is FetchResult.Unreachable

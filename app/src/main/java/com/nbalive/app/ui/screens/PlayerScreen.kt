@@ -62,6 +62,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
@@ -103,6 +105,7 @@ import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.PipState
+import com.nbalive.app.ui.PlayerLock
 import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
@@ -158,6 +161,12 @@ fun PlayerScreen(
     inPip: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
     onEnterPip: () -> Unit = {},
+    /**
+     * 锁定（防误触）：浮层全隐藏、手势停用。
+     * 解锁入口唯一 —— 右侧中间的锁按钮（见 [onToggleLock]）。
+     */
+    locked: Boolean = false,
+    onToggleLock: () -> Unit = {},
 ) {
     val videoOnly = fullscreen || inPip
 
@@ -253,8 +262,10 @@ fun PlayerScreen(
             //  - 全屏直连时单击画面显示/隐藏浮层
             //  - 网页线路也启用手势：只在**发生垂直拖动**时才消费事件，
             //    单击依旧透传给源站播放器（否则网页线路根本没法调亮度音量）
+            // ⚠️ 锁定时整个手势层停用：滑动/单击都不该再有反应，
+            //    否则"防误触锁"形同虚设。
             PlayerMediaGestures(
-                enabled = !inPip,
+                enabled = !inPip && PlayerLock.gesturesEnabled(locked),
                 modifier = Modifier.fillMaxSize(),
                 onTap = if (immersive) ({ controlsVisible = !controlsVisible }) else null,
             )
@@ -265,18 +276,36 @@ fun PlayerScreen(
             // 用户明确要求去掉。
             // 网页全屏也显示：时钟只是一枚小药丸，且在左上角，
             // 不与源站播放器（控制条在底部）冲突；画中画里不显示。
-            if (match != null && !inPip && (!fullscreen || controlsVisible || webFullscreen)) {
-                PlayerClock(
+            // ⚠️ 锁定时浮层全部隐藏（防误触）：只留右侧的解锁按钮。
+            if (match != null && !inPip && PlayerLock.showOverlays(locked) &&
+                (!fullscreen || controlsVisible || webFullscreen)
+            ) {
+                Row(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(Space.md),
-                )
+                    horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PlayerClock()
+                    // 画质：直连路径拿真实宽高（最准）。
+                    // 网页路径只能从**嗅探到的 m3u8** 里抠 —— webFallbackUrl 是
+                    // 源站的播放页地址（`?id=720` 这种），拿它解析会把线路 id
+                    // 误当成画质，显示一个错误的档位。
+                    PlayerQualityPill(
+                        label = videoHandle.qualityLabel
+                            ?: streamUrl?.let { VideoResolution.fromStreamUrl(it) },
+                    )
+                }
             }
 
             // 右上角：画中画 / 全屏（画中画窗口内不再显示按钮）
             // 网页线路全屏时保留：这两个是"逃生按钮"，在右上角，
             // 不与源站播放器底部的控制条冲突
-            if (!inPip && (!fullscreen || controlsVisible || webFullscreen)) {
+            // ⚠️ 锁定时隐藏：防误触，锁住期间不该能误触画中画/全屏
+            if (!inPip && PlayerLock.showOverlays(locked) &&
+                (!fullscreen || controlsVisible || webFullscreen)
+            ) {
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -293,6 +322,71 @@ fun PlayerScreen(
                         description = if (fullscreen) "退出全屏" else "全屏",
                         onClick = onToggleFullscreen,
                     )
+                }
+            }
+
+            // ---------- 锁定按钮：右侧中间 ----------
+            // ⚠️ 位置选右侧中间而不是底部控制栏：
+            //  1) 底部控制栏只在全屏时出现，非全屏时没地方放
+            //  2) 锁定后底部控制栏要隐藏，按钮会跟着消失 → 用户没法解锁
+            // 锁按钮**永远可见**（锁定时也显示），它就是唯一的解锁入口。
+            //
+            // 右侧滑出的面板（同时在播 / 源·线路）会盖住这个位置，
+            // 面板打开时把它藏起来，面板自己的关闭按钮承担退出。
+            //
+            // ⚠️ **锁定时无条件常显**（它是唯一的解锁入口）；
+            // 未锁定时跟随浮层一起隐藏 —— 全屏直连下浮层默认是收起的，
+            // 锁按钮孤零零挂在画面中间，既挡画面又破坏了"单击清空画面"的预期。
+            if (!inPip && PlayerLock.showLockButton(locked) && picker == null && !showLivePanel &&
+                (locked || !PlayerLock.hideLockButtonWhenOverlaysHidden(locked) ||
+                    !fullscreen || controlsVisible || webFullscreen)
+            ) {
+                VideoControlButton(
+                    icon = if (locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                    description = if (locked) "解锁" else "锁定（防误触）",
+                    onClick = onToggleLock,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(Space.md),
+                    highlighted = locked,
+                )
+            }
+
+            // ---------- 锁定提示 ----------
+            // 锁定后画面不可点，只有右侧的锁按钮能解锁。
+            // 这里给出明确提示，告诉用户"现在是锁着的、去点右边那个锁"。
+            //
+            // ⚠️ 放在**顶部居中**而不是画面中央：
+            // 画面正中央经常已经有"该线路暂无信号"之类的提示，
+            // 两者叠在一起会糊成一团（实机截图确认过）。
+            // 顶部居中那块是空的（时钟在左上、按钮在右上），不会撞车。
+            if (!inPip && PlayerLock.showLockHint(locked)) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = Space.md),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(Radius.chip))
+                            .background(Color.Black.copy(alpha = 0.68f))
+                            .padding(horizontal = Space.md, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Lock,
+                            contentDescription = null,
+                            tint = Color.White.copy(alpha = 0.92f),
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Text(
+                            text = "已锁定 · 点右侧锁按钮解锁",
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
                 }
             }
 
@@ -314,7 +408,9 @@ fun PlayerScreen(
             // 直播流上误触会跳离直播边缘，而且不支持"重连/换源"这类直播操作。
             // 网页线路全屏不画：源站播放器自己的底部控制条会被它盖死，
             // 网页路径又没法接管点击把浮层收起来。
-            if (fullscreen && !inPip && controlsVisible && !webFullscreen) {
+            if (fullscreen && !inPip && controlsVisible && !webFullscreen &&
+                PlayerLock.showBottomBar(locked)
+            ) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -472,7 +568,7 @@ fun PlayerScreen(
                     .padding(Space.xs),
                 horizontalArrangement = Arrangement.spacedBy(Space.xs),
             ) {
-                itemsIndexed(signals) { index, source ->
+                itemsIndexed(signals, key = { _, s -> s.id }) { index, source ->
                     val active = index == selectedIndex
                     Box(
                         modifier = Modifier
@@ -993,11 +1089,14 @@ private fun VideoControlButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     description: String,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** 当前处于激活态时加深底色（锁定按钮锁定后用） */
+    highlighted: Boolean = false,
 ) {
     // 触控区 48dp（无障碍最小值），视觉圆 34dp：
     // 外层负责点击，内层负责画圆，两者分开才不会把圆撑大。
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(48.dp)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -1006,7 +1105,13 @@ private fun VideoControlButton(
             modifier = Modifier
                 .size(34.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.45f)),
+                .background(
+                    if (highlighted) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                    } else {
+                        Color.Black.copy(alpha = 0.45f)
+                    }
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -1028,6 +1133,14 @@ private class VideoPlayerHandle {
     var isPlaying: Boolean by mutableStateOf(false)
     var isBuffering: Boolean by mutableStateOf(false)
 
+    /**
+     * 当前画质标签（如 "1080P"）。
+     *
+     * 走真实视频宽高（`onVideoSizeChanged`）—— 这是唯一准确的来源。
+     * WebView 承载路径拿不到宽高，由调用方用 m3u8 地址兜底。
+     */
+    var qualityLabel: String? by mutableStateOf(null)
+
     fun attach(p: Player) {
         player = p
         isPlaying = p.isPlaying
@@ -1038,6 +1151,12 @@ private class VideoPlayerHandle {
         player = null
         isPlaying = false
         isBuffering = false
+        qualityLabel = null
+    }
+
+    /** 播放器上报真实视频尺寸 -> 画质档位 */
+    fun onVideoSize(width: Int, height: Int) {
+        qualityLabel = VideoResolution.labelOf(width, height)
     }
 
     fun togglePlay() {
@@ -1099,7 +1218,10 @@ private fun PlayerChip(label: String, onClick: () -> Unit) {
             .clip(RoundedCornerShape(Radius.btn))
             .border(1.dp, Color.White.copy(alpha = 0.26f), RoundedCornerShape(Radius.btn))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            // ⚠️ 触控区要够：只有文字 + 6dp 上下内边距时整个胶囊才 ~25dp 高，
+            // 远低于 48dp 的无障碍下限，看球时点"换线路"容易点不中。
+            .heightIn(min = 40.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
     )
 }
 
@@ -1134,6 +1256,9 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            // ⚠️ 必须有 weight：没有它两个队名 Text 会按内容宽度抢占空间，
+            // 把 "vs" 和客队挤出可视区（overflow=Ellipsis 形同虚设）。
+            modifier = Modifier.weight(1f, fill = false),
         )
         Spacer(Modifier.width(Space.xs))
         Text(
@@ -1148,6 +1273,7 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
         Spacer(Modifier.width(Space.xs))
         TeamLogo(match.awayLogo, match.awayTeam, size = 24.dp)
@@ -1274,6 +1400,8 @@ private fun VideoSurface(
                     if (videoSize.width > 0 && videoSize.height > 0) {
                         PipState.videoWidth = videoSize.width
                         PipState.videoHeight = videoSize.height
+                        // 同一份宽高也是画质档位的准确来源
+                        handle.onVideoSize(videoSize.width, videoSize.height)
                     }
                 }
 
