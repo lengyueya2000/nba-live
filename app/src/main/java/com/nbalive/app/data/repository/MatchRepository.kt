@@ -115,6 +115,23 @@ class MatchRepository(
     internal suspend fun correctLiveStatuses(
         matches: List<Match>,
         fetch: suspend (String, String?) -> FetchResult,
+    ): List<Match> = correctLiveStatuses(
+        matches = matches,
+        fetch = fetch,
+        now = java.time.ZonedDateTime.now(),
+    )
+
+    /**
+     * 可注入"当前时间"的实现：让单元测试把跨零点的分支固定下来。
+     *
+     * 详情页拉不到时间时的兜底校正（[isPastDayEnd]）完全依赖时钟，
+     * 不注入就只能在"日期真的过完"之后才跑，测试会随一天中的时刻
+     * 随机通过/失败。
+     */
+    internal suspend fun correctLiveStatuses(
+        matches: List<Match>,
+        fetch: suspend (String, String?) -> FetchResult,
+        now: java.time.ZonedDateTime,
     ): List<Match> = supervisorScope {
         val live = matches.filter { it.status == MatchStatus.LIVE }
         if (live.isEmpty()) return@supervisorScope matches
@@ -158,10 +175,66 @@ class MatchRepository(
                     status = statusByClock(m.startAtMillis),
                     startAtMillis = m.startAtMillis,
                 )
-                else -> m
+                // JRS 场次但详情页没给出可用的 HH:mm（源站 404 / 超时 / 改版）：
+                // ⚠️ 这里原来直接 `else -> m`，把场次**原样留在直播中**。
+                // 实测回归（v1.2.8，用户截图 2026-10-24 23:01）：
+                // 19:35 开球的三场 CBA 早已结束，列表里仍标着「直播中」，
+                // 点进去是「网络错误」—— 源站的"直播中"是会滞后好几个小时的，
+                // 拿不到详情页时间不等于该继续信它。
+                //
+                // 但 JRS"直播中"行的 startAtMillis 只是分组日期的 **00:00 占位**
+                // （真实 HH:mm 被"直播中"文案顶掉了），直接套 statusByClock
+                // 会把凌晨场次判成"结束 24 小时前"，正在直播的也会被误杀。
+                // 所以只做**保守的下界判断**：分组日期 + 1 天 = 该场最晚可能的结束时刻。
+                // 连这个都过了，比赛绝无可能还在进行 —— 判已结束。
+                else -> {
+                    val floor = m.startAtMillis
+                    if (floor != null && isPastDayEnd(floor, now)) {
+                        m.copy(status = MatchStatus.FINISHED)
+                    } else {
+                        m
+                    }
+                }
             }
         }
     }
+
+    /**
+     * 该时间戳所在的日期是否**整体已经过去**。
+     *
+     * 用于 JRS"直播中"行的兜底校正：这类行的 startAtMillis 只是分组日期的
+     * 00:00 占位，拿不到详情页里的真实 HH:mm 时，只能用"这一天结束了"
+     * 作为下界判断 —— 一天都过完了，当天任何时刻开球的比赛都不可能还在打。
+     *
+     * ⚠️ 这里刻意用「当天 24:00」而不是「+3.5 小时」：
+     * 00:00 是占位值不是真实开球时刻，往上加 3.5 小时只会得到 03:30，
+     * 把当天晚上才开球的比赛在中午就判成已结束。按整天判断虽然粗，
+     * 但方向是安全的（宁可多标一会儿直播中，也不误杀正在打的比赛）。
+     */
+    private fun isPastDayEnd(startAtMillis: Long, now: java.time.ZonedDateTime): Boolean {
+        val day = java.time.Instant.ofEpochMilli(startAtMillis)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDate()
+        val dayEnd = day.plusDays(1).atStartOfDay(java.time.ZoneId.systemDefault())
+        return now.isAfter(dayEnd)
+    }
+
+    /**
+     * 测试专用入口：固定 HTML 与当前时间，跑一遍 [correctLiveStatuses]。
+     *
+     * 详情页的 TTL 缓存是进程级的，直接复用会让测试之间互相污染
+     * （同一 URL 的第二次调用拿到缓存里的旧正文）。
+     * 这里走一个全新的仓库实例，缓存天然是空的。
+     */
+    internal suspend fun correctLiveStatusesForTest(
+        matches: List<Match>,
+        htmlFor: (String) -> String?,
+        now: java.time.ZonedDateTime = java.time.ZonedDateTime.now(),
+    ): List<Match> = correctLiveStatuses(
+        matches = matches,
+        fetch = { url, _ -> FetchResult.Ok(htmlFor(url) ?: "") },
+        now = now,
+    )
 
     /** 计划开赛时间 -> 状态：超 3.5 小时=已结束，早于 15 分钟=未开赛，窗口内=进行中。 */
     private fun statusByClock(startAtMillis: Long): MatchStatus {

@@ -88,6 +88,18 @@ data class PlayerUiState(
     val failedSniffPage: String? = null,
     val errorMessage: String? = null,
     /**
+     * 是否处于**彻底播不出来**的状态。
+     *
+     * ⚠️ 不能只靠 [errorMessage] 判断：它同时承担两种语义 ——
+     *  1) 过渡提示："直连线路不可用，已自动切换到 信号2"（切换后照样能播）
+     *  2) 彻底失败："网络错误"（画面是死的，看不了）
+     * 老代码把小窗判定挂在"有没有流地址"上（[PipState.shouldAutoEnterPip] 的
+     * hasStream），于是这条链出了回归（v1.2.8 实测）：播放页显示「网络错误」，
+     * 按 Home 仍弹出小窗，里面就是那句点不动的错误提示。
+     * 有了这个标志，**"在播"的判定只认它**。
+     */
+    val playbackDead: Boolean = false,
+    /**
      * 错误提示的自增序号。
      *
      * 界面用它当 LaunchedEffect 的 key：只拿 [errorMessage] 当 key 时，
@@ -171,6 +183,16 @@ class MainViewModel(
      */
     private fun PlayerUiState.withError(message: String?): PlayerUiState =
         copy(errorMessage = message, errorId = errorId + 1)
+
+    /**
+     * 标记"彻底播不出来"。
+     *
+     * 与 [withError] 分开：错误文案可能只是过渡提示（自动切换线路），
+     * 而这里才是"画面已死、该收起小窗/不再自动进小窗"的信号。
+     * 见 [PlayerUiState.playbackDead] 的说明。
+     */
+    private fun PlayerUiState.markPlaybackDead(dead: Boolean): PlayerUiState =
+        copy(playbackDead = dead)
 
     /**
      * 同一时刻只允许一个解析任务：用户快速连点线路时，
@@ -391,7 +413,8 @@ class MainViewModel(
             _playerState.update { it.copy(match = fixed, signals = detail.signals) }
             if (detail.signals.isEmpty()) {
                 _playerState.update {
-                    it.copy(resolving = false).withError("该赛事暂无可用线路")
+                    it.copy(resolving = false, playbackDead = true)
+                        .withError("该赛事暂无可用线路")
                 }
             } else {
                 // 默认线路：优先选能直连的那条，省一次 WebView 往返。
@@ -419,7 +442,8 @@ class MainViewModel(
             val state = _playerState.value
             if (state.signals.isEmpty()) {
                 _playerState.update {
-                    it.copy(resolving = false).withError("该赛事暂无可用线路")
+                    it.copy(resolving = false, playbackDead = true)
+                        .withError("该赛事暂无可用线路")
                 }
                 return@launch
             }
@@ -430,8 +454,10 @@ class MainViewModel(
 
             _playerState.update {
                 it.copy(resolving = true, streamUrl = null, streamReferer = null,
-                    webFallbackUrl = null, sniffedStream = false, failedSniffUrl = null)
-                    .withError(null)
+                    webFallbackUrl = null, sniffedStream = false, failedSniffUrl = null,
+                    // 重新开始解析：上一轮"彻底播不出来"的判定作废
+                    playbackDead = false)
+                        .withError(null)
             }
 
             // 候选顺序：用户选中的那条优先，其余可直连线路依次兜底。
@@ -511,6 +537,11 @@ class MainViewModel(
                     selectedIndex = start,
                     webFallbackUrl = chosen.pageUrl,
                     sniffedStream = false,
+                    // ⚠️ 网页兜底**不算**彻底失败：源站播放器刚加载，
+                    // 它自己会去拉流、也可能报"网络错误"。
+                    // 那时 PlayerScreen 会通过 onPlaybackError 上报，才轮到 playbackDead=true。
+                    // 这里若急着置 true，会在网页还没加载完时就把小窗收掉/禁止自动小窗。
+                    playbackDead = false,
                 ).withError(
                     when {
                         resolveError != null -> "解析失败：${resolveError}"
@@ -551,6 +582,24 @@ class MainViewModel(
     }
 
     /**
+     * 网页线路确认播不出来（25 秒没嗅探到流 / 播放页加载失败）。
+     *
+     * 只置"彻底失败"标志，**不**改线路、不重试：
+     * 这条路本来就是最后的兜底，再试一次只是把同一个黑屏再放一遍。
+     * 用户要恢复就点"重连"或手动换线。
+     *
+     * 置上之后 [PlayerUiState.playbackDead] 会让上层关掉自动进小窗，
+     * 并把已存在的小窗收掉 —— 见 [PipState.shouldAutoEnterPip] 的说明。
+     */
+    fun onPlaybackDead() {
+        val state = _playerState.value
+        // 已经在直连播了就不管：网页组件可能滞后于嗅探升级才回调
+        if (state.streamUrl != null) return
+        if (state.playbackDead) return
+        _playerState.update { it.markPlaybackDead(true) }
+    }
+
+    /**
      * ExoPlayer 播放失败：把当前线路拉黑后自动换下一条。
      * 全部失败时给出明确提示，而不是一直转圈。
      */
@@ -571,6 +620,8 @@ class MainViewModel(
                     // m3u8 每轮签名都不同，只记 URL 挡不住回环
                     failedSniffPage = pageUrl ?: it.failedSniffPage,
                     webFallbackUrl = pageUrl,
+                    // 退回网页后网页还在加载，不是"彻底死了"
+                    playbackDead = false,
                     // ⚠️ 必须给用户一句提示：
                     // 这里只 copy 不 withError 的话 errorId 不变，
                     // 界面的 LaunchedEffect 不会重启 —— 用户只看到画面从直连变回网页，
@@ -583,6 +634,9 @@ class MainViewModel(
         _playerState.update {
             it.copy(streamUrl = null, streamReferer = null, webFallbackUrl = null)
         }
+        // 还有别的线路要试：这轮是"故障切换"而不是"彻底失败"。
+        // 但若没有任何可直连线路剩下，play() 会走网页兜底 —— 那时也不算死。
+        // 真正的"彻底死了"由网页播放器自己的错误回调置上。
         play(state.selectedIndex)
     }
 
@@ -605,6 +659,7 @@ class MainViewModel(
                         sniffedStream = false,
                         failedSniffUrl = null,
                         failedSniffPage = null,
+                        playbackDead = false,
                     ).withError(null)
                 }
                 // ⚠️ 进场拉线路途中按返回：loadJob 被取消，它尾部那句

@@ -150,7 +150,18 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     val videoOnly = route == Route.PLAYER && (fullscreen || inPip)
 
     // 直连 HLS 与 WebView 两条播放路径都算"正在看"
-    val playingNow = playerState.streamUrl != null || playerState.webFallbackUrl != null
+    //
+    // ⚠️ 播放报错时不算：实测回归（v1.2.8）—— 播放页显示「网络错误」、
+    // 画面完全是死的，按 Home 仍会进小窗（`webFallbackUrl` 还带着地址，
+    // hasStream 判定拦不住），小窗里只剩一句点不动的错误提示。
+    // 用户既看不了球，也没有任何办法操作那个小窗。
+    // "有地址"不等于"在播"：地址拿到的瞬间只是"该试试"。
+    //
+    // ⚠️ 这里判的是 playerState.playbackDead（播放器自己报的死），
+    // **不是** errorMessage：错误文案还承担"已自动切换线路"这类过渡提示，
+    // 那种情况切换完照样能播，不能把小窗收掉。
+    val playingNow = (playerState.streamUrl != null || playerState.webFallbackUrl != null) &&
+        !playerState.playbackDead
     DisposableEffect(route, playingNow) {
         // 只有**真的在看视频**时才允许「按 Home 自动进小窗」。
         // 判定集中在 PipState.shouldAutoEnterPip（可单测），
@@ -163,6 +174,14 @@ fun NbaLiveApp(viewModel: MainViewModel) {
             ),
         )
         onDispose { PipState.setPlayerActive(false) }
+    }
+    // 播放出错时把系统级「自动进小窗」的开关收掉：
+    // setAutoEnterEnabled(true) 是**粘性**的（见 MainActivity.syncAutoEnterEnabled），
+    // 一旦设上，系统在按 Home 时自己进小窗，不经过上面那道判断。
+    // 已经在播之后才报错（小窗里画面死了）的，直接把小窗收掉。
+    LaunchedEffect(playingNow, playerState.playbackDead) {
+        activity?.syncAutoEnterEnabled()
+        if (playerState.playbackDead) activity?.finishPipIfBroken()
     }
     // 离开播放页自动退出全屏，避免下次进来是横屏
     // 同时解除锁定：锁是"看当前这场"的状态，换场/退出就该恢复
@@ -311,6 +330,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                         viewModel.playMatch(m)
                     },
                     onPlaybackError = viewModel::onPlaybackFailed,
+                    onPlaybackDead = viewModel::onPlaybackDead,
                     onStreamSniffed = viewModel::onStreamSniffed,
                     sniffFailed = playerState.failedSniffUrl != null,
                     aspectMode = aspectMode,

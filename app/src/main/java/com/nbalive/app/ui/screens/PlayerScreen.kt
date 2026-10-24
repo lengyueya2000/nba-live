@@ -137,6 +137,14 @@ fun PlayerScreen(
     /** Modifier 必须是第一个可选参数（Compose API 规范） */
     modifier: Modifier = Modifier,
     onPlaybackError: () -> Unit = {},
+    /**
+     * 网页线路确认播不出来（25 秒没出流 / 播放页加载失败）。
+     *
+     * 用于关掉「按 Home 自动进小窗」并收掉已存在的小窗：
+     * 网页里的「网络错误」是源站播放器自己画的，App 读不到它的内容，
+     * 只能靠这两个信号推断"这条线确实死了"。
+     */
+    onPlaybackDead: () -> Unit = {},
     onStreamSniffed: (String, String?) -> Unit = { _, _ -> },
     /** 嗅探升级失败退回网页：不再弹"暂无信号"提示 */
     sniffFailed: Boolean = false,
@@ -272,6 +280,7 @@ fun PlayerScreen(
                     url = webFallbackUrl,
                     onStreamFound = onStreamSniffed,
                     suppressHint = sniffFailed,
+                    onPlaybackDead = onPlaybackDead,
                 )
                 else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1503,20 +1512,36 @@ private fun WebSurface(
     url: String,
     onStreamFound: (String, String?) -> Unit,
     suppressHint: Boolean = false,
+    /**
+     * 网页线路确认播不出来时上报。
+     *
+     * ⚠️ 这是「彻底失败」的**唯一可靠信号**：网页里的「网络错误」
+     * 是源站播放器自己画的，App 拿不到它的内容，只能靠
+     * "25 秒没嗅探到任何 m3u8" + "页面本身加载失败"来判断。
+     * 判错了代价很小（用户还能点"重连"），漏判的代价是
+     * 一个挂着错误画面、点不动的小窗赖在桌面上。
+     */
+    onPlaybackDead: () -> Unit = {},
 ) {
     val onStreamFoundState = rememberUpdatedState(onStreamFound)
+    val onPlaybackDeadState = rememberUpdatedState(onPlaybackDead)
     val lifecycleOwner = LocalLifecycleOwner.current
     var webView by remember { mutableStateOf<WebView?>(null) }
 
     // 比赛已结束时源站页面是一片黑且永远不会出流：
     // 25 秒内没嗅探到任何 m3u8 就给用户明确提示，而不是干等黑屏。
     // 嗅探成功后本组件会被 VideoSurface 替换、协程自动取消，无需手动复位。
-    // suppressHint：嗅探过但直连失败退回网页播放时，网页本身就是最终播放器，不再打扰。
+    //
+    // ⚠️ suppressHint 只抑制**用户可见的提示**，不能连"播不出来"的判定一起跳过：
+    // 嗅探过但直连失败、退回网页播放时 suppressHint=true，
+    // 而那恰恰是最需要判死的情况 —— 网页里的源站播放器会自己画一句
+    // 「网络错误 / 请试试 刷新」（这句不在 App 代码里，读不到），
+    // 老代码在这里直接 return，导致小窗判定一直以为"还在播"。
     var noSignal by remember(url) { mutableStateOf(false) }
     LaunchedEffect(url, suppressHint) {
-        if (suppressHint) return@LaunchedEffect
         delay(25_000)
-        noSignal = true
+        if (!suppressHint) noSignal = true
+        onPlaybackDeadState.value()
     }
 
     // 与 ExoPlayer 同理：退到后台（非小窗）时暂停页面定时器，省电并防止声音后台外放
@@ -1575,6 +1600,19 @@ private fun WebSurface(
                                 onStreamFoundState.value(u, ref)
                             }
                             return super.shouldInterceptRequest(view, request)
+                        }
+
+                        // 播放页本身打不开（DNS 失败 / 404 / 超时）：
+                        // 这就是用户看到的「网络错误」。页面都加载不出来，
+                        // 不可能有流，直接判定彻底失败。
+                        override fun onReceivedError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            error: android.webkit.WebResourceError?,
+                        ) {
+                            if (request?.isForMainFrame == true) {
+                                onPlaybackDeadState.value()
+                            }
                         }
                     }
                     webChromeClient = object : WebChromeClient() {

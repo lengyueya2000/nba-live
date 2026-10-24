@@ -72,6 +72,42 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
     }
 
+    /**
+     * 把「系统按 Home 时自动进小窗」的开关同步到当前播放状态。
+     *
+     * ⚠️ `setAutoEnterEnabled(true)` 是**粘性**的：一旦设上，
+     * 系统就在用户按 Home / 手势上滑时自己进小窗，**完全不经过**
+     * [onUserLeaveHint] 里的 `PipState.playerActive` 判断。
+     * 于是出现回归（v1.2.8 实测）：播放页显示「网络错误」、
+     * 画面完全是死的，按 Home 照样弹出一个小窗，里面还是那句
+     * 「网络错误 / 请试试 刷新」—— 坏掉的小窗挂在桌面上，
+     * 用户既看不了球，也没有任何办法操作它。
+     *
+     * 更糟的是它一旦粘上就再也不掉：从播放页返回列表、甚至比赛结束之后，
+     * 按 Home 依然会进小窗。
+     *
+     * 所以这里**跟着播放状态动态开关**：真的在看（有流且没报错）才允许
+     * 系统自动进小窗，其它情况一律关掉，让 [onUserLeaveHint]
+     * 的显式判断成为唯一入口。
+     */
+    fun syncAutoEnterEnabled() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val active = PipState.playerActive.value
+        runCatching {
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(pipAspectRatio())
+                .setAutoEnterEnabled(active)
+                .apply {
+                    // 源区域提示只在真进小窗时才有意义，关掉时不必给
+                    if (active) videoSourceRect()?.let { setSourceRectHint(it) }
+                }
+                .build()
+            setPictureInPictureParams(params)
+        }.onFailure {
+            Log.w("MainActivity", "syncAutoEnterEnabled($active) failed: ${it.message}", it)
+        }
+    }
+
     /** 进入画中画（比例取真实视频宽高，没有则 16:9） */
     fun enterPip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -88,8 +124,9 @@ class MainActivity : ComponentActivity() {
                 .setAspectRatio(pipAspectRatio())
                 .apply {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        // Android 12+：系统在手势缩小/按 Home 时自动进小窗
-                        setAutoEnterEnabled(true)
+                        // Android 12+：系统在手势缩小/按 Home 时自动进小窗。
+                        // ⚠️ 只在真的在看时开：见 syncAutoEnterEnabled 的说明
+                        setAutoEnterEnabled(PipState.playerActive.value)
                         // 源区域提示：告诉系统视频在屏幕上的位置，
                         // 小窗过渡动画才不会整屏闪一下
                         videoSourceRect()?.let { setSourceRectHint(it) }
@@ -155,18 +192,56 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    /** 按 Home 键离开时，如果正在看直播就自动小窗，不中断播放 */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (PipState.playerActive.value && !PipState.inPip.value) enterPip()
+    }
+
+    /**
+     * 播放状态变化后，把系统级「自动进小窗」的开关同步过去。
+     *
+     * Compose 侧的 [NbaLiveApp] 写 [PipState.playerActive]，
+     * 这里在 start 时读一次最新的值 —— 覆盖"用户还在 App 内
+     * 就切换了比赛/线路"的情况（那时 Activity 不会重新走 onCreate）。
+     */
+    override fun onStart() {
+        super.onStart()
+        syncAutoEnterEnabled()
+    }
+
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
         newConfig: Configuration,
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         PipState.inPip.value = isInPictureInPictureMode
+        // 刚进小窗：播放器要过一会儿才知道能不能播，先不动，
+        // 交给 Compose 侧在拿到真实错误后再决定要不要收掉
+        if (isInPictureInPictureMode) return
+        // 退出小窗后把开关复位：留在 true 会继续粘住系统行为
+        syncAutoEnterEnabled()
     }
 
-    /** 按 Home 键离开时，如果正在看直播就自动小窗，不中断播放 */
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        if (PipState.playerActive.value && !PipState.inPip.value) enterPip()
+    /**
+     * 播放出错且当前在小窗里时，把小窗收掉。
+     *
+     * 实测（v1.2.8）：播放页显示「网络错误」时按 Home 会进小窗
+     * （[PipState.playerActive] 只判"有地址"，见 [PipState.shouldAutoEnterPip]），
+     * 小窗里就剩一句点不动的错误提示。与其让一个坏窗口挂在桌面上，
+     * 不如直接收掉它，用户点开 App 就能看到完整错误页和重试入口。
+     *
+     * 只在**确实播不出来**时退出：正常播放、甚至正在缓冲都不动，
+     * 否则用户主动开的小窗会被自己收掉。
+     */
+    fun finishPipIfBroken() {
+        if (!PipState.inPip.value) return
+        // 复用 shouldKeepPip 的同一套语义：有流且没报错 = 该留
+        if (PipState.shouldKeepPip(hasStream = false, hasPlaybackError = true)) {
+            runCatching { finishAndRemoveTask() }.onFailure {
+                Log.w("MainActivity", "finishPipIfBroken failed: ${it.message}", it)
+            }
+        }
     }
 
     override fun onDestroy() {
