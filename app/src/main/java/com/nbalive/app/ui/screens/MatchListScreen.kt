@@ -205,9 +205,12 @@ private fun MatchGrid(matches: List<Match>, onMatchClick: (Match) -> Unit) {
     // 标签是"今天/明天/1月1日"这种展示文案，跨年时两个日期可能撞成同一个"1月1日"，
     // 用它当 LazyVerticalGrid 的 key 就会重复 key 崩溃（这个仓库崩过两次）。
     // 用绝对日期做 key，跨零点 key 不变，网格也不会整体重建。
-    val groups = remember(gridMatches) { groupByDay(gridMatches, LocalDate.now(ZoneId.systemDefault())) }
-    // 标签在渲染时现算：App 跨零点后不用切走页面，标签也会自动变成新的"今天"
+    //
+    // ⚠️ today 只取一次（别调两次 systemDefault）：
+    // 标签在渲染时现算，App 跨零点后不用切走页面标签也会自动变成新的"今天"；
+    // 但分组结果要 remember 住，用的是同一个 today 快照。
     val today = LocalDate.now(ZoneId.systemDefault())
+    val groups = remember(gridMatches, today) { groupByDay(gridMatches, today) }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),

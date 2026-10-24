@@ -30,6 +30,10 @@ class HttpClient(
         client.newBuilder()
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
+            // ⚠️ 整体超时必须比"连接 + 读取"更短：
+            // 否则一次请求最坏能拖 8 + 12 = 20 秒。
+            // 候选地址试探要的是"快速失败"，不是"耐心等待"。
+            .callTimeout(10, TimeUnit.SECONDS)
             .build()
     }
 
@@ -149,6 +153,10 @@ class HttpClient(
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            // ⚠️ 整体超时：单个请求最坏 15 + 30 = 45 秒。
+            // 没有它，一个"连上了但一直不发数据"的源站能把界面拖住 45 秒；
+            // 有了它，最多 35 秒就一定会失败并触发故障切换。
+            .callTimeout(35, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .build()

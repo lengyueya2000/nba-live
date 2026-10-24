@@ -25,5 +25,17 @@
 # ---- 保留 Kotlin 元数据（Compose 编译器与反射式序列化依赖）----
 -keepattributes *Annotation*, InnerClasses, EnclosingMethod, Signature, RuntimeVisible*Annotations, AnnotationDefault
 
+# ---- Kotlinx 协程：协程挂起点会生成 Continuation 实现类，
+#      R8 若把它的字段名改掉，反射式调试与部分内部 API 会失效。
+#      kotlinx-coroutines 官方推荐保留这些成员：----
+-keepclassmembers class kotlinx.coroutines.** {
+    volatile <fields>;
+}
+-dontwarn kotlinx.coroutines.**
+# kotlinx-coroutines-core 的 internal API 在 R8 下会产生告警噪音
+-keepclassmembers class kotlinx.coroutines.flow.** {
+    volatile <fields>;
+}
+
 # 去掉混淆带来的告警噪音（不影响功能）
 -dontnote **

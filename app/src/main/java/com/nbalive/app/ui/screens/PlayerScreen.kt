@@ -26,6 +26,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -171,9 +172,11 @@ fun PlayerScreen(
     val videoOnly = fullscreen || inPip
 
     // "同时在播"右侧面板
-    var showLivePanel by remember { mutableStateOf(false) }
+    // ⚠️ rememberSaveable：进程被杀重建（用户切后台太久被回收）后，
+    // 已打开的面板会被静默关掉 —— 用户看到"面板自己关了"。
+    var showLivePanel by rememberSaveable { mutableStateOf(false) }
     // 播放源 / 播放线路 选择面板（不用 DropdownMenu：Popup 会被视频 SurfaceView 盖住）
-    var picker by remember { mutableStateOf<PickerKind?>(null) }
+    var picker by rememberSaveable { mutableStateOf<PickerKind?>(null) }
     // 视频播放器句柄：自定义控制栏要读播放状态、要能暂停/继续
     val videoHandle = remember(streamUrl) { VideoPlayerHandle() }
 
@@ -185,9 +188,16 @@ fun PlayerScreen(
     // 而且网页路径不能接管触摸（点画面必须交给源站播放器），
     // 所以网页全屏不画顶部信息条和底部控制栏，只留右上角的 PIP / 退出全屏。
     val webFullscreen = fullscreen && !inPip && streamUrl == null
-    var controlsVisible by remember { mutableStateOf(true) }
-    LaunchedEffect(fullscreen, streamUrl) {
-        if (fullscreen && streamUrl != null) controlsVisible = false
+    var controlsVisible by rememberSaveable { mutableStateOf(true) }
+    // ⚠️ 只在**进入全屏**时收起浮层，key 里不能有 streamUrl：
+    // 原来的 `LaunchedEffect(fullscreen, streamUrl)` 在换线路时也会重跑，
+    // 把 controlsVisible 重置成 false —— 用户刚点完"线路"胶囊，
+    // 底部控制栏就自己消失了，得再点一次画面才回来。
+    //
+    // 直连地址解析出来时也不需要额外收起：用户是从非全屏进播放页的
+    // （那时浮层本来就显示），点全屏才触发这个 effect。
+    LaunchedEffect(fullscreen) {
+        if (fullscreen) controlsVisible = false
     }
     // 打开任一选择面板时强制露出控制栏，避免面板还开着栏却消失了
     LaunchedEffect(picker, showLivePanel) {
@@ -797,7 +807,10 @@ fun PlayerScreen(
                 Spacer(Modifier.weight(1f))
                 Box(
                     modifier = Modifier
-                        .size(28.dp)
+                        // ⚠️ 图标只有 16dp，但**可点区域要 48dp**：
+                        // 直接 .size(28.dp) 的话触摸目标远低于无障碍下限，
+                        // 看球时单手点关闭很容易点不中。
+                        .size(48.dp)
                         .clip(CircleShape)
                         .clickable { picker = null },
                     contentAlignment = Alignment.Center,
@@ -948,7 +961,9 @@ private fun LiveNowPanel(
             // 手动刷新：看球期间不自动刷，用户点这个按钮才拉最新列表
             Box(
                 modifier = Modifier
-                    .size(30.dp)
+                    // ⚠️ 图标 20dp，但可点区域给到 44dp（接近无障碍 48dp 下限）：
+                    // 直接 .size(30.dp) 的话看球时单手点刷新很容易点不中。
+                    .size(44.dp)
                     .clip(CircleShape)
                     .clickable(enabled = !refreshing, onClick = onRefresh),
                 contentAlignment = Alignment.Center,
@@ -985,7 +1000,8 @@ private fun LiveNowPanel(
             Spacer(Modifier.width(Space.sm))
             Box(
                 modifier = Modifier
-                    .size(30.dp)
+                    // 同上：图标 16dp，可点区域 48dp
+                    .size(48.dp)
                     .clip(CircleShape)
                     .clickable(onClick = onClose),
                 contentAlignment = Alignment.Center,
@@ -1398,8 +1414,7 @@ private fun VideoSurface(
                 // 上报视频宽高：画中画窗口按真实比例算，非 16:9 的源不用加黑边
                 override fun onVideoSizeChanged(videoSize: VideoSize) {
                     if (videoSize.width > 0 && videoSize.height > 0) {
-                        PipState.videoWidth = videoSize.width
-                        PipState.videoHeight = videoSize.height
+                        PipState.setVideoSize(videoSize.width, videoSize.height)
                         // 同一份宽高也是画质档位的准确来源
                         handle.onVideoSize(videoSize.width, videoSize.height)
                     }
@@ -1437,8 +1452,13 @@ private fun VideoSurface(
         },
         onRelease = { view ->
             handle.detach()
-            view.player?.release()
+            // ⚠️ 先把引用摘掉再 release：
+            // Media3 的 release() 会同步回调监听器，
+            // 如果这时 view.player 还指着这个实例，回调里可能又碰到它。
+            // 先置 null 再 release，状态更干净，也不会漏掉引用。
+            val p = view.player
             view.player = null
+            p?.release()
         },
         modifier = Modifier.fillMaxSize(),
     )

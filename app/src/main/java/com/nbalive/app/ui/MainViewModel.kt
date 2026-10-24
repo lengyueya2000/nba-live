@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.Collections
 
 /** 页面路由 */
 enum class Route { LIST, DETAIL, PLAYER }
@@ -33,21 +34,28 @@ data class MatchListUiState(
     /** 列表是否正忙（首载或刷新中）：供刷新按钮显示进度 */
     val busy: Boolean get() = loading || refreshing
 
-    val visibleMatches: List<Match>
-        get() = when (selectedLeague) {
-            League.ALL -> matches
-            League.NBA -> matches.filter { it.league == League.NBA }
-            League.CBA -> matches.filter { it.league == League.CBA }
-            League.OTHER -> matches.filter { it.league == League.OTHER }
-        }
+    /**
+     * 按联赛筛选后的列表。
+     *
+     * ⚠️ 用 `val` 而不是 `get()`：
+     * 原来写成 getter 的话，每次读取都新建一个 List —— 而界面在每次重组时
+     * 都会读它，等于每帧都在分配。上百场比赛时这是实打实的 GC 压力。
+     * data class 的属性在构造时求值一次，列表变了会重新构造整个 state。
+     */
+    val visibleMatches: List<Match> = when (selectedLeague) {
+        League.ALL -> matches
+        League.NBA -> matches.filter { it.league == League.NBA }
+        League.CBA -> matches.filter { it.league == League.CBA }
+        League.OTHER -> matches.filter { it.league == League.OTHER }
+    }
 
-    val counts: Map<League, Int>
-        get() = mapOf(
-            League.ALL to matches.size,
-            League.NBA to matches.count { it.league == League.NBA },
-            League.CBA to matches.count { it.league == League.CBA },
-            League.OTHER to matches.count { it.league == League.OTHER },
-        )
+    /** 各联赛的场次数（联赛筛选胶囊上的角标） */
+    val counts: Map<League, Int> = mapOf(
+        League.ALL to matches.size,
+        League.NBA to matches.count { it.league == League.NBA },
+        League.CBA to matches.count { it.league == League.CBA },
+        League.OTHER to matches.count { it.league == League.OTHER },
+    )
 }
 
 data class MatchDetailUiState(
@@ -89,7 +97,14 @@ data class PlayerUiState(
 )
 
 class MainViewModel(
-    private val repository: MatchRepository = MatchRepository(),
+    /**
+     * ⚠️ 用**进程级单例**而不是每次 new：
+     * MatchRepository 持有详情页 TTL 缓存（省源站请求的关键），
+     * 每次 new 一个就等于每次都从零开始缓存 ——
+     * 用户在"列表 → 详情 → 播放页 → 返回"之间往返，
+     * ViewModel 重建就把缓存丢了，同一个详情页要重复拉。
+     */
+    private val repository: MatchRepository = MatchRepository.shared,
     /**
      * 列表加载入口。生产默认走 [MatchRepository.loadMatches]；
      * 测试注入它以可控地驱动刷新时序（全程不触网）。
@@ -134,7 +149,16 @@ class MainViewModel(
      * ⚠️ 只在主线程读写：所有写点都在 viewModelScope 的协程里（Main 调度器），
      * 不要把它挪到后台线程访问——普通 MutableSet 并发写会损坏内部结构。
      */
-    private val failedSources = mutableSetOf<String>()
+    /**
+     * 已被故障切换拉黑的线路。
+     *
+     * ⚠️ 用线程安全集合而不是裸 mutableSetOf：
+     * 原来的注释说"只在主线程读写"，但 viewModelScope 默认调度器是 Main
+     * 只是**实现细节**，不是语言/框架契约 —— 以后有人加一个
+     * `withContext(Dispatchers.IO)` 就会炸 ConcurrentModificationException。
+     * 用 Collections.synchronizedSet 兜住，成本几乎为零。
+     */
+    private val failedSources: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
 
     private val _playerState = MutableStateFlow(PlayerUiState())
     val playerState: StateFlow<PlayerUiState> = _playerState.asStateFlow()

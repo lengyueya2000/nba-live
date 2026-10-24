@@ -53,9 +53,16 @@ class JrkanParser {
         val result = mutableListOf<Match>()
 
         // 拆出每个 <ul class="item play ..."> ... </ul> 块
-        val blockRegex = Regex("""(?s)<ul class="item play.*?</ul>""")
+        //
+        // ⚠️ 不能用 `(?s)<ul class="item play.*?</ul>`：
+        // 惰性量词 + DOT_MATCHES_ALL 会在**整份 index.js**（18 万字符）上回溯，
+        // 每来一个 <ul 都要扫到下一个 </ul>，源站页面一大就是指数级开销。
+        // 改成"先定位起点，再从那里找第一个结束标记"，是线性的。
+        val blockRegex = Regex("""<ul class="item play""")
         blockRegex.findAll(js).forEach { m ->
-            val block = m.value
+            val start = m.range.first
+            val end = js.indexOf("</ul>", start).takeIf { it >= 0 } ?: return@forEach
+            val block = js.substring(start, end)
             val lid = Regex("""data-lid="(\d+),(\d+),(\d+)"""").find(block)?.groupValues ?: return@forEach
             val eventId = lid[1]
 

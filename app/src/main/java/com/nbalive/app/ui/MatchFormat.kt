@@ -15,6 +15,16 @@ import java.util.Locale
  * 这里收敛成一份，两个页面共用。
  */
 
+/**
+ * 当前时区。
+ *
+ * ⚠️ 缓存起来：`ZoneId.systemDefault()` 每次调用都会查一次系统设置，
+ * 而列表页每一行都要调它两次（hhmm + mmdd），上百行就是几百次系统查询。
+ * 系统时区在进程生命周期内基本不变，缓存是安全的；
+ * 用户改时区需要重启 App 才生效 —— 对赛事时间显示来说可以接受。
+ */
+private val systemZone: ZoneId by lazy { ZoneId.systemDefault() }
+
 /** 联赛展示名：优先用源站原名（如"美职篮"），为空时退回枚举名。 */
 fun Match.leagueLabel(): String = leagueRawName.ifBlank { league.displayName }
 
@@ -29,7 +39,7 @@ fun Match.leagueLabel(): String = leagueRawName.ifBlank { league.displayName }
  * 阿拉伯语/波斯语等区域会输出本地数字（٠١:٣٠），和旁边的时间文案对不上。
  */
 fun Match.hhmm(): String {
-    val t = startAtMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()) }
+    val t = startAtMillis?.let { Instant.ofEpochMilli(it).atZone(systemZone) }
     if (t != null) {
         if (status == MatchStatus.LIVE && t.hour == 0 && t.minute == 0) return timeLabel
         return String.format(Locale.ROOT, "%02d:%02d", t.hour, t.minute)
@@ -39,14 +49,14 @@ fun Match.hhmm(): String {
 
 /** 展示用日期 "MM-dd"。 */
 fun Match.mmdd(): String {
-    val t = startAtMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()) }
+    val t = startAtMillis?.let { Instant.ofEpochMilli(it).atZone(systemZone) }
     if (t != null) return String.format(Locale.ROOT, "%02d-%02d", t.monthValue, t.dayOfMonth)
     return timeLabel.substringBefore(' ').ifBlank { "" }
 }
 
 /** 详情页用完整时间 "MM-dd HH:mm"；时间未知时退回源站文案。 */
 fun Match.displayTime(): String {
-    val t = startAtMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()) }
+    val t = startAtMillis?.let { Instant.ofEpochMilli(it).atZone(systemZone) }
     if (t != null && !(status == MatchStatus.LIVE && t.hour == 0 && t.minute == 0)) {
         return String.format(
             Locale.ROOT,

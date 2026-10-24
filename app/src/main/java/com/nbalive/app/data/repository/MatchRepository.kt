@@ -115,9 +115,9 @@ class MatchRepository(
     internal suspend fun correctLiveStatuses(
         matches: List<Match>,
         fetch: suspend (String, String?) -> FetchResult,
-    ): List<Match> = coroutineScope {
+    ): List<Match> = supervisorScope {
         val live = matches.filter { it.status == MatchStatus.LIVE }
-        if (live.isEmpty()) return@coroutineScope matches
+        if (live.isEmpty()) return@supervisorScope matches
 
         // JRS：详情页校正。并发数要封顶——直播中的场次可能十几场，
         // 一次全开就是把源站当 DDoS 源打；同时单个详情失败不能连累其它场次。
@@ -195,7 +195,13 @@ class MatchRepository(
         forceRefresh: Boolean = false,
     ): String? {
         val url = "https://jrszbt.com/live/$detailId.html"
-        val now = System.currentTimeMillis()
+        // ⚠️ 用**单调时钟**（nanoTime）而不是 currentTimeMillis：
+        // 用户把系统时间往前拨，"now - cachedAt" 会变成负数，
+        // 负数 < TTL 恒成立 → 缓存永不过期（源站改版了也看不到新内容）。
+        // nanoTime 不受系统时间调整影响。
+        // （不用 android.os.SystemClock.elapsedRealtime：它在 JVM 单元测试里
+        //   返回默认值 0，测试就没法验证 TTL 过期了。）
+        val now = System.nanoTime() / 1_000_000L
         if (!forceRefresh) {
             synchronized(detailCache) {
                 val hit = detailCache[url]
@@ -220,6 +226,15 @@ class MatchRepository(
     companion object {
         const val JRS_LIST_URL = "https://jrszbt.com/"
         const val JRKAN_LIST_JS = "https://im-imgs-bucket.oss-accelerate.aliyuncs.com/index.js?t_5"
+
+        /**
+         * 进程级共享实例。
+         *
+         * ⚠️ 必须共享：详情页 TTL 缓存是这个类的实例字段，
+         * 每次 new 一个就等于每次从零开始缓存 —— 用户在页面之间往返、
+         * ViewModel 重建时缓存就丢了，同一个详情页会重复拉源站。
+         */
+        val shared: MatchRepository by lazy { MatchRepository() }
 
         /** 状态校正时并发拉详情页的上限：防止一次刷新把源站打爆。 */
         private const val MAX_DETAIL_CONCURRENCY = 4
@@ -253,6 +268,14 @@ class MatchRepository(
 
         /** 详情页缓存的最大条数：防止长时间运行后无限增长。 */
         private const val DETAIL_CACHE_MAX_ENTRIES = 64
+
+        /**
+         * 队名归一化用的空白正则。
+         *
+         * ⚠️ 必须提成常量：每次调用 `Regex("\\s+")` 都会新建一个对象，
+         * 而 normalizeKey 每场比赛要调两次 —— 几十场还好，上百场就是无谓的分配。
+         */
+        private val WHITESPACE = Regex("\\s+")
     }
 
     /**
@@ -338,23 +361,40 @@ class MatchRepository(
      * 日期必须参与 key：同一对球队背靠背/系列赛会重复出现，
      * 只按队名归并会把真实存在的第二场直接吞掉。
      */
+    /**
+     * 合并逻辑的测试入口。
+     *
+     * merge 本身是 private（只在 loadMatches 内部用），
+     * 但"两个源怎么合并"是最容易出静默错误的地方（id 撞车、状态被覆盖），
+     * 必须能直接测。
+     */
+    internal fun mergeForTest(jrs: List<Match>, jrkan: List<Match>): List<Match> = merge(jrs, jrkan)
+
     private fun merge(jrs: List<Match>, jrkan: List<Match>): List<Match> {
         val merged = LinkedHashMap<String, Match>()
+        // 已用过的 id：避免每次都 O(n) 扫 merged.values（几十场还行，上百场会退化）
+        val usedIds = HashSet<String>()
 
         fun mergeOne(m: Match) {
             val key = normalizeKey(m)
             // id 兜底唯一化：LazyVerticalGrid 的 key 重复会直接崩溃，
             // 宁可 id 加后缀，也绝不丢比赛
-            val unique = if (merged.values.any { it.id == m.id }) "${m.id}#${merged.size}" else m.id
+            var unique = m.id
+            var suffix = merged.size
+            while (!usedIds.add(unique)) {
+                unique = "${m.id}#${suffix++}"
+            }
             val existing = merged[key]
             merged[key] = if (existing == null) {
                 m.copy(id = unique)
             } else {
                 val sources = (existing.sources + m.sources).distinctBy { it.pageUrl }
                 existing.copy(
-                    // JRS 的状态更准（能区分"直播中"）；
-                    // 即便此处保留了滞后的 LIVE，correctLiveStatuses 也会用详情页/时钟校正
-                    status = if (m.status != MatchStatus.UPCOMING) m.status else existing.status,
+                    // 状态取"更可信"的那个，而不是"后合并的那个"：
+                    // JRS 的列表会滞后（已结束还标直播中），
+                    // JRKAN 自带 MM-dd HH:mm 可以做时钟校正。
+                    // 原来直接用 m.status（JRS 后合并）会把 JRKAN 更准的状态覆盖掉。
+                    status = betterStatus(existing.status, m.status),
                     timeLabel = existing.timeLabel.ifBlank { m.timeLabel },
                     startAtMillis = existing.startAtMillis ?: m.startAtMillis,
                     homeLogo = existing.homeLogo ?: m.homeLogo,
@@ -377,6 +417,28 @@ class MatchRepository(
     }
 
     /**
+     * 合并两个来源的状态：取更可信的那个。
+     *
+     * 可信度排序：FINISHED > LIVE > UPCOMING。
+     *
+     * 为什么要这样而不是"后合并的赢"：
+     * - JRS 列表的"直播中"会滞后好几小时（已结束的场次还标着直播中）
+     * - JRKAN 自带 "MM-dd HH:mm"，可以拿本地时钟双向校正
+     * JRS 后合并，直接用 m.status 会把 JRKAN 更准的状态覆盖成滞后值。
+     *
+     * 后续 correctLiveStatuses 还会用详情页/时钟再校正一遍，这里只是别把
+     * 已经更准的状态改差。
+     */
+    private fun betterStatus(a: MatchStatus, b: MatchStatus): MatchStatus =
+        if (statusRank(b) > statusRank(a)) b else a
+
+    private fun statusRank(s: MatchStatus): Int = when (s) {
+        MatchStatus.FINISHED -> 3
+        MatchStatus.LIVE -> 2
+        MatchStatus.UPCOMING -> 1
+    }
+
+    /**
      * 归一化队名用于跨源匹配（去掉空白差异），并带上开赛日期防止同队重复场次被合并。
      *
      * ⚠️ 主客队必须**排序后**拼接：实测 JRS 列表与 JRKAN 的主客顺序相反
@@ -388,8 +450,7 @@ class MatchRepository(
         val day = m.startAtMillis?.let {
             java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
         } ?: m.timeLabel.substringBefore(' ').ifBlank { "?" }
-        val norm = { s: String -> s.replace(Regex("\\s+"), "") }
-        val (t1, t2) = listOf(norm(m.homeTeam), norm(m.awayTeam)).sorted()
+        val (t1, t2) = listOf(m.homeTeam, m.awayTeam).map { it.replace(WHITESPACE, "") }.sorted()
         return "$day|$t1|$t2"
     }
 

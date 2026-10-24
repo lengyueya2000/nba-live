@@ -157,3 +157,11 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }
+
+// ⚠️ 依赖锁定：
+// 没有它，某个传递依赖（比如 okio）被上游悄悄换成新版本时，
+// 构建**不报错**，但产物行为会变 —— 而且没人知道改了什么。
+// 锁定后版本被钉死，升级必须显式跑 `gradle dependencies --write-locks`。
+dependencyLocking {
+    lockAllConfigurations()
+}

@@ -73,7 +73,15 @@ object SportLight {
     val Nba = Color(0xFF2563EB)
     val Cba = Color(0xFFE11D48)
     val Ok = Color(0xFF0E9F5C)
-    val Warn = Color(0xFFC9820A)
+    /**
+     * 警告色（浅色主题）。
+     *
+     * ⚠️ 取 #9E6400 而不是 #C9820A：
+     * 原来的 #C9820A 在浅色卡片上只有 **3.14:1**（on Card3 只有 2.91:1），
+     * 达不到 WCAG AA 的 4.5:1 —— "该线路暂无信号"这行提示字在亮色主题下偏淡。
+     * #9E6400 在白底 4.91:1、Card3 上 4.54:1，两处都达标，且仍是同一个琥珀色相。
+     */
+    val Warn = Color(0xFF9E6400)
 }
 
 /**
@@ -122,13 +130,21 @@ fun accentBrush(): Brush {
  */
 fun Color.whiteTextSafe(scale: Float = 1f): Color {
     val maxLuminance = 0.1833f
-    var factor = scale
-    var color = Color(red * factor, green * factor, blue * factor, alpha)
-    while (factor > 0.2f && color.luminance() > maxLuminance) {
-        factor -= 0.05f
-        color = Color(red * factor, green * factor, blue * factor, alpha)
+    var color = Color(red * scale, green * scale, blue * scale, alpha)
+    if (color.luminance() <= maxLuminance) return color
+    // ⚠️ 原来是 while 循环每档减 0.05，最多 16 次迭代，
+    // 而且**步长是固定的**：刚好差一点没压到位时，
+    // 结果色会明显比"刚好达标"的那档更暗（视觉上偏色）。
+    // 改成二分：直接求"满足亮度的最大缩放系数"，又快又准。
+    // 上界必须是 scale —— 这个函数只会把颜色压得更暗，绝不能压得比 scale 亮。
+    var lo = 0.2f
+    var hi = scale
+    repeat(12) {
+        val mid = (lo + hi) / 2f
+        val c = Color(red * mid, green * mid, blue * mid, alpha)
+        if (c.luminance() > maxLuminance) hi = mid else lo = mid
     }
-    return color
+    return Color(red * lo, green * lo, blue * lo, alpha)
 }
 /** 联赛渐变色 —— 装饰用（色条 / 图标底），不压字 */
 val GradNba = Brush.linearGradient(

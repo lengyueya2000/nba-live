@@ -27,10 +27,12 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,7 +52,9 @@ import java.util.Calendar
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 播放器的亮度 / 音量手势层。
@@ -81,8 +85,25 @@ fun PlayerMediaGestures(
     }
 
     var osd by remember { mutableStateOf<MediaOsd?>(null) }
-    // 每次数值变化自增，用来重启"松手 800ms 后收起指示器"的计时
-    var osdToken by remember { mutableStateOf(0) }
+
+    // "松手 800ms 后收起指示器"的计时。
+    //
+    // ⚠️ 不要用"数值变化就自增 token、LaunchedEffect(token) 里 delay"那套：
+    // 拖动时每个 move 事件都会自增（每秒几十次），
+    // 等于每帧取消并重建一个延时协程 —— 白白烧 CPU，还可能出现竞态。
+    // 正确做法是**防抖**：只在数值真正停下来 800ms 后才收起。
+    val osdScope = rememberCoroutineScope()
+    var osdHideJob by remember { mutableStateOf<Job?>(null) }
+    val scheduleHideOsd = {
+        osdHideJob?.cancel()
+        osdHideJob = osdScope.launch {
+            delay(800)
+            osd = null
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { osdHideJob?.cancel() }
+    }
 
     // ⚠️ onTap 用 rememberUpdatedState 包一层：
     // pointerInput 的 key 是 (enabled, activity, audio)，不含 onTap。
@@ -92,13 +113,6 @@ fun PlayerMediaGestures(
     // rememberUpdatedState 让手势块每次都读到最新的回调，
     // 不必把 onTap 塞进 pointerInput 的 key（那会导致整个手势块重启、丢状态）。
     val currentOnTap by rememberUpdatedState(onTap)
-
-    LaunchedEffect(osdToken) {
-        if (osdToken > 0) {
-            delay(800)
-            osd = null
-        }
-    }
 
     Box(
         modifier = modifier
@@ -144,13 +158,14 @@ fun PlayerMediaGestures(
                                 min = if (side == Side.BRIGHTNESS) MIN_BRIGHTNESS else 0f,
                             )
                             osd = applyGesture(side, target, activity, audio)
-                            osdToken++
+                            // 拖动中：每次数值变化都重置收起计时（防抖）
+                            scheduleHideOsd()
                         }
                     }
 
                     if (dragging) {
                         // 抬手：重置计时，让指示器再留 800ms
-                        osdToken++
+                        scheduleHideOsd()
                     } else if (!takenByOthers) {
                         // 全程没超过 touchSlop 且没被别人消费 = 单击（浮层显隐）
                         currentOnTap?.invoke()

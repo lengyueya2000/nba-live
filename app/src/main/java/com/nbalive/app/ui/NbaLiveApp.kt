@@ -154,8 +154,8 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         // 解析时 streamUrl/webFallbackUrl 都还是 null，
         // 如果按 playingNow 判定，用户点进播放页后马上按 Home 就不会进小窗，
         // 表现为"小窗坏了"。
-        PipState.playerActive = route == Route.PLAYER
-        onDispose { PipState.playerActive = false }
+        PipState.setPlayerActive(route == Route.PLAYER)
+        onDispose { PipState.setPlayerActive(false) }
     }
     // 观看直播期间保持屏幕常亮，避免球赛看着看着自动熄屏
     KeepScreenOnEffect(enabled = route == Route.PLAYER && playingNow && keepScreenOn)

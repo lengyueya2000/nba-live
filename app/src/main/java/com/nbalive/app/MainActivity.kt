@@ -112,8 +112,10 @@ class MainActivity : ComponentActivity() {
      * 系统要求比例必须落在 1/2.39 ~ 2.39 之间，超出会直接抛异常。
      */
     private fun pipAspectRatio(): Rational {
-        val w = PipState.videoWidth
-        val h = PipState.videoHeight
+        // 宽高是一对，原子读（避免读到"新宽 + 旧高"）
+        val size = PipState.videoSize.value
+        val w = size.width
+        val h = size.height
         if (w <= 0 || h <= 0) return Rational(16, 9)
         val ratio = w.toFloat() / h.toFloat()
         if (ratio > MAX_PIP_RATIO) return Rational(239, 100)
@@ -164,14 +166,14 @@ class MainActivity : ComponentActivity() {
     /** 按 Home 键离开时，如果正在看直播就自动小窗，不中断播放 */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (PipState.playerActive && !PipState.inPip.value) enterPip()
+        if (PipState.playerActive.value && !PipState.inPip.value) enterPip()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         if (!isChangingConfigurations) {
             PipState.inPip.value = false
-            PipState.playerActive = false
+            PipState.setPlayerActive(false)
         }
     }
 }

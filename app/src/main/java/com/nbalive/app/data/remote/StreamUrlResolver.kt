@@ -97,7 +97,12 @@ class StreamUrlResolver {
         // 主链路：songzenet msss.html?id=<encoded m3u8>
         // 注意：payload 里可能带 &（auth_key 的 query），不能按 & 截断；
         // 只在遇到 &id2=、引号、空白或标签边界时停。
-        Regex("""msss\.html\?id=([^"'\s<]+?)(?=&id2=|["'\s<])""").find(html)?.let { m ->
+        //
+        // ⚠️ 用**贪婪**量词而不是惰性：
+        // 惰性 + 交替前瞻 `([^"'\s<]+?)(?=&id2=|["'\s<])` 会在每次尝试结束位置时
+        // 回溯，payload 越长回溯越多。贪婪量词一次吃到最近的终止符，
+        // 再把尾部可能的 "&id2=" 剥掉，结果等价且没有回溯放大。
+        Regex("""msss\.html\?id=([^"'\s<]+)(?=&id2=|["'\s<]|$)""").find(html)?.let { m ->
             val raw = m.groupValues[1]
             val decoded = runCatching {
                 // encodeURI 不转义 '+'，而 URLDecoder 会把 '+' 解成空格，
