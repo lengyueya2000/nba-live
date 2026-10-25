@@ -1385,30 +1385,29 @@ private fun VideoSurface(
     // 只看"当前不是 READY"会把健康线路误判成卡死。
     var reachedReady by remember(streamUrl) { mutableStateOf(false) }
 
-    // 手动音频焦点：只对来电/语音助手暂停，媒体类抢焦点不停。
+    // 手动音频焦点：媒体类抢焦点（抖音/B 站/别的播放器）不停播，来电才停。
     // 见 AudioFocusPolicy 的说明。
+    //
+    // ⚠️ 焦点变化只当触发器，"是不是来电"必须**现查**音频模式：
+    // 音频焦点协议是单向的，OnAudioFocusChangeListener 不告诉你是谁抢的。
+    // 也不能缓存 —— 焦点丢失和来电几乎同时发生，缓存值可能是上一轮的。
+    //
+    // ⚠️ 用 AudioManager.getMode() 而不是 TelephonyManager.getCallState() /
+    // TelecomManager.isInCall()：后两个从 API 29 起要 READ_PHONE_STATE 权限，
+    // 本项目 manifest 只有 INTERNET，不为判断来电加敏感权限。
+    // getMode() 免权限，而且它就是系统自己的音频路由状态。
     val context = LocalContext.current
     DisposableEffect(context) {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
         var pausedByFocus = false
         val listener = android.media.AudioManager.OnAudioFocusChangeListener { change ->
             val player = playerView?.player ?: return@OnAudioFocusChangeListener
-            // ⚠️ 抢焦点的一方是谁：Android 不直接告诉我们。
-            // AudioManager.OnAudioFocusChangeListener 只给变化类型，
-            // 拿不到请求方 usage，所以这里按 UNKNOWN 处理 ——
-            // 策略里 UNKNOWN 只在"永久丢失焦点"时暂停，
-            // 短暂丢失（TRANSIENT）不停。
-            // 代价：来电也是 TRANSIENT，会被当成媒体类而不停。
-            // 要精确区分需要在 API 26+ 用 AudioFocusRequest + 自己的策略，
-            // 但电话场景下系统会走 RING/AUDIOFOCUS_LOSS_TRANSIENT 且
-            // 通常伴随 setHandleAudioBecomingNoisy 无法覆盖的场景，
-            // 当前取舍是"宁可不那么精确，也不要因为刷抖音就停播"。
-            val usage = AudioFocusPolicy.Usage.UNKNOWN
+            val inCall = AudioFocusPolicy.isCallAudioMode(am?.mode ?: android.media.AudioManager.MODE_NORMAL)
             when (change) {
                 android.media.AudioManager.AUDIOFOCUS_LOSS,
                 android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
                 -> {
-                    if (AudioFocusPolicy.shouldPauseOnFocusLoss(change, usage)) {
+                    if (AudioFocusPolicy.shouldPauseOnFocusLoss(change, inCall)) {
                         if (player.playWhenReady) {
                             pausedByFocus = true
                             player.pause()
@@ -1424,7 +1423,7 @@ private fun VideoSurface(
                 else -> Unit
             }
         }
-        val res = am?.requestAudioFocus(
+        am?.requestAudioFocus(
             listener,
             android.media.AudioManager.STREAM_MUSIC,
             android.media.AudioManager.AUDIOFOCUS_GAIN,
