@@ -1407,6 +1407,8 @@ private fun VideoSurface(
                 android.media.AudioManager.AUDIOFOCUS_LOSS,
                 android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
                 -> {
+                    // 一律不停，只在来电时停。见 AudioFocusPolicy 的说明 ——
+                    // AUDIOFOCUS_LOSS 不表示"永远丢了"，抖音划走会还回来。
                     if (AudioFocusPolicy.shouldPauseOnFocusLoss(change, inCall)) {
                         if (player.playWhenReady) {
                             pausedByFocus = true

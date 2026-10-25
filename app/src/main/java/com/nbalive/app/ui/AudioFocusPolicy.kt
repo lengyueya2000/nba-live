@@ -54,22 +54,32 @@ object AudioFocusPolicy {
     }
 
     /**
-     * @param focusLossType [android.media.AudioManager.AUDIOFOCUS_LOSS_*]
+     * @param focusLossType [android.media.AudioManager.AUDIOFOCUS_LOSS_*]。
+     *   ⚠️ 这个参数**不再参与暂停判定**，只保留是为了让调用点能把
+     *   系统给的原值传进来、也方便以后加回"按类型区分"的策略。
+     *   见下面的说明。
      * @param inCall 当前是否处于通话相关音频模式。
      *   由调用方用 `AudioManager.getMode()` + [isCallAudioMode] 现查，
      *   **不要缓存** —— 焦点变化和来电几乎同时发生，缓存值可能是上一轮的。
      */
-    fun shouldPauseOnFocusLoss(focusLossType: Int, inCall: Boolean): Boolean = when (focusLossType) {
-        // 永久丢失：系统不会再还焦点，不停就一直在后台响
-        android.media.AudioManager.AUDIOFOCUS_LOSS -> true
+    fun shouldPauseOnFocusLoss(focusLossType: Int, inCall: Boolean): Boolean = inCall
 
-        // 短暂丢失：只在**确实在通话**时让路。
-        // 没在通话就是媒体类（抖音 / B 站 / 别的播放器）抢焦点，不停。
-        android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> inCall
-
-        // 可延迟丢失（通知音之类）：不需要停
-        android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> false
-
-        else -> false
-    }
+    /**
+     * 为什么 [focusLossType] 不参与判定。
+     *
+     * 实测回归（Android 14 / API 34，v1.2.10 之后）：小窗看直播时打开抖音，
+     * 直播仍然会暂停。
+     *
+     * 旧策略是「AUDIOFOCUS_LOSS（永久丢失）一律暂停」，
+     * 理由是"系统不会再还回来，不停就会在后台一直响"。
+     * 抖音正好用的是 `AUDIOFOCUS_GAIN`（永久独占）抢焦点，
+     * 于是收到 AUDIOFOCUS_LOSS -> 暂停。
+     *
+     * 但那个理由**不成立**：抖音划走时会 `abandonAudioFocus`，
+     * 系统随即使焦点还回来。`AUDIOFOCUS_LOSS` 只表示"我被抢了"，
+     * 不表示"永远丢了"。
+     *
+     * 用户明确要求「小窗刷抖音时直播继续播」，所以现在
+     * **一律不停，只在来电时停**（来电看音频模式，不看焦点类型）。
+     */
 }
