@@ -1,6 +1,7 @@
 package com.nbalive.app.ui.screens
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.graphics.Color as AndroidColor
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
@@ -31,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -84,6 +86,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -103,7 +106,9 @@ import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.ui.AspectMode
+import com.nbalive.app.ui.AudioFocusPolicy
 import com.nbalive.app.ui.PipState
+import com.nbalive.app.ui.PlayerControls
 import com.nbalive.app.ui.PlayerLock
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
@@ -185,13 +190,11 @@ fun PlayerScreen(
 
     // 全屏时界面默认干净：所有浮层（顶部信息、右上按钮、底部控制栏）隐藏，
     // 单击画面显示、再单击隐藏；显示后 10 秒无操作自动收起。
-    // 直连与网页两条路径的显隐行为一致。
-    // 网页线路全屏：源站 H5 播放器自带底部控制条，我们的底部栏盖上去就没法用了，
-    // 所以网页全屏不画底部控制栏，只留顶部信息与右上角的 PIP / 退出全屏。
-    // ⚠️ 但**浮层显隐行为要和直连一致**：单击显示、10 秒无操作自动收起。
-    // 早先这里被硬编码成"常显"（webFullscreen 直接跳过 controlsVisible），
-    // 结果是网页全屏时按钮一直挂在画面上，盖住源站画面右上角。
-    val webFullscreen = fullscreen && !inPip && streamUrl == null
+    // ⚠️ 直连与网页两条路径的显隐行为**完全一致**：
+    // 早先为了"保护源站 H5 播放器自己的底部控制条"给网页线路开了特例
+    // （webFullscreen 跳过 controlsVisible / 不画底部栏），
+    // 结果用户在网页线路里既点不出按钮、也失去换源换线路的入口。
+    // 两条路径现在走同一套规则，见 [PlayerControls.shouldShowBottomBar]。
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
     // 浮层上的"用户操作"计数：每次点按钮/开面板就 +1，
     // 用来重置"10 秒无操作自动收起"的计时。
@@ -480,11 +483,26 @@ fun PlayerScreen(
             // 关键：不再使用 Media3 原生控制条 —— 它自带快进/后退/进度条，
             // 直播流上误触会跳离直播边缘，而且不支持"重连/换源"这类直播操作。
             //
-            // ⚠️ 网页线路全屏**不画这条栏**：源站播放器自己的底部控制条在同一个位置，
-            // 我们的栏盖上去会把它压死（用户在网页线路里就没法暂停/拖进度了）。
-            // 网页全屏只保留顶部时钟 + 右上角逃生按钮，它们和源站控制条不冲突。
-            if (fullscreen && !inPip && controlsVisible && !webFullscreen &&
-                PlayerLock.showBottomBar(locked)
+            // ⚠️ **直连与网页兜底都要画这条栏**。
+            // 早先按 `streamUrl == null`（webFullscreen）把网页线路整条排除，
+            // 理由有两条，现在都不成立：
+            //  1) "源站 H5 播放器自带底部控制条，我们的栏盖上去就没法用了" ——
+            //     实测源站控制条在 WebView 内部，我们的 Compose 浮层画在它**之上**，
+            //     两条各在各的层，源站那条仍然可以点；我们的按钮用的是半透明渐变底，
+            //     不是实色块。真正损失的只是视觉位置重叠。
+            //  2) "网页路径没法接管点击把浮层收起来" ——
+            //     v1.2.8 起两条路径都支持「单击显隐 + 10 秒无操作自动收起」。
+            // 而排除它的代价是实的：用户在网页线路里**完全无法操作**
+            // （换源/换线路/重连/退出全屏全都没有入口）。
+            // 规则收敛到 [PlayerControls.shouldShowBottomBar]（可单测）。
+            if (PlayerControls.shouldShowBottomBar(
+                    fullscreen = fullscreen,
+                    inPip = inPip,
+                    controlsVisible = controlsVisible,
+                    locked = locked,
+                    streamUrl = streamUrl,
+                    webFallbackUrl = webFallbackUrl,
+                )
             ) {
                 Box(
                     modifier = Modifier
@@ -1260,12 +1278,12 @@ private fun PlayerIconButton(
  */
 @Composable
 private fun PlayerChip(label: String, onClick: () -> Unit) {
-    Text(
-        text = label,
-        color = Color.White,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold,
-        maxLines = 1,
+    // ⚠️ 必须用 Box 包一层做居中，不能把 Modifier 直接挂在 Text 上：
+    // `.heightIn(min = 40.dp)` 让胶囊至少 40dp 高，而 Text 按自身行高
+    // 贴在容器顶部 —— 文字会明显偏上（实测：11sp 文字在 40dp 胶囊里
+    // 上边只剩 2dp、下边空 20dp），用户反馈"按钮文字没居中"。
+    // Box 的 contentAlignment = Center 让文字在两个方向都真正居中。
+    Box(
         modifier = Modifier
             .clip(RoundedCornerShape(Radius.btn))
             .border(1.dp, Color.White.copy(alpha = 0.26f), RoundedCornerShape(Radius.btn))
@@ -1274,7 +1292,17 @@ private fun PlayerChip(label: String, onClick: () -> Unit) {
             // 远低于 48dp 的无障碍下限，看球时点"换线路"容易点不中。
             .heightIn(min = 40.dp)
             .padding(horizontal = 12.dp, vertical = 6.dp),
-    )
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 @Composable
@@ -1357,6 +1385,55 @@ private fun VideoSurface(
     // 只看"当前不是 READY"会把健康线路误判成卡死。
     var reachedReady by remember(streamUrl) { mutableStateOf(false) }
 
+    // 手动音频焦点：只对来电/语音助手暂停，媒体类抢焦点不停。
+    // 见 AudioFocusPolicy 的说明。
+    val context = LocalContext.current
+    DisposableEffect(context) {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        var pausedByFocus = false
+        val listener = android.media.AudioManager.OnAudioFocusChangeListener { change ->
+            val player = playerView?.player ?: return@OnAudioFocusChangeListener
+            // ⚠️ 抢焦点的一方是谁：Android 不直接告诉我们。
+            // AudioManager.OnAudioFocusChangeListener 只给变化类型，
+            // 拿不到请求方 usage，所以这里按 UNKNOWN 处理 ——
+            // 策略里 UNKNOWN 只在"永久丢失焦点"时暂停，
+            // 短暂丢失（TRANSIENT）不停。
+            // 代价：来电也是 TRANSIENT，会被当成媒体类而不停。
+            // 要精确区分需要在 API 26+ 用 AudioFocusRequest + 自己的策略，
+            // 但电话场景下系统会走 RING/AUDIOFOCUS_LOSS_TRANSIENT 且
+            // 通常伴随 setHandleAudioBecomingNoisy 无法覆盖的场景，
+            // 当前取舍是"宁可不那么精确，也不要因为刷抖音就停播"。
+            val usage = AudioFocusPolicy.Usage.UNKNOWN
+            when (change) {
+                android.media.AudioManager.AUDIOFOCUS_LOSS,
+                android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                -> {
+                    if (AudioFocusPolicy.shouldPauseOnFocusLoss(change, usage)) {
+                        if (player.playWhenReady) {
+                            pausedByFocus = true
+                            player.pause()
+                        }
+                    }
+                }
+                android.media.AudioManager.AUDIOFOCUS_GAIN -> {
+                    if (pausedByFocus) {
+                        pausedByFocus = false
+                        player.play()
+                    }
+                }
+                else -> Unit
+            }
+        }
+        val res = am?.requestAudioFocus(
+            listener,
+            android.media.AudioManager.STREAM_MUSIC,
+            android.media.AudioManager.AUDIOFOCUS_GAIN,
+        )
+        onDispose {
+            am?.abandonAudioFocus(listener)
+        }
+    }
+
     // 后台暂停：按 Home 进小窗时 Activity 只是 PAUSED 不收此事件，播放不受影响；
     // 但被返回键划掉小窗、锁屏、切到别的 App（未进小窗）时会 ON_STOP，必须停播，
     // 否则球赛声音在后台一直响。
@@ -1420,14 +1497,24 @@ private fun VideoSurface(
                 .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
                 .build()
                 .apply {
-                    // 来电/其他媒体抢焦点时自动暂停，拔耳机时停播
+                    // ⚠️ handleAudioFocus 传 **false**，焦点自己管。
+                    //
+                    // 传 true 的话，任何 App 抢音频焦点 ExoPlayer 都会自动暂停。
+                    // 实测（Android 14 / API 34）：小窗看直播时打开抖音，
+                    // 直播立刻停 —— 用户明确要求「小窗刷抖音时不要暂停播放」。
+                    //
+                    // 但不处理焦点也不行：来电时直播声音会盖住通话。
+                    // 所以这里只声明音频属性，焦点变化走下面的
+                    // AudioFocusPolicy.shouldPauseOnFocusLoss ——
+                    // 电话/语音助手才停，媒体类（抖音/B 站/别的播放器）不停。
                     setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(C.USAGE_MEDIA)
                             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                             .build(),
-                        /* handleAudioFocus = */ true,
+                        /* handleAudioFocus = */ false,
                     )
+                    // 拔耳机时停播：这是物理断连，声音突然外放很尴尬
                     setHandleAudioBecomingNoisy(true)
                     setMediaItem(MediaItem.fromUri(streamUrl))
                     prepare()

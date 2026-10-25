@@ -42,8 +42,28 @@ class PlayerLockTest {
 
     @Test
     fun `锁定时底部控制栏不显示`() {
-        assertFalse(PlayerLock.showBottomBar(locked = true))
-        assertTrue(PlayerLock.showBottomBar(locked = false))
+        // 底部栏的完整规则在 PlayerControls（含全屏/画中画/浮层显隐），
+        // 这里只钉"锁定"这一个维度：锁定时即使全屏、浮层可见也不显示。
+        assertFalse(
+            PlayerControls.shouldShowBottomBar(
+                fullscreen = true,
+                inPip = false,
+                controlsVisible = true,
+                locked = true,
+                streamUrl = "https://hlsz.yjjcfw.com/live/1.m3u8",
+                webFallbackUrl = null,
+            ),
+        )
+        assertTrue(
+            PlayerControls.shouldShowBottomBar(
+                fullscreen = true,
+                inPip = false,
+                controlsVisible = true,
+                locked = false,
+                streamUrl = "https://hlsz.yjjcfw.com/live/1.m3u8",
+                webFallbackUrl = null,
+            ),
+        )
     }
 
     @Test

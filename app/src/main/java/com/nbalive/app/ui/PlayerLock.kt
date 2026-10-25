@@ -28,9 +28,6 @@ object PlayerLock {
     /** 手势层（亮度/音量滑动）是否启用 */
     fun gesturesEnabled(locked: Boolean): Boolean = !locked
 
-    /** 底部控制栏是否显示 */
-    fun showBottomBar(locked: Boolean): Boolean = !locked
-
     /**
      * 锁按钮是否显示。
      *
