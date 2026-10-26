@@ -39,4 +39,40 @@ object PlayerControls {
         streamUrl: String?,
         webFallbackUrl: String?,
     ): Boolean = fullscreen && !inPip && controlsVisible && !locked
+
+    /**
+     * 网页兜底全屏时，WebView 的高度（像素）。
+     *
+     * ## 为什么要算这个
+     *
+     * 全屏容器是 `fillMaxSize()`，在真机上就是 19.5:9 / 20:9 这种细长比例，
+     * 而视频源是 16:9。WebView 里的源站播放器把 16:9 画面**放大铺满**
+     * 整个细长容器，上下各裁掉一截 —— 底部的比分条正好被裁没。
+     *
+     * 直连路径没这个问题：`PlayerView.resizeMode = FIT` 会保持 16:9
+     * 加黑边，画面完整。
+     *
+     * 实测对照：同一场比赛
+     *  - 16:9 屏幕（1280x720）全屏 -> 比分条可见
+     *  - 20:9 屏幕（2400x1080）全屏 -> 比分条被裁掉
+     *
+     * ## 算法
+     *
+     * 按 16:9 算出 WebView 应有的高度，取「容器高度」和「按宽度换算的高度」
+     * 中较小的那个 —— 这样画面完整、不被裁，多出来的空间上下留黑边。
+     *
+     * @return WebView 高度（像素）；非全屏时返回 -1 表示"不用改"
+     *   （非全屏容器本来就是 `aspectRatio(16:9)`，再套一层是多余的）
+     */
+    fun webViewHeightForAspect(
+        containerWidth: Int,
+        containerHeight: Int,
+        aspectRatio: Float,
+        fullscreen: Boolean = true,
+    ): Int {
+        if (!fullscreen) return -1
+        if (containerWidth <= 0 || containerHeight <= 0 || aspectRatio <= 0f) return containerHeight
+        val byWidth = (containerWidth / aspectRatio).toInt()
+        return minOf(containerHeight, byWidth)
+    }
 }

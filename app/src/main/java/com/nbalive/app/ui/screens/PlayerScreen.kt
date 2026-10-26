@@ -33,6 +33,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -42,6 +43,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -279,12 +281,49 @@ fun PlayerScreen(
                         onError = onPlaybackError,
                     )
                 }
-                webFallbackUrl != null -> WebSurface(
-                    url = webFallbackUrl,
-                    onStreamFound = onStreamSniffed,
-                    suppressHint = sniffFailed,
-                    onPlaybackDead = onPlaybackDead,
-                )
+                webFallbackUrl != null -> {
+                    // ⚠️ 网页兜底全屏时，WebView **不能铺满整个容器**。
+                    //
+                    // 实测复现（20:9 屏幕 2400x1080 全屏）：底部源站比分条消失。
+                    // 同一场比赛在 16:9 屏幕（1280x720）上比分条可见 ——
+                    // 因为真机屏幕比视频源（16:9）细长得多，
+                    // WebView 里的 xgplayer 把 16:9 画面**放大铺满** 20:9 容器，
+                    // 上下各裁掉一截，底部的比分条正好被裁没。
+                    //
+                    // 直连路径没这个问题：PlayerView.resizeMode = FIT 会保持
+                    // 16:9 加黑边。网页路径得自己算。
+                    //
+                    // 修法：给 WebView 一个 16:9 的区域（居中、上下留黑边），
+                    // 画面完整不裁切，比分条留在画面里。
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        val targetH = if (videoOnly) {
+                            PlayerControls.webViewHeightForAspect(
+                                containerWidth = constraints.maxWidth,
+                                containerHeight = constraints.maxHeight,
+                                aspectRatio = 16f / 9f,
+                            )
+                        } else {
+                            -1
+                        }
+                        Box(
+                            modifier = if (targetH > 0) {
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(with(LocalDensity.current) { targetH.toDp() })
+                                    .align(Alignment.Center)
+                            } else {
+                                Modifier.fillMaxSize()
+                            },
+                        ) {
+                            WebSurface(
+                                url = webFallbackUrl,
+                                onStreamFound = onStreamSniffed,
+                                suppressHint = sniffFailed,
+                                onPlaybackDead = onPlaybackDead,
+                            )
+                        }
+                    }
+                }
                 else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         if (resolving) {
