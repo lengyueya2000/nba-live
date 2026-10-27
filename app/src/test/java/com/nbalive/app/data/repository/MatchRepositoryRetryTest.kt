@@ -93,13 +93,18 @@ class MatchRepositoryRetryTest {
     @Test
     fun `重试次数有上限 不会无限打源站`() = runBlocking {
         var attempts = 0
-        repo.loadMatchesInternal { url, _ ->
+        repo.loadMatchesInternal { _, _ ->
             attempts++
             FetchResult.Unreachable("timeout")
         }
+        // 上界按结构算，不硬编码：每源 = 首候选拉满 3 次重试 + 每个镜像域名 1 次。
+        // （候选列表见 SourceEndpoints：域名候选让镜像也参与，但绝不能每个都重试 3 次，
+        //  否则"重试有上限"就被镜像数量偷偷放大了。）
+        val bound = SourceEndpoints.JRS_LIST.size.let { 3 + it - 1 } +
+            SourceEndpoints.JRKAN_LIST_JS.size.let { 3 + it - 1 }
         assertTrue(
-            "失败重试次数必须有上限，实际请求了 $attempts 次",
-            attempts <= 6, // 两个源各最多 3 次
+            "失败重试次数必须有上限（≤$bound），实际请求了 $attempts 次",
+            attempts <= bound,
         )
         assertTrue("至少要尝试过一次", attempts >= 1)
     }

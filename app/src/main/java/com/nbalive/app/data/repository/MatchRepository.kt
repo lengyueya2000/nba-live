@@ -59,6 +59,16 @@ class MatchRepository(
         loadMatchesInternal { url, referer -> http.fetch(url, referer) }
 
     /**
+     * 上一轮失败过的源站 host（小写）。
+     *
+     * 跨调用记住它们，下一轮直接从镜像域名先试，省掉一轮超时；
+     * 成功即清除（恢复），**不是永久拉黑**（见 [runSource] 注释）。
+     *
+     * 同步容器：两个源的抓取在不同协程里并发。
+     */
+    private val listFailedHosts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /**
      * 可注入 fetch 的实现，供单元测试覆盖"单源瞬时失败要重试"这类逻辑。
      *
      * ⚠️ 参数类型是 [FetchResult] 而不是 `String?`：
@@ -281,7 +291,7 @@ class MatchRepository(
                 }
             }
         }
-        val body = when (val r = fetch(url, JRS_LIST_URL)) {
+        val body = when (val r = fetch(url, SourceEndpoints.JRS_LIST.first())) {
             is FetchResult.Ok -> r.body
             else -> null
         }
@@ -294,8 +304,8 @@ class MatchRepository(
     }
 
     companion object {
-        const val JRS_LIST_URL = "https://jrszbt.com/"
-        const val JRKAN_LIST_JS = "https://im-imgs-bucket.oss-accelerate.aliyuncs.com/index.js?t_5"
+        // ⚠️ 端点不再写死在本类：单值常量扛不住源站换域名（review/02-data.md P1-9）。
+        // JRS/JRKAN/播放域名全部收进 SourceEndpoints，一个失效按顺序试下一个。
 
         /**
          * 进程级共享实例。
@@ -425,28 +435,55 @@ class MatchRepository(
      */
     private suspend fun fetchListWithRetry(
         fetch: suspend (String, String?) -> FetchResult,
-        url: String,
+        urls: List<String>,
     ): String? {
-        repeat(LIST_FETCH_ATTEMPTS) { attempt ->
-            when (val result = fetch(url, null)) {
-                is FetchResult.Ok -> return result.body
-                is FetchResult.Rejected -> {
-                    // 明确拒绝：不重试。这是最容易被忽略的"限流放大器"
-                    Log.w("MatchRepo", "源站拒绝请求(HTTP ${result.code})，放弃重试: ${redactUrl(url)}")
-                    return null
-                }
-                is FetchResult.Unreachable -> {
-                    if (attempt < LIST_FETCH_ATTEMPTS - 1) {
-                        delay(LIST_RETRY_BACKOFF_MS * (attempt + 1))
+        // 一个域名失效按顺序试下一个（review/02-data.md P1-9）；
+        // 失败 host 记进 listFailedHosts，下一轮直接从镜像域名开始。
+        val candidates = SourceEndpoints.attemptOrder(
+            urls,
+            synchronized(listFailedHosts) { listFailedHosts.toSet() },
+        )
+        var lastReason: String? = null
+        for ((index, url) in candidates.withIndex()) {
+            // 首个候选跑满重试（瞬时抖动靠它兜），镜像只试一次：
+            // 镜像存在的意义是"这个域名死了"（DNS/主机故障），
+            // 那种情况下在死域名上重试三次纯属浪费几秒超时
+            val attempts = if (index == 0) LIST_FETCH_ATTEMPTS else 1
+            var rejected = false
+            var gotBody: String? = null
+            for (attempt in 0 until attempts) {
+                when (val result = fetch(url, null)) {
+                    is FetchResult.Ok -> {
+                        synchronized(listFailedHosts) { listFailedHosts -= hostOf(url) }
+                        gotBody = result.body
+                        break // 成功立刻收工，绝不再多打
+                    }
+                    is FetchResult.Rejected -> {
+                        // ⚠️ 403/429 是限流信号：**立即停整个源，不试镜像**。
+                        // 镜像与主域名是同一站点家族，大概率共享限流窗口，
+                        // 继续打只会让窗口越拖越长（review 的"限流放大器"）。
+                        Log.w("MatchRepo", "源站拒绝请求(HTTP ${result.code})，放弃重试: ${redactUrl(url)}")
+                        synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                        rejected = true
+                        break
+                    }
+                    is FetchResult.Unreachable -> {
+                        lastReason = result.reason
+                        if (attempt < attempts - 1) {
+                            delay(LIST_RETRY_BACKOFF_MS * (attempt + 1))
+                        }
                     }
                 }
             }
+            if (rejected) return null
+            if (gotBody != null) return gotBody
+            synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
         }
         return null
     }
 
     private suspend fun fetchJrs(fetch: suspend (String, String?) -> FetchResult): Result<List<Match>> = catching {
-        val html = fetchListWithRetry(fetch, JRS_LIST_URL) ?: return@catching emptyList()
+        val html = fetchListWithRetry(fetch, SourceEndpoints.JRS_LIST) ?: return@catching emptyList()
         jrsParser.parseList(html)
     }
 
@@ -574,41 +611,79 @@ class MatchRepository(
 
     private suspend fun fetchJrsOutcome(
         fetch: suspend (String, String?) -> FetchResult,
-    ): SourceOutcome = runSource(JRS_LIST_URL, fetch) { jrsParser.parseList(it) }
+    ): SourceOutcome = runSource(SourceEndpoints.JRS_LIST, fetch) { jrsParser.parseList(it) }
 
     private suspend fun fetchJrkanOutcome(
         fetch: suspend (String, String?) -> FetchResult,
-    ): SourceOutcome = runSource(JRKAN_LIST_JS, fetch) { jrkanParser.parseList(it) }
+    ): SourceOutcome = runSource(SourceEndpoints.JRKAN_LIST_JS, fetch) { jrkanParser.parseList(it) }
 
     /**
      * 抓一个源并归类到 [SourceOutcome]。
      *
      * ⚠️ 解析异常也要归为失败而不是抛出：
      * 单个源的解析器回归不能带走另一个源的好数据（这条与原有约定一致）。
+     *
+     * @param urls 候选端点（[SourceEndpoints]）：一个失效按顺序试下一个，
+     *   全部失效才判这个源失败 —— 源站换域名是常态（review/02-data.md P1-9）。
      */
     private suspend fun runSource(
-        url: String,
+        urls: List<String>,
         fetch: suspend (String, String?) -> FetchResult,
         parse: (String) -> List<Match>,
     ): SourceOutcome = catching {
-        when (val fetched = fetchListDetailed(fetch, url)) {
-            is Fetched.Body -> {
-                val parsed = try {
-                    parse(fetched.body)
-                } catch (t: Throwable) {
-                    // 只打异常类型：解析器抛的 message 可能内嵌源站 URL
-                    Log.w("MatchRepo", "解析异常 (${t.javaClass.simpleName})")
-                    emptyList()
+        // 跨调用记住哪些 host 上一轮失败了：下一轮直接镜像域名先试，省一轮超时。
+        // ⚠️ 成功必须清掉失败记录（恢复），失败只记到"下一轮"——不是永久拉黑：
+        // 限流窗口（403/429）是会过去的，永久黑名单只是把暂时故障变成长期故障，
+        // 那是 review/01-P1-5「15 秒看门狗永久拉黑健康线路」的同款错误。
+        val candidates = SourceEndpoints.attemptOrder(
+            urls,
+            synchronized(listFailedHosts) { listFailedHosts.toSet() },
+        )
+        var last: Fetched.Unreachable? = null
+        var rejected: Fetched.Rejected? = null
+        for ((index, url) in candidates.withIndex()) {
+            // 首个候选跑满重试（瞬时抖动靠它兜），镜像只试一次：
+            // 镜像存在的意义是"这个域名死了"（DNS/主机故障），
+            // 那种情况下在死域名上重试三次纯属浪费几秒超时
+            val attempts = if (index == 0) LIST_FETCH_ATTEMPTS else 1
+            when (val fetched = fetchListDetailed(fetch, url, attempts)) {
+                is Fetched.Body -> {
+                    synchronized(listFailedHosts) { listFailedHosts -= hostOf(url) }
+                    val parsed = try {
+                        parse(fetched.body)
+                    } catch (t: Throwable) {
+                        // 只打异常类型：解析器抛的 message 可能内嵌源站 URL
+                        Log.w("MatchRepo", "解析异常 (${t.javaClass.simpleName})")
+                        emptyList()
+                    }
+                    if (parsed.isEmpty()) {
+                        // HTTP 200 但解析出零场：源站改版（见 SourceOutcome.ParsedEmpty）。
+                        // 换下一个候选域名没意义 —— 同一份内容，解析器同样归零
+                        return SourceOutcome.ParsedEmpty
+                    }
+                    return SourceOutcome.Ok(parsed)
                 }
-                if (parsed.isEmpty()) SourceOutcome.ParsedEmpty else SourceOutcome.Ok(parsed)
+                is Fetched.Rejected -> {
+                    // ⚠️ 403/429 是限流信号：**立即停整个源，不试镜像**。
+                    // 镜像与主域名是同一站点家族，大概率共享限流窗口，
+                    // 继续打只会让窗口越拖越长（review 的"限流放大器"）。
+                    synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                    return SourceOutcome.Rejected(fetched.code)
+                }
+                is Fetched.Unreachable -> {
+                    last = fetched
+                    synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                }
             }
-            is Fetched.Rejected -> SourceOutcome.Rejected(fetched.code)
-            is Fetched.Unreachable -> SourceOutcome.Unreachable(fetched.reason)
         }
+        SourceOutcome.Unreachable(last?.reason)
     }.getOrElse {
         Log.w("MatchRepo", "fetch failed (${it.javaClass.simpleName})")
         SourceOutcome.Unreachable(it.javaClass.simpleName)
     }
+
+    private fun hostOf(url: String): String =
+        runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("").lowercase()
 
     /** [fetchListWithRetry] 的带原因版本：把"为什么没拿到正文"分清楚。 */
     private sealed class Fetched {
@@ -620,9 +695,10 @@ class MatchRepository(
     private suspend fun fetchListDetailed(
         fetch: suspend (String, String?) -> FetchResult,
         url: String,
+        attempts: Int = LIST_FETCH_ATTEMPTS,
     ): Fetched {
         var lastReason: String? = null
-        repeat(LIST_FETCH_ATTEMPTS) { attempt ->
+        for (attempt in 0 until attempts) {
             when (val result = fetch(url, null)) {
                 is FetchResult.Ok -> return Fetched.Body(result.body)
                 is FetchResult.Rejected -> {
@@ -631,7 +707,7 @@ class MatchRepository(
                 }
                 is FetchResult.Unreachable -> {
                     lastReason = result.reason
-                    if (attempt < LIST_FETCH_ATTEMPTS - 1) {
+                    if (attempt < attempts - 1) {
                         delay(LIST_RETRY_BACKOFF_MS * (attempt + 1))
                     }
                 }
@@ -642,7 +718,7 @@ class MatchRepository(
 
 
     private suspend fun fetchJrkan(fetch: suspend (String, String?) -> FetchResult): Result<List<Match>> = catching {
-        val js = fetchListWithRetry(fetch, JRKAN_LIST_JS) ?: return@catching emptyList()
+        val js = fetchListWithRetry(fetch, SourceEndpoints.JRKAN_LIST_JS) ?: return@catching emptyList()
         jrkanParser.parseList(js)
     }
 
