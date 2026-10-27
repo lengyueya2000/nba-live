@@ -9,6 +9,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -677,6 +678,11 @@ private fun SportBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
             .navigationBarsPadding()
+            // ⚠️ selectableGroup() 是必须的（review/03-ui.md P2-24）：
+            // 三个标签各自是 selectable 节点，但不声明"这是一组"时，
+            // TalkBack 逐个读成独立按钮，用户不知道它们是互斥导航、
+            // 也不知道"1/3、已选中"这类位置信息。
+            .selectableGroup()
             .padding(horizontal = Space.sm, vertical = Space.sm),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {

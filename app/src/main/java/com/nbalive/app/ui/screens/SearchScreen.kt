@@ -150,9 +150,13 @@ fun SearchScreen(
                     .heightIn(min = 56.dp)
                     .focusRequester(focusRequester),
                 singleLine = true,
+                // ⚠️ 必须有 label（review/03-ui.md P2-23）：
+                // placeholder 在用户输入内容后就消失，TalkBack 读到的是"空文本框"，
+                // 读屏用户不知道这里能搜什么。label 会持续存在并被读屏读出。
+                label = { Text("搜索球队 / 联赛") },
                 placeholder = {
                     Text(
-                        text = "搜索球队 / 联赛",
+                        text = "输入球队或联赛名称",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -160,6 +164,7 @@ fun SearchScreen(
                 leadingIcon = {
                     Icon(
                         Icons.Filled.Search,
+                        // 装饰性图标：label 已经说明了用途，重复读反而啰嗦
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
