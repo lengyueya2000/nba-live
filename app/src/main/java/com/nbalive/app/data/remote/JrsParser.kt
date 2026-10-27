@@ -56,7 +56,8 @@ class JrsParser {
                 val away = anchor.select(".list-team-name").getOrNull(1)?.text()?.trim()
                 if (home.isNullOrBlank() || away.isNullOrBlank()) {
                     // 上游改版时这里会静默吞掉整场比赛，必须留痕
-                    Log.w(TAG, "JRS 列表项缺队名，跳过：$path")
+                    // ⚠️ href 原样可能是带签名的 URL，必须先脱敏（review/04-P1-2）
+                    Log.w(TAG, "JRS 列表项缺队名，跳过：${redactText(path)}")
                     return@forEach
                 }
 
@@ -66,7 +67,7 @@ class JrsParser {
                 // 而空 id 会让 LazyVerticalGrid 的 key 重复并崩溃，必须跳过
                 val id = Regex("""/live/(\d+)\.html""").find(path)?.groupValues?.get(1)
                 if (id == null) {
-                    Log.w(TAG, "JRS 列表项 href 不合预期，跳过：$path")
+                    Log.w(TAG, "JRS 列表项 href 不合预期，跳过：${redactText(path)}")
                     return@forEach
                 }
 

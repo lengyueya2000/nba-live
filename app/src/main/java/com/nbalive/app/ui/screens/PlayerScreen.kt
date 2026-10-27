@@ -107,10 +107,13 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
+import com.nbalive.app.data.remote.debugLog
 import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.AudioFocusPolicy
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlayerControls
+import com.nbalive.app.ui.PlaybackHealth
+import com.nbalive.app.ui.WebNavigationPolicy
 import com.nbalive.app.ui.PlayerLock
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
@@ -145,13 +148,18 @@ fun PlayerScreen(
     modifier: Modifier = Modifier,
     onPlaybackError: () -> Unit = {},
     /**
-     * 网页线路确认播不出来（25 秒没出流 / 播放页加载失败）。
+     * 网页线路**确认**播不出来（播放页主框架真实加载失败，错误码已筛选）。
      *
-     * 用于关掉「按 Home 自动进小窗」并收掉已存在的小窗：
-     * 网页里的「网络错误」是源站播放器自己画的，App 读不到它的内容，
-     * 只能靠这两个信号推断"这条线确实死了"。
+     * 上层据此关掉「按 Home 自动进小窗」并收掉已存在的小窗（可逆处置）。
      */
     onPlaybackDead: () -> Unit = {},
+    /**
+     * 网页线路**疑似**播不出来（页面加载完成后 25 秒没看到任何媒体请求）。
+     *
+     * ⚠️ 与 [onPlaybackDead] 分开是因为判据性质不同（P0-1）：
+     * 这条是**推断**，只用于显示提示 + 停自动进小窗，**不允许**收窗或关任务。
+     */
+    onPlaybackSuspect: () -> Unit = {},
     onStreamSniffed: (String, String?) -> Unit = { _, _ -> },
     /** 嗅探升级失败退回网页：不再弹"暂无信号"提示 */
     sniffFailed: Boolean = false,
@@ -321,6 +329,7 @@ fun PlayerScreen(
                                 onStreamFound = onStreamSniffed,
                                 suppressHint = sniffFailed,
                                 onPlaybackDead = onPlaybackDead,
+                                onPlaybackSuspect = onPlaybackSuspect,
                             )
                         }
                     }
@@ -361,21 +370,34 @@ fun PlayerScreen(
             //  - 全屏时单击画面显示/隐藏浮层（直连与网页两条路径一致）
             //  - 网页线路只在**发生垂直拖动**时才消费事件，
             //    单击依旧透传给源站播放器（否则网页线路根本没法调亮度音量）
-            // ⚠️ 锁定时不是整层关掉，而是切到 tapOnly：
-            //    滑动一律不接管（防误触的核心），但**单击要能唤出解锁按钮** ——
-            //    否则锁定后用户找不到任何解锁入口，等于把播放页锁死。
-            PlayerMediaGestures(
-                enabled = !inPip,
-                tapOnly = locked,
-                modifier = Modifier.fillMaxSize(),
-                onTap = when {
-                    locked -> ({ unlockUiVisible = !unlockUiVisible })
-                    // 全屏（含网页线路）单击切换浮层显隐；
-                    // 非全屏时浮层常驻，不处理单击（网页线路交给源站播放器）
-                    fullscreen -> ({ controlsVisible = !controlsVisible })
-                    else -> null
-                },
-            )
+            // ⚠️ 判定全部收敛到 PlayerLock.gestureConfig（P2-9）：
+            //    以前 enabled/tapOnly/onTap 的分流写死在这里的组合表达式里，
+            //    PlayerLock 里的同名函数是死代码，测试测的是没人用的那份。
+            //    现在生产代码与单测共用同一个判定源。
+            run {
+                val gesture = PlayerLock.gestureConfig(
+                    locked = locked,
+                    fullscreen = fullscreen,
+                    inPip = inPip,
+                )
+                PlayerMediaGestures(
+                    enabled = gesture.layerEnabled,
+                    // 滑动只在"全屏且未锁定"时接管（P2-2 非全屏让页面能滚）
+                    tapOnly = !gesture.dragEnabled,
+                    // 锁定态消费单击（P1-6）：否则误触照旧透传给
+                    // WebView 里的源站播放器，"防误触锁"只锁住了我们这层
+                    consumeTap = gesture.consumeTap,
+                    modifier = Modifier.fillMaxSize(),
+                    onTap = when (gesture.tapAction) {
+                        PlayerLock.TapAction.TOGGLE_UNLOCK_UI ->
+                            ({ unlockUiVisible = !unlockUiVisible })
+                        PlayerLock.TapAction.TOGGLE_CONTROLS ->
+                            ({ controlsVisible = !controlsVisible })
+                        // 非全屏时浮层常驻，不处理单击（网页线路交给源站播放器）
+                        PlayerLock.TapAction.PASS_THROUGH -> null
+                    },
+                )
+            }
 
             // 视频区顶部浮层：**只留实时时钟**。
             // 原来这里还画"直播中/未开赛"+联赛名（左上的 NBA 药丸），
@@ -1436,19 +1458,41 @@ private fun VideoSurface(
     // TelecomManager.isInCall()：后两个从 API 29 起要 READ_PHONE_STATE 权限，
     // 本项目 manifest 只有 INTERNET，不为判断来电加敏感权限。
     // getMode() 免权限，而且它就是系统自己的音频路由状态。
+    //
+    // ## 为什么要有 hasFocus 这个显式状态（P1-2）
+    //
+    // 旧代码把 requestAudioFocus 的返回值丢掉，"是否持有焦点"完全靠系统记着。
+    // 但 AOSP 的 MediaFocusControl 在派发**永久** AUDIOFOCUS_LOSS 之后
+    // 会把我们移出焦点栈 —— 移出之后：
+    //  - 来电的 GAIN_TRANSIENT 只派给当前持有者（抖音），我们**什么都收不到**
+    //    → 直播声音盖住通话；
+    //  - 抖音退出也不会再给我们 GAIN，恢复逻辑永远不触发。
+    // 所以自己记一份 hasFocus，在回前台/起播时补申请。
+    //
+    // ## 为什么还要轮询一次音频模式（最后一道保险）
+    //
+    // 不在焦点栈里就收不到任何回调，事件驱动这条路是断的。
+    // 播放期间低频轮询 getMode()：只要在播 + 现查到响铃/通话，就停。
+    // 只在播放中轮询，暂停态什么都不做，不烧电。
     val context = LocalContext.current
+    val focusLifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(context) {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
         var pausedByFocus = false
+        var hasFocus = false
         val listener = android.media.AudioManager.OnAudioFocusChangeListener { change ->
             val player = playerView?.player ?: return@OnAudioFocusChangeListener
-            val inCall = AudioFocusPolicy.isCallAudioMode(am?.mode ?: android.media.AudioManager.MODE_NORMAL)
+            val inCall = AudioFocusPolicy.isCallAudioMode(
+                am?.mode ?: android.media.AudioManager.MODE_NORMAL,
+            )
             when (change) {
                 android.media.AudioManager.AUDIOFOCUS_LOSS,
                 android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
                 -> {
-                    // 一律不停，只在来电时停。见 AudioFocusPolicy 的说明 ——
-                    // AUDIOFOCUS_LOSS 不表示"永远丢了"，抖音划走会还回来。
+                    // 永久 LOSS 之后系统已把我们移出焦点栈，显式状态要跟着改
+                    if (change == android.media.AudioManager.AUDIOFOCUS_LOSS) {
+                        hasFocus = false
+                    }
                     if (AudioFocusPolicy.shouldPauseOnFocusLoss(change, inCall)) {
                         if (player.playWhenReady) {
                             pausedByFocus = true
@@ -1457,7 +1501,12 @@ private fun VideoSurface(
                     }
                 }
                 android.media.AudioManager.AUDIOFOCUS_GAIN -> {
-                    if (pausedByFocus) {
+                    hasFocus = true
+                    if (AudioFocusPolicy.shouldResumeOnFocusGain(
+                            pausedByFocus = pausedByFocus,
+                            playing = player.playWhenReady,
+                        )
+                    ) {
                         pausedByFocus = false
                         player.play()
                     }
@@ -1465,12 +1514,57 @@ private fun VideoSurface(
                 else -> Unit
             }
         }
-        am?.requestAudioFocus(
-            listener,
-            android.media.AudioManager.STREAM_MUSIC,
-            android.media.AudioManager.AUDIOFOCUS_GAIN,
-        )
+        /** 申请焦点并记录结果（返回值不再丢弃）。 */
+        fun acquire() {
+            val result = am?.requestAudioFocus(
+                listener,
+                android.media.AudioManager.STREAM_MUSIC,
+                android.media.AudioManager.AUDIOFOCUS_GAIN,
+            )
+            hasFocus = AudioFocusPolicy.isFocusGranted(result ?: -1)
+        }
+        acquire()
+        // 轮询兜底：见上方说明。只在"在播"时查。
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        // ⚠️ 必须自我重投：postDelayed 只跑一次，不重投的话
+        // 第一次之后这道保险就永远不生效了。
+        lateinit var poll: Runnable
+        poll = Runnable {
+            val player = playerView?.player
+            if (player != null &&
+                AudioFocusPolicy.shouldPauseForAudioMode(
+                    playing = player.playWhenReady,
+                    mode = am?.mode ?: android.media.AudioManager.MODE_NORMAL,
+                )
+            ) {
+                pausedByFocus = true
+                player.pause()
+            }
+            handler.postDelayed(poll, FOCUS_MODE_POLL_INTERVAL_MS)
+        }
+        handler.postDelayed(poll, FOCUS_MODE_POLL_INTERVAL_MS)
+        // 回前台时补申请：被抖音抢走焦点后我们已不在栈里，
+        // 不补申请就永远收不到后续事件（这里正是补回的那一次）
+        val resumeObserver = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                val player = playerView?.player
+                val inCall = AudioFocusPolicy.isCallAudioMode(
+                    am?.mode ?: android.media.AudioManager.MODE_NORMAL,
+                )
+                if (AudioFocusPolicy.shouldRequestFocusAgain(
+                        hasFocus = hasFocus,
+                        inCall = inCall,
+                        playing = player?.playWhenReady == true,
+                    )
+                ) {
+                    acquire()
+                }
+            }
+        }
+        focusLifecycleOwner.lifecycle.addObserver(resumeObserver)
         onDispose {
+            handler.removeCallbacks(poll)
+            focusLifecycleOwner.lifecycle.removeObserver(resumeObserver)
             am?.abandonAudioFocus(listener)
         }
     }
@@ -1641,35 +1735,62 @@ private fun WebSurface(
     onStreamFound: (String, String?) -> Unit,
     suppressHint: Boolean = false,
     /**
-     * 网页线路确认播不出来时上报。
+     * 网页线路**确认**播不出来时上报（播放页主框架真实加载失败）。
      *
-     * ⚠️ 这是「彻底失败」的**唯一可靠信号**：网页里的「网络错误」
-     * 是源站播放器自己画的，App 拿不到它的内容，只能靠
-     * "25 秒没嗅探到任何 m3u8" + "页面本身加载失败"来判断。
-     * 判错了代价很小（用户还能点"重连"），漏判的代价是
-     * 一个挂着错误画面、点不动的小窗赖在桌面上。
+     * ⚠️ P0-1 之后这里只收**事实**，不再收推断：
+     * 只有 [PlaybackHealth.isConfirmedWebFailure] 认可的主框架致命错误码才上报。
+     * 上报后上层允许收掉小窗（处置仍是可逆的 `finish()`）。
      */
     onPlaybackDead: () -> Unit = {},
+    /**
+     * 网页线路**疑似**播不出来时上报（25 秒内没嗅探到任何流）。
+     *
+     * 这是**推断**：源站用 MSE/`blob:` 播放、m3u8 地址不带 `.m3u8` 字面量、
+     * 弱网首帧超过 25 秒，都会嗅探不到但画面其实正常。
+     * 所以走独立回调，上层只用于显示提示 + 停自动进小窗，**不**收窗、不关任务。
+     */
+    onPlaybackSuspect: () -> Unit = {},
 ) {
     val onStreamFoundState = rememberUpdatedState(onStreamFound)
     val onPlaybackDeadState = rememberUpdatedState(onPlaybackDead)
+    val onPlaybackSuspectState = rememberUpdatedState(onPlaybackSuspect)
     val lifecycleOwner = LocalLifecycleOwner.current
     var webView by remember { mutableStateOf<WebView?>(null) }
 
+    // 是否观察到过任何"媒体请求"（见 [PlaybackHealth.isMediaRequest]）。
+    // ⚠️ 必须是 AtomicBoolean：shouldInterceptRequest 在 WebView 后台线程回调，
+    // 写 Compose 的 mutableStateOf 会跨线程触碰快照系统。
+    val sawMediaRequest = remember(url) { java.util.concurrent.atomic.AtomicBoolean(false) }
+    // 页面是否已完成首次加载：嗅探计时必须在它**之后**才开始。
+    // 否则计时从 loadUrl 那一刻起跑，源站播放页常有 2~3 跳重定向，
+    // 光导航就吃掉十几秒，留给播放器的时间根本不够 —— 正常线路也会被判疑似。
+    var pageFinishedAt by remember(url) { mutableStateOf(0L) }
+    // 被守卫拦下的跳转说明（04-P1-3/4）。源站广告把播放页导航走时，
+    // 这条路径不报 ExoPlayer 错误、也不报 onReceivedError，界面必须自己说话，
+    // 否则用户只看到一个动不了的广告页，以为 App 卡死。
+    var blockedNavigation by remember(url) { mutableStateOf("") }
+
     // 比赛已结束时源站页面是一片黑且永远不会出流：
-    // 25 秒内没嗅探到任何 m3u8 就给用户明确提示，而不是干等黑屏。
+    // 页面加载完成后 25 秒内没看到任何媒体请求，就给用户明确提示，而不是干等黑屏。
     // 嗅探成功后本组件会被 VideoSurface 替换、协程自动取消，无需手动复位。
     //
-    // ⚠️ suppressHint 只抑制**用户可见的提示**，不能连"播不出来"的判定一起跳过：
+    // ⚠️ suppressHint 只抑制**用户可见的提示**，不能连判定一起跳过：
     // 嗅探过但直连失败、退回网页播放时 suppressHint=true，
-    // 而那恰恰是最需要判死的情况 —— 网页里的源站播放器会自己画一句
-    // 「网络错误 / 请试试 刷新」（这句不在 App 代码里，读不到），
-    // 老代码在这里直接 return，导致小窗判定一直以为"还在播"。
+    // 而那恰恰是最需要留痕的情况 —— 网页里的源站播放器会自己画一句
+    // 「网络错误 / 请试试 刷新」（这句不在 App 代码里，读不到）。
+    //
+    // ⚠️ 判死分级（P0-1）：这一条只报**疑似**（onPlaybackSuspect），不再报死亡。
+    // 它本质是推断，误判代价原本却是"移除整个任务"，两者不成比例。
     var noSignal by remember(url) { mutableStateOf(false) }
-    LaunchedEffect(url, suppressHint) {
+    LaunchedEffect(url, pageFinishedAt, suppressHint) {
+        // 页面还没加载完不起跑：source 站点常有几跳重定向
+        if (pageFinishedAt == 0L) return@LaunchedEffect
         delay(25_000)
+        // 已经看到媒体请求 = 播放器在拉数据了（哪怕地址不带 .m3u8 字面量），
+        // 这不是"播不出来"，不再报疑似。
+        if (sawMediaRequest.get()) return@LaunchedEffect
         if (!suppressHint) noSignal = true
-        onPlaybackDeadState.value()
+        onPlaybackSuspectState.value()
     }
 
     // 与 ExoPlayer 同理：退到后台（非小窗）时暂停页面定时器，省电并防止声音后台外放
@@ -1706,14 +1827,25 @@ private fun WebSurface(
                         mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                         userAgentString = HttpClient.USER_AGENT
                     }
-                    // 拦截非 http(s) 跳转：源站广告经常用 intent:// / market:// 拉起商店和外链 App
+                    // ⚠️ 主框架导航必须过白名单（review/01「广告把播放页导航走」+ 04-P1-3/4）。
+                    // 旧实现只挡非 http(s)：源站广告脚本一句 location.href = "https://广告页"
+                    // 就能把播放页整个换掉，而那条路径既不报 ExoPlayer 错误、
+                    // 也不报 onReceivedError（导航本身成功），App 会一直以为"还在播"。
+                    // 判据集中在 WebNavigationPolicy（可单测），这里只负责执行与留痕。
                     webViewClient = object : WebViewClient() {
                         override fun shouldOverrideUrlLoading(
                             view: WebView?,
                             request: WebResourceRequest?,
                         ): Boolean {
-                            val scheme = request?.url?.scheme ?: return false
-                            return scheme != "http" && scheme != "https"
+                            val blocked = WebNavigationPolicy.blockReason(
+                                url = request?.url?.toString(),
+                                currentUrl = view?.url,
+                                isMainFrame = request?.isForMainFrame != false,
+                            )
+                            if (blocked.isEmpty()) return false
+                            blockedNavigation = blocked
+                            debugLog("WebSurface", blocked)
+                            return true
                         }
 
                         // 嗅探源站 JS 解密后真正请求的 m3u8：拿到就上报，交给 ExoPlayer 直连
@@ -1722,7 +1854,10 @@ private fun WebSurface(
                             request: WebResourceRequest?,
                         ): android.webkit.WebResourceResponse? {
                             val u = request?.url?.toString().orEmpty()
-                            if (u.contains(".m3u8") && !u.contains(".js")) {
+                            // ⚠️ 本回调在**后台线程**执行，写 Compose 状态会踩线程，
+                            // 所以"看到过媒体请求"用 AtomicBoolean 记，判定处再读。
+                            if (PlaybackHealth.isMediaRequest(u)) sawMediaRequest.set(true)
+                            if (PlaybackHealth.isPlaylistRequest(u)) {
                                 val ref = request?.requestHeaders?.entries
                                     ?.firstOrNull { it.key.equals("Referer", true) }?.value
                                 onStreamFoundState.value(u, ref)
@@ -1730,17 +1865,48 @@ private fun WebSurface(
                             return super.shouldInterceptRequest(view, request)
                         }
 
-                        // 播放页本身打不开（DNS 失败 / 404 / 超时）：
-                        // 这就是用户看到的「网络错误」。页面都加载不出来，
-                        // 不可能有流，直接判定彻底失败。
+                        /**
+                         * 播放页主框架报错。
+                         *
+                         * ⚠️ P1-1：**不是所有 errorCode 都算播不出来**。
+                         * 旧代码只判 `isForMainFrame` 就上报死亡，于是
+                         * 源站页面里一句 `location.href = ...` 跳转、
+                         * 或用户连点两次「重连」（update 里的 loadUrl 打断上一次导航），
+                         * 主框架会收到 `ERR_ABORTED` —— 那是"导航被取代"，不是失败，
+                         * 却被判成了彻底死了。
+                         * 判据筛选集中在 [PlaybackHealth.isConfirmedWebFailure]（可单测）。
+                         */
                         override fun onReceivedError(
                             view: WebView?,
                             request: WebResourceRequest?,
                             error: android.webkit.WebResourceError?,
                         ) {
-                            if (request?.isForMainFrame == true) {
-                                onPlaybackDeadState.value()
+                            if (!PlaybackHealth.isConfirmedWebFailure(
+                                    errorCode = error?.errorCode,
+                                    isForMainFrame = request?.isForMainFrame == true,
+                                    isRedirect = request?.isRedirect == true,
+                                    pageFinished = pageFinishedAt > 0L,
+                                )
+                            ) {
+                                // 子资源失败 / 重定向 / 加载中：都可能自愈。
+                                // 真出问题由 25 秒的「疑似」计时器兜住，不在这里抢判死亡。
+                                return
                             }
+                            onPlaybackDeadState.value()
+                        }
+
+                        /**
+                         * 主页面加载完成 —— 「疑似」计时从这里才开始跑（P0-1 建议的第三条修法）。
+                         *
+                         * ⚠️ 这个回调在 `WebViewClient` 上，不在 `WebChromeClient` 上。
+                         *
+                         * 用单调时钟（`SystemClock.elapsedRealtime`）而不是墙钟：
+                         * 用户改系统时间/时区、或跨时区旅行时墙钟会跳变，
+                         * 那会让计时永远不到点或立刻到点。
+                         */
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            pageFinishedAt = android.os.SystemClock.elapsedRealtime()
                         }
                     }
                     webChromeClient = object : WebChromeClient() {
@@ -1827,6 +1993,43 @@ private fun WebSurface(
                 }
             }
         }
+        if (blockedNavigation.isNotEmpty()) {
+            // 广告跳转已被拦下：页面仍在原处，但必须告诉用户刚刚发生了什么，
+            // 否则他只看到一个动不了的广告页，以为 App 卡死。点击即关闭。
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable { blockedNavigation = "" },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Spacer(Modifier.height(Space.sm))
+                    Text(
+                        text = "已拦下一个可疑跳转",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                    )
+                    Spacer(Modifier.height(Space.xs))
+                    Text(
+                        // blockReason 只含域名，不带 query —— 签名凭证不能上屏。
+                        text = blockedNavigation,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.75f),
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1839,3 +2042,11 @@ private fun WebSurface(
  * 太长（20 秒+）按钮一直压在画面上，等于没隐藏。
  */
 private const val FULLSCREEN_CONTROLS_TIMEOUT_MS: Long = 10_000
+
+/**
+ * 音频模式轮询间隔：来电"声音盖住通话"的兜底保险查一次 getMode() 的节奏。
+ *
+ * 取 1 秒：来电响铃到用户接起至少有几秒钟窗口，1 秒足够让直播在
+ * 通话真正开始前静下来；再快就是白烧 CPU（这条轮询在每次小窗播放期间都跑着）。
+ */
+private const val FOCUS_MODE_POLL_INTERVAL_MS: Long = 1_000

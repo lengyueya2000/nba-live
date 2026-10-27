@@ -19,10 +19,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.ui.AppPrefs
 import com.nbalive.app.ui.MainViewModel
 import com.nbalive.app.ui.NbaLiveApp
 import com.nbalive.app.ui.PipState
+import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.theme.NbaLiveTheme
 import kotlin.math.min
 
@@ -104,7 +106,7 @@ class MainActivity : ComponentActivity() {
                 .build()
             setPictureInPictureParams(params)
         }.onFailure {
-            Log.w("MainActivity", "syncAutoEnterEnabled($active) failed: ${it.message}", it)
+            Log.w("MainActivity", "syncAutoEnterEnabled($active) failed: ${it.javaClass.simpleName}")
         }
     }
 
@@ -137,7 +139,7 @@ class MainActivity : ComponentActivity() {
             enterPictureInPictureMode(params)
         }.onFailure {
             // 静默失败会让用户以为按钮坏了
-            Log.w("MainActivity", "enterPip failed: ${it.message}", it)
+            safeLogWarn("MainActivity", "enterPip failed", it)
             toast("进入画中画失败")
         }
     }
@@ -224,22 +226,31 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 播放出错且当前在小窗里时，把小窗收掉。
+     * 按播放健康等级处置小窗（P0-1 改为分级 + 可逆）。
      *
-     * 实测（v1.2.8）：播放页显示「网络错误」时按 Home 会进小窗
-     * （[PipState.playerActive] 只判"有地址"，见 [PipState.shouldAutoEnterPip]），
-     * 小窗里就剩一句点不动的错误提示。与其让一个坏窗口挂在桌面上，
-     * 不如直接收掉它，用户点开 App 就能看到完整错误页和重试入口。
+     * ⚠️ 两个关键约束：
      *
-     * 只在**确实播不出来**时退出：正常播放、甚至正在缓冲都不动，
-     * 否则用户主动开的小窗会被自己收掉。
+     * 1. **只有"确认失败"才会真的收窗**。25 秒没嗅探到流属于推断，
+     *    等级是 [PlaybackHealth.Level.SUSPECT]，那里的处置是 NONE —— 不收窗。
+     *    否则 MSE/`blob:` 播放、地址不带 `.m3u8` 字面量、弱网首帧超 25 秒
+     *    这三种正常在播的情况都会被误杀。
+     *
+     * 2. **处置必须可逆**。原来这里用 `finishAndRemoveTask()`，
+     *    会把任务从**最近任务**里一并移除：单 Activity 的应用里，
+     *    用户等于彻底失去了这个 App 的入口，而触发它的是一次误判。
+     *    改成 `finish()` 后任务记录保留，点开还能看到完整错误页和重试入口
+     *    —— 这才是本函数旧注释里承诺的行为（旧代码做不到，任务已被移除）。
      */
-    fun finishPipIfBroken() {
+    fun finishPipIfBroken(level: PlaybackHealth.Level = PlaybackHealth.Level.DEAD) {
         if (!PipState.inPip.value) return
-        // 复用 shouldKeepPip 的同一套语义：有流且没报错 = 该留
-        if (PipState.shouldKeepPip(hasStream = false, hasPlaybackError = true)) {
-            runCatching { finishAndRemoveTask() }.onFailure {
-                Log.w("MainActivity", "finishPipIfBroken failed: ${it.message}", it)
+        // 处置权限由分级判定给出，避免"推断拿走不可逆处置"
+        when (PlaybackHealth.pipDisposition(level)) {
+            PlaybackHealth.PipDisposition.NONE -> Unit
+            PlaybackHealth.PipDisposition.KEEP_RECENTS -> runCatching {
+                // finish() 而不是 finishAndRemoveTask()：保留最近任务
+                finish()
+            }.onFailure {
+                safeLogWarn("MainActivity", "finishPipIfBroken failed", it)
             }
         }
     }

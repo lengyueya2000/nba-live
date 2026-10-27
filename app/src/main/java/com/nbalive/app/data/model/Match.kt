@@ -67,6 +67,21 @@ enum class MatchStatus {
     }
 }
 
+/**
+ * 源站文案里的"延期 / 推迟 / 待定"。
+ *
+ * 为什么不在 [MatchStatus] 里加 `POSTPONED`（review/02-data.md P2-10）：
+ * 那是一个**跨层**改动——`StatusChip` 的 `when (status)` 是穷尽表达式，
+ * 加一个枚举值会让所有 `when` 编译不过，必须同步改 UI 层的配色与文案。
+ * 数据层先把"这是延期场次"这个事实暴露出来（[Match.isPostponed]），
+ * UI 决定怎么呈现时再消费它，不必等枚举扩容。
+ */
+private val POSTPONED_MARKERS = listOf("延期", "推迟", "待定", "取消")
+
+/** 该场次是否被源站标注为延期/推迟（仍按未开赛排序，但可单独提示）。 */
+val Match.isPostponed: Boolean
+    get() = POSTPONED_MARKERS.any { timeLabel.contains(it) }
+
 /** 一场赛事 */
 @Immutable
 data class Match(

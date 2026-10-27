@@ -237,7 +237,9 @@ class MainViewModelTest {
             assertTrue("进场后应进入加载中", vm.detailState.value.loadingSignals)
 
             vm.back() // 拉信号途中返回
-            assertEquals(Route.DETAIL, vm.route.value)
+            // playMatch 从 LIST 直接进 PLAYER，返回必须回 LIST
+            // （旧断言写的是 DETAIL —— 那正是"返回掉进没见过的详情页"的 bug 本身）
+            assertEquals(Route.LIST, vm.route.value)
             assertFalse("返回后信号区不能卡在加载中", vm.detailState.value.loadingSignals)
         } finally {
             gate.complete(Unit) // 放行被取消的协程，让它干净收尾
@@ -399,15 +401,14 @@ class MainViewModelTest {
         waitForLoadSignals(vm)
         settle()
 
-        vm.back() // PLAYER -> DETAIL
-        assertEquals(Route.DETAIL, vm.route.value)
+        vm.back() // 从列表直接进播放（playMatch），返回应回 LIST
+        // 旧断言是 DETAIL：那是"返回掉进从未见过的详情页"的 bug 本身。
+        // 逐层退出的语义由 openPlayer 路径覆盖（见 PlayerBackStackTest）。
+        assertEquals(Route.LIST, vm.route.value)
         assertNull("离开播放页要清掉直连地址", vm.playerState.value.streamUrl)
         assertNull(vm.playerState.value.webFallbackUrl)
         assertFalse(vm.playerState.value.resolving)
         assertNull("离开播放页要清掉错误提示（原来靠 UI 层 route 条件遮住）", vm.playerState.value.errorMessage)
-
-        vm.back() // DETAIL -> LIST
-        assertEquals(Route.LIST, vm.route.value)
         assertFalse(vm.detailState.value.loadingSignals)
     }
 

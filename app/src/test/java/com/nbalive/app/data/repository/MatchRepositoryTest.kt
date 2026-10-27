@@ -51,14 +51,13 @@ class MatchRepositoryTest {
         java.time.LocalDate.of(2026, month, day).atTime(hour, minute)
             .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
 
-    private fun invokeMerge(jrs: List<Match>, jrkan: List<Match>): List<Match> {
-        val m = MatchRepository::class.java.getDeclaredMethod(
-            "merge", List::class.java, List::class.java,
-        )
-        m.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        return m.invoke(repo, jrs, jrkan) as List<Match>
-    }
+    /**
+     * 走 `mergeForTest` 而不是反射调 private merge：
+     * merge 的返回类型已改成带过滤计数的 Merged，反射强转 List 会 ClassCastException，
+     * 而且反射本身就绕过了编译期检查（签名变了测试不会红，跑起来才炸）。
+     */
+    private fun invokeMerge(jrs: List<Match>, jrkan: List<Match>): List<Match> =
+        repo.mergeForTest(jrs, jrkan)
 
     @Test
     fun `same teams on different days stay two matches`() {
@@ -152,8 +151,11 @@ class MatchRepositoryTest {
 
         val result = repo.loadMatches { url, _ ->
             when {
-                url.contains("jrszbt") -> if (jrsAttempts++ == 0) null else jrsHtml
-                else -> null // JRKAN 这一轮也失败：只剩 JRS 可用
+                // 第一次"网络不通"（可重试），第二次成功 —— 钉住重试逻辑
+                url.contains("jrszbt") ->
+                    if (jrsAttempts++ == 0) FetchResult.Unreachable(null) else FetchResult.Ok(jrsHtml)
+                // JRKAN 这一轮也失败：只剩 JRS 可用
+                else -> FetchResult.Unreachable(null)
             }
         }
 

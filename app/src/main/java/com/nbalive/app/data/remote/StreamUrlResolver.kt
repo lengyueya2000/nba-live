@@ -96,14 +96,18 @@ class StreamUrlResolver {
 
         // 主链路：songzenet msss.html?id=<encoded m3u8>
         // 注意：payload 里可能带 &（auth_key 的 query），不能按 & 截断；
-        // 只在遇到 &id2=、引号、空白或标签边界时停。
+        // 但**尾部**的 &id2= 是源站播放页自己的第二个参数，不属于 payload，必须剥掉。
         //
-        // ⚠️ 用**贪婪**量词而不是惰性：
-        // 惰性 + 交替前瞻 `([^"'\s<]+?)(?=&id2=|["'\s<])` 会在每次尝试结束位置时
-        // 回溯，payload 越长回溯越多。贪婪量词一次吃到最近的终止符，
-        // 再把尾部可能的 "&id2=" 剥掉，结果等价且没有回溯放大。
-        Regex("""msss\.html\?id=([^"'\s<]+)(?=&id2=|["'\s<]|$)""").find(html)?.let { m ->
-            val raw = m.groupValues[1]
+        // ⚠️ 历史 bug：早先写成 `([^"'\s<]+)(?=&id2=|["'\s<]|$)` ——
+        // 字符类没排除 &，贪婪量词会把 "&id2=" 一起吞进捕获组，
+        // 而后面那个 (?=&id2=) 前瞻因此永远命中不了（& 已被消费完），是死分支。
+        // 后果是还原出的地址尾部多一个 "&id2="，拉不到 #EXTM3U，
+        // /play/sm.html 这条唯一能静态还原的链路全废。
+        //
+        // 修法：先在完整匹配里吃到终止符，再用 removeSuffix 剥掉尾部 &id2=。
+        // 这样既保住 payload 内部的裸 &（auth_key 需要），又不会带上 id2。
+        Regex("""msss\.html\?id=([^"'\s<]+)""").find(html)?.let { m ->
+            val raw = stripId2Tail(m.groupValues[1])
             val decoded = runCatching {
                 // encodeURI 不转义 '+'，而 URLDecoder 会把 '+' 解成空格，
                 // 破坏 base64 的 auth_key 签名 -> 先把裸 '+' 还原为 %2B
@@ -118,15 +122,36 @@ class StreamUrlResolver {
         // ⚠️ `.m3u8` 后面必须紧跟 query/hash 或分隔符/结尾：
         // 早先用 `\.m3u8[^\s"'<>]*` 会从 "a.m3u8path=1" 里抠出
         // "http://cdn/a.m3u8path=1" 这类垃圾候选，调用方逐个探测时白费请求。
-        Regex("""(https?:)?//[^\s"'<>]*?\.m3u8(?:[?#][^\s"'<>]*)?(?=["'<>\s]|$)""").find(html)?.let { m ->
-            var u = m.value
-            if (u.startsWith("//")) u = "http:$u"
-            restoreObfuscatedHost(u)?.let { out.add(it) }
-            out.add(u)
-        }
+        //
+        // ⚠️ 还要排除"m3u8 只是 query 参数值"的情况：
+        // 播放页里常见 `msss.html?id=//cdn/live/a.m3u8&id2=`。
+        // 若 host 部分允许 `?`/`&`，匹配会从 `//demo.songzenet.com` 起算，
+        // 把**整个播放页 URL**（含 msss.html?id=...）当成 m3u8 候选 ——
+        // 实测确实产出这种垃圾：调用方为它白跑一次请求，
+        // 反混淆还会把它改成另一个垃圾域名。
+        // 判据：host+path 段内不允许 `?`/`&`，真 m3u8 的 query 在 `.m3u8` 之后。
+        Regex("""(https?:)?//[^\s"'<>?&]*?\.m3u8(?:[?#][^\s"'<>]*)?(?=["'<>\s]|$)""")
+            .findAll(html)
+            .forEach { m ->
+                // 兜底命中的 query 段同样可能带着播放页的 &id2= 尾巴
+                var u = stripId2Tail(m.value)
+                if (u.startsWith("//")) u = "http:$u"
+                restoreObfuscatedHost(u)?.let { out.add(it) }
+                out.add(u)
+            }
 
         return out.toList()
     }
+
+    /**
+     * 剥掉 payload 尾部的 `&id2=`。
+     *
+     * 源站播放页的形态是 `msss.html?id=<payload>&id2=`，
+     * 无论主链路还是兜底正则，捕获到的都可能是"payload + &id2="，
+     * 而 `id2` 是**播放页**的第二个参数，不属于 m3u8 地址本身。
+     */
+    private fun stripId2Tail(value: String): String =
+        value.removeSuffix("&id2=").removeSuffix("&amp;id2=")
 
     private fun normalizeScheme(raw: String): String? {
         val value = raw.trim()

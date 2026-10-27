@@ -40,6 +40,95 @@ class PlayerLockTest {
         assertTrue(PlayerLock.gesturesEnabled(locked = false))
     }
 
+    // ---------- 手势层配置：真实判定（P2-9 / P1-6 / P2-2） ----------
+    //
+    // 这些断言测的是 PlayerScreen 真正会调用的那个函数。
+    // 以前 gesturesEnabled / tapShowsUnlockUi 没有任何生产调用方，
+    // 单测测的是死函数，真实判定散在 PlayerScreen 的三元表达式里 ——
+    // 改坏了不会有测试红。现在判定收敛到 gestureConfig，生产方必须调它。
+
+    @Test
+    fun `全屏未锁定才接管滑动`() {
+        // P2-2：非全屏时页面本身要能上下滚（信号列表在视频下面），
+        // 手势层如果无条件接管垂直拖动，从视频区起手就滚不动页面。
+        assertTrue(
+            "全屏未锁定：滑动调亮度/音量",
+            PlayerLock.gestureConfig(locked = false, fullscreen = true, inPip = false).dragEnabled,
+        )
+        assertFalse(
+            "非全屏：滑动必须留给父级 verticalScroll",
+            PlayerLock.gestureConfig(locked = false, fullscreen = false, inPip = false).dragEnabled,
+        )
+        assertFalse(
+            "锁定时滑动一律不接管（防误触的核心）",
+            PlayerLock.gestureConfig(locked = true, fullscreen = true, inPip = false).dragEnabled,
+        )
+        assertFalse(
+            "画中画里没有手势层",
+            PlayerLock.gestureConfig(locked = false, fullscreen = true, inPip = true).layerEnabled,
+        )
+    }
+
+    @Test
+    fun `锁定时单击必须消费 否则会透传给源站播放器`() {
+        // P1-6：锁定后我们的浮层隐藏了，但单击事件仍会透传给 WebView 里的
+        // 源站播放器 —— 手掌蹭一下就点亮源站控制条，等于没锁住。
+        assertTrue(
+            "锁定态：消费单击，WebView 收不到这次点击",
+            PlayerLock.gestureConfig(locked = true, fullscreen = true, inPip = false).consumeTap,
+        )
+        assertFalse(
+            "非锁定态必须透传 —— v1.2.5 明确要求网页线路能单击调出源站控制条",
+            PlayerLock.gestureConfig(locked = false, fullscreen = true, inPip = false).consumeTap,
+        )
+        assertFalse(
+            "非全屏同理：网页线路单击要能传给源站播放器",
+            PlayerLock.gestureConfig(locked = false, fullscreen = false, inPip = false).consumeTap,
+        )
+    }
+
+    @Test
+    fun `单击动作按锁定和全屏分流`() {
+        // 锁定时单击唤出解锁 UI（否则用户找不到解锁入口）；
+        // 未锁定全屏时单击切换浮层显隐；
+        // 未锁定非全屏时什么都不做（浮层常驻，单击留给源站播放器）。
+        assertEquals(
+            PlayerLock.TapAction.TOGGLE_UNLOCK_UI,
+            PlayerLock.gestureConfig(locked = true, fullscreen = true, inPip = false).tapAction,
+        )
+        assertEquals(
+            PlayerLock.TapAction.TOGGLE_UNLOCK_UI,
+            PlayerLock.gestureConfig(locked = true, fullscreen = false, inPip = false).tapAction,
+        )
+        assertEquals(
+            PlayerLock.TapAction.TOGGLE_CONTROLS,
+            PlayerLock.gestureConfig(locked = false, fullscreen = true, inPip = false).tapAction,
+        )
+        assertEquals(
+            PlayerLock.TapAction.PASS_THROUGH,
+            PlayerLock.gestureConfig(locked = false, fullscreen = false, inPip = false).tapAction,
+        )
+    }
+
+    @Test
+    fun `手势层配置与单项判定保持一致`() {
+        // 防止两套规则又走岔：gestureConfig 是生产入口，
+        // gesturesEnabled / tapShowsUnlockUi 是它的单项视图。
+        listOf(true, false).forEach { locked ->
+            val config = PlayerLock.gestureConfig(locked = locked, fullscreen = true, inPip = false)
+            assertEquals(
+                "dragEnabled 必须等于 gesturesEnabled(locked=$locked)",
+                PlayerLock.gesturesEnabled(locked),
+                config.dragEnabled,
+            )
+            assertEquals(
+                "tapAction 必须与 tapShowsUnlockUi(locked=$locked) 一致",
+                PlayerLock.tapShowsUnlockUi(locked),
+                config.tapAction == PlayerLock.TapAction.TOGGLE_UNLOCK_UI,
+            )
+        }
+    }
+
     @Test
     fun `锁定时底部控制栏不显示`() {
         // 底部栏的完整规则在 PlayerControls（含全屏/画中画/浮层显隐），

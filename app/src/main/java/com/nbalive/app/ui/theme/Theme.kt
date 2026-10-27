@@ -1,14 +1,18 @@
 package com.nbalive.app.ui.theme
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -294,7 +298,13 @@ fun NbaLiveTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as? Activity)?.window ?: return@SideEffect
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            val controller = WindowCompat.getInsetsController(window, view)
+            // ⚠️ 状态栏和导航栏要**一起**设（review/03-P1-3）：
+            // 原来只设了 isAppearanceLightStatusBars，浅色主题下
+            // 底部系统导航键仍是**白色图标**，压在浅色 surfaceScrim 上几乎看不见，
+            // 用户会以为返回/主页键坏了。两者是同一个"系统栏配色"问题的两半。
+            controller.isAppearanceLightStatusBars = !darkTheme
+            controller.isAppearanceLightNavigationBars = !darkTheme
         }
     }
     MaterialTheme(colorScheme = colors, typography = AppTypography, content = content)

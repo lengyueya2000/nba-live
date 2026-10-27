@@ -83,6 +83,16 @@ import com.nbalive.app.ui.screens.SearchScreen
 import com.nbalive.app.ui.theme.GradLive
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
+import kotlinx.coroutines.delay
+
+/**
+ * 列表状态老化的轮询间隔（P1-1）。
+ *
+ * 只做纯内存重算（`MainViewModel.ageListStatuses`），不发网络请求，
+ * 因此 60 秒既能让「比赛已结束」在一分钟内从「直播中」纠正过来，
+ * 又不会对源站产生任何额外压力。
+ */
+private const val LIST_STATUS_AGE_INTERVAL_MS = 60_000L
 
 
 private enum class Tab(val label: String, val filled: ImageVector, val outlined: ImageVector) {
@@ -160,8 +170,17 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     // ⚠️ 这里判的是 playerState.playbackDead（播放器自己报的死），
     // **不是** errorMessage：错误文案还承担"已自动切换线路"这类过渡提示，
     // 那种情况切换完照样能播，不能把小窗收掉。
+    //
+    // ⚠️ P0-1：疑似异常（playbackSuspect，来自嗅探超时这类**推断**）
+    // 也要挡住自动进小窗 —— 但只挡"新按 Home 时自动弹窗"，
+    // **不**收掉已经在播的小窗。分级与处置权限集中在 [PlaybackHealth]。
+    // 当前健康等级：事实优先于推断
+    val playbackLevel = PlaybackHealth.levelOf(
+        sniffTimedOut = playerState.playbackSuspect,
+        confirmedFailure = playerState.playbackDead,
+    )
     val playingNow = (playerState.streamUrl != null || playerState.webFallbackUrl != null) &&
-        !playerState.playbackDead
+        !PlaybackHealth.blocksAutoEnterPip(playbackLevel)
     DisposableEffect(route, playingNow) {
         // 只有**真的在看视频**时才允许「按 Home 自动进小窗」。
         // 判定集中在 PipState.shouldAutoEnterPip（可单测），
@@ -175,13 +194,16 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         )
         onDispose { PipState.setPlayerActive(false) }
     }
-    // 播放出错时把系统级「自动进小窗」的开关收掉：
+    // 播放状态变化时把系统级「自动进小窗」的开关复位：
     // setAutoEnterEnabled(true) 是**粘性**的（见 MainActivity.syncAutoEnterEnabled），
     // 一旦设上，系统在按 Home 时自己进小窗，不经过上面那道判断。
-    // 已经在播之后才报错（小窗里画面死了）的，直接把小窗收掉。
-    LaunchedEffect(playingNow, playerState.playbackDead) {
+    //
+    // ⚠️ 收小窗只在等级为「确认失败」时发生（P0-1）。
+    // 处置权限由 PlaybackHealth.pipDisposition 决定，这里不自己判断，
+    // 避免"疑似异常"这类推断拿走不可逆的处置。
+    LaunchedEffect(playingNow, playbackLevel) {
         activity?.syncAutoEnterEnabled()
-        if (playerState.playbackDead) activity?.finishPipIfBroken()
+        activity?.finishPipIfBroken(playbackLevel)
     }
     // 离开播放页自动退出全屏，避免下次进来是横屏
     // 同时解除锁定：锁是"看当前这场"的状态，换场/退出就该恢复
@@ -189,6 +211,22 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         if (route != Route.PLAYER) {
             fullscreen = false
             lockedMatchId = null
+        }
+    }
+    // 列表状态随时间老化（P1-1）。
+    //
+    // 状态原来只在 loadMatches 结束时算一次，之后永不重算 ——
+    // 用户不手动刷新，早上 10:00 开赛的比赛到晚上还挂着「直播中」，
+    // 点进去是"网络错误"。这是那个反馈的结构性根因：
+    // 之前修的是"校正算错了"，这层是"不再算第二次"。
+    //
+    // ⚠️ 这是**纯内存**重算，零网络请求 —— 不违反"不轮询源站"的取舍。
+    // ⚠️ 只在列表可见时跑：进详情页/播放页就停，切后台时组合被移出也会停。
+    LaunchedEffect(route, tab) {
+        if (route != Route.LIST || tab == Tab.PROFILE) return@LaunchedEffect
+        while (true) {
+            viewModel.ageListStatuses()
+            delay(LIST_STATUS_AGE_INTERVAL_MS)
         }
     }
     // 全屏时横屏 + 隐藏系统栏
@@ -331,6 +369,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     },
                     onPlaybackError = viewModel::onPlaybackFailed,
                     onPlaybackDead = viewModel::onPlaybackDead,
+                    onPlaybackSuspect = viewModel::onPlaybackSuspect,
                     onStreamSniffed = viewModel::onStreamSniffed,
                     sniffFailed = playerState.failedSniffUrl != null,
                     aspectMode = aspectMode,

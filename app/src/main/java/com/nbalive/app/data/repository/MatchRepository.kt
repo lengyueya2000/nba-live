@@ -3,6 +3,7 @@ package com.nbalive.app.data.repository
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.MatchStatusClock
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
@@ -10,6 +11,7 @@ import com.nbalive.app.data.remote.FetchResult
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.data.remote.debugLog
 import com.nbalive.app.data.remote.redactUrl
+import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.data.remote.JrsParser
 import com.nbalive.app.data.remote.JrkanParser
 import com.nbalive.app.data.remote.StreamUrlResolver
@@ -58,13 +60,15 @@ class MatchRepository(
 
     /**
      * 可注入 fetch 的实现，供单元测试覆盖"单源瞬时失败要重试"这类逻辑。
+     *
+     * ⚠️ 参数类型是 [FetchResult] 而不是 `String?`：
+     * 两个版本在 Kotlin 侧是合法重载（可空性不同），但擦除后 JVM 签名相同，
+     * 且对 lambda 会产生重载歧义 —— 只保留信息更全的这个，
+     * 老测试里返回 `String?` 的 lambda 已同步迁移。
      */
     internal suspend fun loadMatches(
-        fetch: suspend (String, String?) -> String?,
-    ): Result<List<Match>> = loadMatchesInternal { url, _ ->
-        val body = fetch(url, null)
-        if (body != null) FetchResult.Ok(body) else FetchResult.Unreachable(null)
-    }
+        fetch: suspend (String, String?) -> FetchResult,
+    ): Result<List<Match>> = loadMatchesInternal(fetch)
 
     /**
      * 真正干活的实现：区分"源站拒绝"与"网络不通"，据此决定要不要重试。
@@ -79,11 +83,12 @@ class MatchRepository(
                 val jrsDeferred = async { fetchJrs(fetch) }
                 val jrkanDeferred = async { fetchJrkan(fetch) }
                 val jrs = jrsDeferred.await().getOrElse {
-                    Log.w("MatchRepo", "JRS fetch failed", it)
+                    // ⚠️ 不把 throwable 交给 Log：OkHttp 异常消息内嵌完整带 auth_key 的 URL
+                    safeLogWarn("MatchRepo", "JRS fetch failed", it)
                     emptyList()
                 }
                 val jrkan = jrkanDeferred.await().getOrElse {
-                    Log.w("MatchRepo", "JRKAN fetch failed", it)
+                    safeLogWarn("MatchRepo", "JRKAN fetch failed", it)
                     emptyList()
                 }
                 if (jrs.isEmpty() && jrkan.isEmpty()) {
@@ -93,7 +98,7 @@ class MatchRepository(
                 // 先校正再排序：源站列表的"直播中"会滞后，不修就全堆在最前面
                 // ⚠️ 校正拉详情页与列表 fetch 走**同一个缓存**：
                 // 否则"刷新列表"和"点进播放页"会把同一个详情页拉两遍。
-                sort(correctLiveStatuses(merge(jrs, jrkan), fetch))
+                sort(correctLiveStatuses(merge(jrs, jrkan).matches, fetch))
             }
         }
     }
@@ -172,7 +177,14 @@ class MatchRepository(
                 // 本地时钟双向校正 —— 源站会把未开赛的场次提前标成"直播中"
                 // （只判"超时->已结束"会让未来场次一直亮红到开赛后 3.5 小时）
                 m.jrsDetailId == null && m.startAtMillis != null -> m.copy(
-                    status = statusByClock(m.startAtMillis),
+                    // ⚠️ 走 MatchStatusClock 而不是本类的私有 statusByClock：
+                    // 旧实现内部自己取 ZonedDateTime.now()，把调用方注入的
+                    // now 完全无视掉 —— correctLiveStatuses(now=...) 的
+                    // "可注入时钟"对 JRKAN 分支是假的，同一份测试上午跑和
+                    // 晚上跑结果不同（P1-4）。
+                    // 另外它用 ZoneId.systemDefault() 解释源站的北京时间，
+                    // 设备时区设成 UTC-5 时状态整体偏移 13 小时（P2-1）。
+                    status = MatchStatusClock.byClock(m.startAtMillis, now),
                     startAtMillis = m.startAtMillis,
                 )
                 // JRS 场次但详情页没给出可用的 HH:mm（源站 404 / 超时 / 改版）：
@@ -183,7 +195,7 @@ class MatchRepository(
                 // 拿不到详情页时间不等于该继续信它。
                 //
                 // 但 JRS"直播中"行的 startAtMillis 只是分组日期的 **00:00 占位**
-                // （真实 HH:mm 被"直播中"文案顶掉了），直接套 statusByClock
+                // （真实 HH:mm 被"直播中"文案顶掉了），直接套时钟校正
                 // 会把凌晨场次判成"结束 24 小时前"，正在直播的也会被误杀。
                 // 所以只做**保守的下界判断**：分组日期 + 1 天 = 该场最晚可能的结束时刻。
                 // 连这个都过了，比赛绝无可能还在进行 —— 判已结束。
@@ -211,13 +223,10 @@ class MatchRepository(
      * 把当天晚上才开球的比赛在中午就判成已结束。按整天判断虽然粗，
      * 但方向是安全的（宁可多标一会儿直播中，也不误杀正在打的比赛）。
      */
-    private fun isPastDayEnd(startAtMillis: Long, now: java.time.ZonedDateTime): Boolean {
-        val day = java.time.Instant.ofEpochMilli(startAtMillis)
-            .atZone(java.time.ZoneId.systemDefault())
-            .toLocalDate()
-        val dayEnd = day.plusDays(1).atStartOfDay(java.time.ZoneId.systemDefault())
-        return now.isAfter(dayEnd)
-    }
+    private fun isPastDayEnd(startAtMillis: Long, now: java.time.ZonedDateTime): Boolean =
+        // 委托给 MatchStatusClock：那边固定用北京时间（SOURCE_ZONE）解释时间戳，
+        // 本类旧实现用 ZoneId.systemDefault()，设备时区一偏判定就整体错位（P2-1）。
+        MatchStatusClock.isPastDayEnd(startAtMillis, now)
 
     /**
      * 测试专用入口：固定 HTML 与当前时间，跑一遍 [correctLiveStatuses]。
@@ -235,18 +244,6 @@ class MatchRepository(
         fetch = { url, _ -> FetchResult.Ok(htmlFor(url) ?: "") },
         now = now,
     )
-
-    /** 计划开赛时间 -> 状态：超 3.5 小时=已结束，早于 15 分钟=未开赛，窗口内=进行中。 */
-    private fun statusByClock(startAtMillis: Long): MatchStatus {
-        val start = java.time.Instant.ofEpochMilli(startAtMillis)
-            .atZone(java.time.ZoneId.systemDefault())
-        val now = java.time.ZonedDateTime.now()
-        return when {
-            now.isAfter(start.plusHours(3).plusMinutes(30)) -> MatchStatus.FINISHED
-            now.isBefore(start.minusMinutes(15)) -> MatchStatus.UPCOMING
-            else -> MatchStatus.LIVE
-        }
-    }
 
     /**
      * 拉取 JRS 详情页，带一个**短 TTL 的进程内缓存**。
@@ -372,8 +369,7 @@ class MatchRepository(
     }
 
     /** 直播中优先，其余按开赛时间。 */
-    private fun sort(matches: List<Match>): List<Match> =
-        matches.sortedWith(
+    private fun sort(matches: List<Match>): List<Match> =        matches.sortedWith(
             compareBy<Match> { if (it.status == MatchStatus.LIVE) 0 else 1 }
                 // 直播中组内按开赛时间**倒序**：最晚开赛（刚开始不久、最新鲜）的排最上；
                 // 其余组内保持升序：最近要开的在前。组内方向不同，不能直接 thenBy。
@@ -384,6 +380,30 @@ class MatchRepository(
                 }
                 .thenBy { it.leagueRawName }
         )
+
+    /**
+     * 让列表状态随时间老化并重新排序（P1-1）。
+     *
+     * 状态原来是一次性快照：只在解析列表和 loadMatches 结束时各算一次，
+     * 之后没有任何机制让它老化。用户早上打开 App、放一下午再切回来，
+     * 列表不会重新拉取（这是刻意的取舍，自动轮询会打爆源站），
+     * 于是 13:30 就该结束的比赛到晚上仍显示「直播中」。
+     *
+     * 修法不是加网络轮询，而是**纯内存重算**：
+     *  - 零请求、零 IO，一百多场也只是微秒级
+     *  - 由 ViewModel 在列表可见时每分钟调一次，切后台自动停
+     *
+     * 重排是必要的：一场比赛从「直播中」退到「已结束」后，
+     * 它还占着列表顶部的黄金位置，新开赛的场次被压在下面。
+     *
+     * @return 状态或顺序有变化时返回新列表，否则返回**原列表引用**
+     *   （StateFlow 靠 equals 去重，返回新实例会白白触发全列表重组）
+     */
+    fun agedMatches(matches: List<Match>, now: java.time.ZonedDateTime): List<Match> {
+        if (matches.isEmpty()) return matches
+        val aged = MatchStatusClock.aged(matches, now)
+        return if (aged === matches) matches else sort(aged)
+    }
 
     /**
      * 列表页单源拉取，带线性退避重试。
@@ -423,6 +443,197 @@ class MatchRepository(
         jrsParser.parseList(html)
     }
 
+    /**
+     * 单个源的抓取结果，**带失败原因**。
+     *
+     * 原来只有 [fetchJrs] 这种 `Result<List<Match>>`：
+     * 网络不通、被限流、HTTP 200 但解析出零场，三种情况都塌缩成
+     * "空列表"或"一个异常"，调用方无法向用户解释"为什么场次变少了"。
+     * 这里把三者分开，[loadMatchesWithOutcome] 才能报出 failedProviders。
+     */
+    internal sealed class SourceOutcome {
+        /** 正常拿到场次 */
+        data class Ok(val matches: List<Match>) : SourceOutcome()
+
+        /** 源站明确拒绝（403/429）。不重试，但必须让用户知道这个源没了。 */
+        data class Rejected(val code: Int) : SourceOutcome()
+
+        /** 网络不通（DNS/超时/连接失败），重试后仍失败 */
+        data class Unreachable(val reason: String?) : SourceOutcome()
+
+        /**
+         * HTTP 200 但解析出零场。
+         *
+         * ⚠️ 这**也算失败**：源站改版让解析器整表归零时，HTTP 层是完全正常的。
+         * 若按"HTTP 成功"处理就成了"这个源今天没比赛"，又是一条静默丢场次的路。
+         */
+        data object ParsedEmpty : SourceOutcome()
+
+        val failed: Boolean get() = this !is Ok
+    }
+
+    /**
+     * 一次列表加载的完整结果：场次 + 哪些源失败了 + 被过滤掉几场。
+     *
+     * 为什么要新增这个类型（review/02-data.md P1-2）：
+     * 原 `loadMatches` 返回 `Result<List<Match>>`，部分失败被完全吞掉 ——
+     * 任一源挂掉只写一条 `Log.w` 然后当成"这个源今天没比赛"，
+     * 只有两个源同时为空才报错。用户看到的就是"场次莫名变少"，
+     * 且无法区分"源站真没比赛"和"某个源挂了"。
+     *
+     * @param filteredOutCount 因非 NBA/CBA 被丢弃的场次数。
+     *   联赛名解析失败会让场次静默消失（P1-新），至少让它可被观测。
+     */
+    data class LoadOutcome(
+        val matches: List<Match>,
+        val failedProviders: List<Provider> = emptyList(),
+        val filteredOutCount: Int = 0,
+        private val reasons: Map<Provider, String> = emptyMap(),
+    ) {
+        /** 该源的失败原因（可读文案，UI 直接显示）。成功时返回 null。 */
+        fun failureReason(provider: Provider): String? = reasons[provider]
+
+        /**
+         * 面向用户的"部分数据不可用"提示；两源都正常时返回 null。
+         *
+         * 只在**还有数据**时提示。两源全挂时该走整页错误态，
+         * 而不是"仅显示部分场次"这种轻描淡写的横幅。
+         */
+        fun partialError(): String? {
+            if (failedProviders.isEmpty() || matches.isNotEmpty().not()) return null
+            val names = failedProviders.joinToString("、") { it.displayName }
+            val why = failedProviders.mapNotNull { reasons[it] }.firstOrNull()
+            return if (why == null) "$names 源暂时不可用，仅显示部分场次"
+            else "$names 源暂时不可用（$why），仅显示部分场次"
+        }
+
+        companion object {
+            /** 只有场次、没有失败的便捷构造（测试与"全部成功"分支用）。 */
+            fun of(matches: List<Match>): LoadOutcome = LoadOutcome(matches = matches)
+        }
+    }
+
+    /** 生产入口：带失败信息的加载。 */
+    suspend fun loadMatchesOutcome(): LoadOutcome =
+        loadMatchesWithOutcome { url, referer -> http.fetch(url, referer) }
+
+    /**
+     * 带失败信息的列表加载。
+     *
+     * 与 [loadMatchesInternal] 的区别：**不因部分失败而抛异常**，
+     * 而是把失败源如实报出来。两源全挂时也不抛，
+     * 由调用方决定怎么呈现（[loadMatches] 为了兼容旧签名仍会抛）。
+     */
+    internal suspend fun loadMatchesWithOutcome(
+        fetch: suspend (String, String?) -> FetchResult,
+    ): LoadOutcome = withContext(Dispatchers.IO) {
+        supervisorScope {
+            val jrsDeferred = async { fetchJrsOutcome(fetch) }
+            val jrkanDeferred = async { fetchJrkanOutcome(fetch) }
+            val jrs = jrsDeferred.await()
+            val jrkan = jrkanDeferred.await()
+
+            val failures = listOf(Provider.JRS to jrs, Provider.JRKAN to jrkan)
+                .filter { it.second.failed }
+            val reasons = failures.associate { (provider, outcome) ->
+                provider to when (outcome) {
+                    is SourceOutcome.Rejected -> "源站拒绝请求（HTTP ${outcome.code}）"
+                    is SourceOutcome.Unreachable ->
+                        "网络连接失败${outcome.reason?.let { "（$it）" } ?: ""}"
+                    SourceOutcome.ParsedEmpty -> "未解析到任何场次（源站可能已改版）"
+                    is SourceOutcome.Ok -> ""
+                }
+            }
+
+            val merged = merge(jrs.orEmpty(), jrkan.orEmpty())
+            // 校正与排序只在有数据时有意义；空列表直接返回，省掉一整轮详情页请求
+            val corrected = if (merged.matches.isEmpty()) {
+                merged.matches
+            } else {
+                sort(correctLiveStatuses(merged.matches, fetch))
+            }
+            LoadOutcome(
+                matches = corrected,
+                failedProviders = failures.map { it.first },
+                filteredOutCount = merged.filteredOutCount,
+                reasons = reasons,
+            )
+        }
+    }
+
+    /** 单源成功时给场次，失败时给空表。 */
+    private fun SourceOutcome.orEmpty(): List<Match> =
+        (this as? SourceOutcome.Ok)?.matches ?: emptyList()
+
+    private suspend fun fetchJrsOutcome(
+        fetch: suspend (String, String?) -> FetchResult,
+    ): SourceOutcome = runSource(JRS_LIST_URL, fetch) { jrsParser.parseList(it) }
+
+    private suspend fun fetchJrkanOutcome(
+        fetch: suspend (String, String?) -> FetchResult,
+    ): SourceOutcome = runSource(JRKAN_LIST_JS, fetch) { jrkanParser.parseList(it) }
+
+    /**
+     * 抓一个源并归类到 [SourceOutcome]。
+     *
+     * ⚠️ 解析异常也要归为失败而不是抛出：
+     * 单个源的解析器回归不能带走另一个源的好数据（这条与原有约定一致）。
+     */
+    private suspend fun runSource(
+        url: String,
+        fetch: suspend (String, String?) -> FetchResult,
+        parse: (String) -> List<Match>,
+    ): SourceOutcome = catching {
+        when (val fetched = fetchListDetailed(fetch, url)) {
+            is Fetched.Body -> {
+                val parsed = try {
+                    parse(fetched.body)
+                } catch (t: Throwable) {
+                    // 只打异常类型：解析器抛的 message 可能内嵌源站 URL
+                    Log.w("MatchRepo", "解析异常 (${t.javaClass.simpleName})")
+                    emptyList()
+                }
+                if (parsed.isEmpty()) SourceOutcome.ParsedEmpty else SourceOutcome.Ok(parsed)
+            }
+            is Fetched.Rejected -> SourceOutcome.Rejected(fetched.code)
+            is Fetched.Unreachable -> SourceOutcome.Unreachable(fetched.reason)
+        }
+    }.getOrElse {
+        Log.w("MatchRepo", "fetch failed (${it.javaClass.simpleName})")
+        SourceOutcome.Unreachable(it.javaClass.simpleName)
+    }
+
+    /** [fetchListWithRetry] 的带原因版本：把"为什么没拿到正文"分清楚。 */
+    private sealed class Fetched {
+        data class Body(val body: String) : Fetched()
+        data class Rejected(val code: Int) : Fetched()
+        data class Unreachable(val reason: String?) : Fetched()
+    }
+
+    private suspend fun fetchListDetailed(
+        fetch: suspend (String, String?) -> FetchResult,
+        url: String,
+    ): Fetched {
+        var lastReason: String? = null
+        repeat(LIST_FETCH_ATTEMPTS) { attempt ->
+            when (val result = fetch(url, null)) {
+                is FetchResult.Ok -> return Fetched.Body(result.body)
+                is FetchResult.Rejected -> {
+                    Log.w("MatchRepo", "源站拒绝请求(HTTP ${result.code})，放弃重试: ${redactUrl(url)}")
+                    return Fetched.Rejected(result.code)
+                }
+                is FetchResult.Unreachable -> {
+                    lastReason = result.reason
+                    if (attempt < LIST_FETCH_ATTEMPTS - 1) {
+                        delay(LIST_RETRY_BACKOFF_MS * (attempt + 1))
+                    }
+                }
+            }
+        }
+        return Fetched.Unreachable(lastReason)
+    }
+
+
     private suspend fun fetchJrkan(fetch: suspend (String, String?) -> FetchResult): Result<List<Match>> = catching {
         val js = fetchListWithRetry(fetch, JRKAN_LIST_JS) ?: return@catching emptyList()
         jrkanParser.parseList(js)
@@ -441,9 +652,13 @@ class MatchRepository(
      * 但"两个源怎么合并"是最容易出静默错误的地方（id 撞车、状态被覆盖），
      * 必须能直接测。
      */
-    internal fun mergeForTest(jrs: List<Match>, jrkan: List<Match>): List<Match> = merge(jrs, jrkan)
+    internal fun mergeForTest(jrs: List<Match>, jrkan: List<Match>): List<Match> =
+        merge(jrs, jrkan).matches
 
-    private fun merge(jrs: List<Match>, jrkan: List<Match>): List<Match> {
+    /** [merge] 的结果：合并后的场次 + 因非 NBA/CBA 被丢弃的数量。 */
+    internal data class Merged(val matches: List<Match>, val filteredOutCount: Int)
+
+    private fun merge(jrs: List<Match>, jrkan: List<Match>): Merged {
         val merged = LinkedHashMap<String, Match>()
         // 已用过的 id：避免每次都 O(n) 扫 merged.values（几十场还行，上百场会退化）
         val usedIds = HashSet<String>()
@@ -482,11 +697,13 @@ class MatchRepository(
         jrkan.forEach(::mergeOne)
         jrs.forEach(::mergeOne)
 
-        return merged.values
-            // 产品只做 NBA + CBA：源站混入的足球/外联赛在这里统一丢弃
-            .filter { it.league in League.supported }
+        val all = merged.values.toList()
+        // 产品只做 NBA + CBA：源站混入的足球/外联赛在这里统一丢弃。
+        // ⚠️ 丢弃数量要能被观测（P1-新）：联赛名解析失败会落到 League.OTHER，
+        // 整场静默消失 —— 至少让 filteredOutCount 能把"丢了几场"暴露出来。
+        val kept = all.filter { it.league in League.supported }
             .distinctBy { it.id }
-            .toList()
+        return Merged(kept, all.size - kept.size)
     }
 
     /**

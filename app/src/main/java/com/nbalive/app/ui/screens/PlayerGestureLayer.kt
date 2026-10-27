@@ -60,7 +60,7 @@ import kotlinx.coroutines.launch
  * 播放器的亮度 / 音量手势层。
  *
  * 左半屏上下滑调**屏幕亮度**（只改本 Activity 的窗口亮度，不动系统设置，
- * 退出 App 自动还原，也不需要 WRITE_SETTINGS 权限）；
+ * 离开播放页时复位，也不需要 WRITE_SETTINGS 权限）；
  * 右半屏上下滑调**媒体音量**。归属看按下点落在哪半边，一次手势内不切换。
  *
  * 为什么不用 `detectVerticalDragGestures` 再叠 `clickable`：
@@ -76,13 +76,37 @@ fun PlayerMediaGestures(
     /** 单击回调（全屏时切换浮层显隐）；null 表示不处理单击 */
     onTap: (() -> Unit)? = null,
     /**
-     * 只响应单击、忽略滑动（锁定时用）。
+     * 只响应单击、忽略滑动（锁定态 / 非全屏时用）。
      *
-     * 锁定态下亮度/音量手势必须停用（否则"防误触锁"形同虚设），
-     * 但**单击仍要能唤出解锁按钮** —— 否则用户找不到解锁入口。
-     * 所以锁定时不是把整个手势层关掉，而是切到这个"只认单击"的模式。
+     * 两种场景都要求"滑动不接管"：
+     *  - **锁定**：亮度/音量手势必须停用（否则"防误触锁"形同虚设），
+     *    但单击仍要能唤出解锁按钮 —— 否则用户找不到解锁入口。
+     *  - **非全屏**（P2-2）：非全屏时播放页是一列可滚动内容，
+     *    视频区占屏幕上部约 1/3，从画面起手向上滑是想滚页面。
+     *    接管垂直拖动会被解释成调亮度/音量并弹 OSD，页面一动不动。
+     *
+     * ⚠️ 生产代码不要自己拼条件，传 `!PlayerLock.gestureConfig(...).dragEnabled`
+     * （判定收敛在 PlayerLock，有单测守着）。
      */
     tapOnly: Boolean = false,
+    /**
+     * 单击是否消费掉（不再透传给 WebView 里的源站播放器）。
+     *
+     * ## 为什么要这个开关（P1-6）
+     *
+     * 锁定后我们的浮层全隐藏了，但手势层还在（要能唤出解锁按钮）。
+     * 不消费的话，每一次误触的单击都照旧透传给源站播放器：
+     * 手掌蹭一下就会点亮源站控制条、甚至双击进源站自己的全屏 ——
+     * 用户以为锁住了，实际只锁住了我们这一层。
+     *
+     * ## ⚠️ 非锁定态必须保持 false
+     *
+     * v1.2.5 明确要求：网页线路未锁定时，单击要透传给源站播放器
+     * （源站用它显隐控制条 / 调亮度音量）。"顺手统一消费"会直接破坏这个行为。
+     *
+     * 生产代码传 `PlayerLock.gestureConfig(...).consumeTap`。
+     */
+    consumeTap: Boolean = false,
 ) {
     if (!enabled) return
 
@@ -93,6 +117,13 @@ fun PlayerMediaGestures(
     }
 
     var osd by remember { mutableStateOf<MediaOsd?>(null) }
+
+    // 用户是否真的滑动调过亮度。
+    //
+    // 只有"改过"才需要在离开播放页时复位（P1-4）。没改过就写
+    // BRIGHTNESS_OVERRIDE_NONE 也有副作用：会抹掉 Activity 上
+    // 别处设置的 screenBrightness。
+    var brightnessChanged by remember { mutableStateOf(false) }
 
     // "松手 800ms 后收起指示器"的计时。
     //
@@ -110,7 +141,19 @@ fun PlayerMediaGestures(
         }
     }
     DisposableEffect(Unit) {
-        onDispose { osdHideJob?.cancel() }
+        onDispose {
+            osdHideJob?.cancel()
+            // 离开播放页复位亮度（P1-4）。
+            //
+            // 只改窗口亮度、从不复位的后果：本 App 是单 Activity，
+            // 从播放页返回列表时窗口不重建，用户滑到 2% 看球，
+            // 返回列表后整个 App 都是 2%，且列表页没有恢复入口。
+            //
+            // 只在"用户确实改过"时写（brightnessOnDispose 返回 null 表示不动）。
+            PlayerGestureMath.brightnessOnDispose(brightnessChanged)?.let { value ->
+                resetBrightness(activity, value)
+            }
+        }
     }
 
     // ⚠️ onTap 用 rememberUpdatedState 包一层：
@@ -125,7 +168,7 @@ fun PlayerMediaGestures(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(enabled, activity, audio, tapOnly) {
+            .pointerInput(enabled, activity, audio, tapOnly, consumeTap) {
                 // 滑动距离 = 屏高的 70% 走完全量程：太长滑不到底，太短容易误触
                 val fullSwipe = PlayerGestureMath.fullSwipe(size.height.toFloat())
                 awaitEachGesture {
@@ -139,21 +182,44 @@ fun PlayerMediaGestures(
                     // 我们绝不能再把抬手当成"单击画面"——否则点按钮会顺手把浮层关掉
                     var takenByOthers = false
 
+                    // 锁定态：从 down 起就吃掉（P1-6）。
+                    //
+                    // 不消费的话，锁定后每一次误触的单击都照旧透传给
+                    // WebView 里的源站播放器：手掌蹭一下就点亮源站控制条、
+                    // 甚至双击进源站自己的全屏 —— 用户以为锁住了，
+                    // 实际只锁住了我们这一层 UI。
+                    //
+                    // ⚠️ 非锁定态绝不能消费（consumeTap=false）：
+                    // v1.2.5 明确要求网页线路单击透传给源站播放器。
+                    if (consumeTap) down.consume()
+
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        // ⚠️ 顺序很重要：先判"有没有被别人消费"，再轮到自己消费。
+                        // isConsumed 是按**单个事件**计的，我们消费上一个事件
+                        // 不会污染这一条的判断。
                         if (change.isConsumed) {
                             takenByOthers = true
                             break
                         }
-                        if (!change.pressed) break
+                        if (!change.pressed) {
+                            // 抬手：锁定态连 up 也要吃掉，否则源站仍能凑出一次完整点击
+                            if (consumeTap) change.consume()
+                            break
+                        }
                         moved += change.positionChange().y
                         if (!dragging) {
                             if (abs(moved) > viewConfiguration.touchSlop) {
-                                // tapOnly（锁定态）：滑动不接管、不改亮度音量，
-                                // 也不算"单击"（用户确实滑了，只是被锁挡住）。
+                                // tapOnly（锁定 / 非全屏）：滑动不接管、
+                                // 不改亮度音量，也不算"单击"（用户确实滑了）。
                                 // 直接结束本次手势，什么都不做。
+                                //
+                                // 非全屏（P2-2）这里**不 consume**，让未被接管的
+                                // 拖动自然落到父级 verticalScroll —— 否则从视频区
+                                // 起手上滑滚不动页面。
                                 if (tapOnly) {
+                                    if (consumeTap) change.consume()
                                     takenByOthers = true
                                     break
                                 }
@@ -173,8 +239,14 @@ fun PlayerMediaGestures(
                                 min = if (side == Side.BRIGHTNESS) MIN_BRIGHTNESS else 0f,
                             )
                             osd = applyGesture(side, target, activity, audio)
+                            // 记下"用户确实改过亮度"：离开播放页时只有改过才复位
+                            // （P1-4，见 PlayerGestureMath.brightnessOnDispose）
+                            if (side == Side.BRIGHTNESS) brightnessChanged = true
                             // 拖动中：每次数值变化都重置收起计时（防抖）
                             scheduleHideOsd()
+                        } else if (consumeTap) {
+                            // 锁定态下未成拖动的移动事件也不许透传
+                            change.consume()
                         }
                     }
 
@@ -272,6 +344,39 @@ internal object PlayerGestureMath {
 
     /** 按下点落在左半屏还是右半边 */
     fun sideOf(x: Float, widthPx: Float): Boolean = x < widthPx / 2f
+
+    /**
+     * 离开播放页时该写回的窗口亮度；null 表示"不要碰窗口属性"。
+     *
+     * ## 为什么必须复位（P1-4）
+     *
+     * 手势只改**本 Activity 的窗口亮度**（`window.attributes.screenBrightness`），
+     * 注释里"退出 App 自动回落到系统亮度"其实只在**退出 Activity** 时成立。
+     * 本 App 是单 Activity（`AndroidManifest.xml` 里只有 MainActivity，
+     * `launchMode="singleTask"`），从播放页返回列表/详情时窗口不重建，
+     * `screenBrightness` 保持被改过的值 —— 用户把亮度滑到 2% 看球，
+     * 返回列表后**整个 App 都是 2%**，列表页还没有任何恢复入口。
+     *
+     * ## 为什么只在"用户确实改过"时复位
+     *
+     * `BRIGHTNESS_OVERRIDE_NONE`（-1f）表示跟随系统。没动过亮度就写 -1f
+     * 也有副作用：会把 Activity 上别处设置的 `screenBrightness` 抹掉。
+     * 所以没改过就返回 null，调用方跳过写窗口。
+     *
+     * @param userChanged 本次播放页期间用户是否真的滑动调过亮度
+     * @return 要写入 `attrs.screenBrightness` 的值；null = 不要写
+     */
+    fun brightnessOnDispose(userChanged: Boolean): Float? =
+        if (userChanged) BRIGHTNESS_OVERRIDE_NONE else null
+
+    /**
+     * `WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE` 的本地副本。
+     *
+     * 不直接引用常量是为了让这个纯函数在 JVM 单测里也能跑
+     * （`PlayerGestureMathTest` 跑在 JVM 上，没有 android.jar 的运行时实现）。
+     * 值必须与系统常量一致：-1f。
+     */
+    const val BRIGHTNESS_OVERRIDE_NONE = -1f
 }
 
 // ---------- 亮度 ----------
@@ -292,11 +397,24 @@ private fun readBrightness(activity: Activity?): Float {
     return (sys / 255f).coerceIn(MIN_BRIGHTNESS, 1f)
 }
 
-/** 只改窗口亮度：不写系统设置，退出 App 自动回落到系统亮度 */
+/** 只改窗口亮度：不写系统设置，离开播放页时由 [resetBrightness] 复位 */
 private fun writeBrightness(activity: Activity?, value: Float) {
     val win = activity?.window ?: return
     val attrs = win.attributes
     attrs.screenBrightness = value.coerceIn(MIN_BRIGHTNESS, 1f)
+    win.attributes = attrs
+}
+
+/**
+ * 把窗口亮度写回 [PlayerGestureMath.BRIGHTNESS_OVERRIDE_NONE]（-1f，跟随系统）。
+ *
+ * P1-4：单 Activity 架构下，从播放页返回列表时窗口不重建，
+ * 不复位就会让整个 App 停在被调暗的亮度上。
+ */
+private fun resetBrightness(activity: Activity?, value: Float) {
+    val win = activity?.window ?: return
+    val attrs = win.attributes
+    attrs.screenBrightness = value
     win.attributes = attrs
 }
 

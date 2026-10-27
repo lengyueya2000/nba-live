@@ -55,6 +55,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nbalive.app.data.model.Match
+import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
@@ -90,7 +91,7 @@ fun SearchScreen(
             throw e
         } catch (e: IllegalStateException) {
             // 输入框还没挂上时 requestFocus 会抛异常：记一笔，别再静默吞掉
-            Log.w("SearchScreen", "自动聚焦输入框失败", e)
+            safeLogWarn("SearchScreen", "自动聚焦输入框失败", e)
         }
     }
 

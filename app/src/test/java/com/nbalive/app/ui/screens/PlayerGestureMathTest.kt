@@ -2,6 +2,7 @@ package com.nbalive.app.ui.screens
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -84,6 +85,34 @@ class PlayerGestureMathTest {
         assertEquals(100, PlayerGestureMath.percent(1f))
         assertEquals(100, PlayerGestureMath.percent(1.7f))
         assertEquals(0, PlayerGestureMath.percent(-0.4f))
+    }
+
+    // ---------- 亮度复位（P1-4） ----------
+
+    @Test
+    fun `离开播放页要复位亮度`() {
+        // P1-4：以前只改窗口亮度、从不复位。本 App 是单 Activity
+        // （launchMode=singleTask），从播放页返回列表时窗口不重建，
+        // 用户把亮度滑到 2% 看球，返回列表后**整个 App** 都是 2%，
+        // 而且列表页没有任何恢复入口。
+        //
+        // BRIGHTNESS_OVERRIDE_NONE = -1f = 恢复跟随系统。
+        assertEquals(
+            "用户改过亮度：离开时必须写回 -1（跟随系统）",
+            -1f,
+            requireNotNull(PlayerGestureMath.brightnessOnDispose(userChanged = true)),
+            0.0001f,
+        )
+    }
+
+    @Test
+    fun `没改过亮度就不要动窗口`() {
+        // 没改过却写 -1f 也有副作用：会把 Activity 上别处设的
+        // screenBrightness 抹掉。所以只在"用户确实改过"时才复位。
+        assertNull(
+            "没动过亮度就不该写窗口属性",
+            PlayerGestureMath.brightnessOnDispose(userChanged = false),
+        )
     }
 
     @Test

@@ -76,9 +76,48 @@ class StreamUrlResolverTest {
         val resolved = resolver.resolve("http://play.example.com/play/sm.html?id=1") { html }
 
         assertNotNull(resolved)
+        // ⚠️ 断言必须**精确相等**，不能用 contains：
+        // 早先这里写的是 contains("auth_key=abc&t=123")，而带 bug 的结果
+        // "...&t=123&id2=" 恰好也满足 contains —— 测试写了却没测住，
+        // 让"&id2= 被吞进 payload"这个 bug 一直潜伏。
         assertTrue(
             "query 参数被截断了：${resolved!!.m3u8Candidates}",
-            resolved.m3u8Candidates.any { it.contains("auth_key=abc&t=123") },
+            resolved.m3u8Candidates.any {
+                it == "http://hdl2.qiuximing.com/live/a.m3u8?auth_key=abc&t=123"
+            },
+        )
+    }
+
+    @Test
+    fun `trailing id2 is stripped from payload`() = runBlocking {
+        // 源站播放页的形态是 msss.html?id=<payload>&id2=
+        // 捕获组必须停在 payload 末尾，不能把 &id2= 一起吃掉
+        val html = """<iframe src="//demo.songzenet.com/msss.html?id=ENC&id2="></iframe>"""
+        val resolved = resolver.resolve("http://play.example.com/play/sm.html?id=1") { html }
+
+        // "ENC" 不是合法 http 地址，两个候选都还原不出来 -> 应返回 null
+        // 关键是不能出现 "ENC&id2=" 这种被污染的中间结果
+        assertNull("&id2= 被吞进了 payload：${resolved?.m3u8Candidates}", resolved)
+    }
+
+    @Test
+    fun `id2 is not carried into any candidate url`() = runBlocking {
+        // 端到端：任何候选地址里都不该出现 "id2="
+        // 它属于源站播放页的第二个参数，不属于 m3u8 地址本身
+        val payload = "//hdl2.gnimixuiq.com/live/a.m3u8?auth_key=abc"
+        val html = """<iframe src="//demo.songzenet.com/msss.html?id=$payload&id2="></iframe>"""
+        val resolved = resolver.resolve("http://play.example.com/play/sm.html?id=1") { html }
+
+        assertNotNull(resolved)
+        val polluted = resolved!!.m3u8Candidates.filter { it.contains("id2=") }
+        assertTrue(
+            "候选地址被 &id2= 污染了：$polluted（全部候选：${resolved.m3u8Candidates}）",
+            polluted.isEmpty(),
+        )
+        assertEquals(
+            "反混淆后的地址应当是第一个候选且完全干净",
+            "http://hdl2.qiuximing.com/live/a.m3u8?auth_key=abc",
+            resolved.m3u8Candidates.first(),
         )
     }
 

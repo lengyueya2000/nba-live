@@ -9,6 +9,8 @@ import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.repository.MatchRepository
 import com.nbalive.app.data.remote.StreamUrlResolver
+import com.nbalive.app.data.remote.safeLogWarn
+import com.nbalive.app.data.remote.safeMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -30,6 +32,15 @@ data class MatchListUiState(
     val error: String? = null,
     val matches: List<Match> = emptyList(),
     val selectedLeague: League = League.ALL,
+    /**
+     * "部分数据源不可用"的提示（P1-2）。
+     *
+     * 与 [error] 的区别：error 是整页失败（没有数据可展示），
+     * 这里是有数据、但缺了一部分。原来单源失败只写一行 Log.w，
+     * 用户只看到"场次变少了"，完全不知道是某个源挂了 ——
+     * 静默缺数据比明确报错更难排查。
+     */
+    val partialError: String? = null,
 ) {
     /** 列表是否正忙（首载或刷新中）：供刷新按钮显示进度 */
     val busy: Boolean get() = loading || refreshing
@@ -100,6 +111,20 @@ data class PlayerUiState(
      */
     val playbackDead: Boolean = false,
     /**
+     * 是否处于**疑似异常**状态（P0-1）。
+     *
+     * ⚠️ 与 [playbackDead] 严格分开，区别在**判据的来源**：
+     *  - `playbackDead` = 播放器自己报的错（事实）→ 允许收掉小窗；
+     *  - `playbackSuspect` = 嗅探超时这类**推断** → 只显示提示、停自动进小窗，
+     *    **绝不**触发关闭类的处置。
+     *
+     * 分不开的后果就是 v1.2.12 之前那条链：判据是推断，处置却是
+     * `finishAndRemoveTask()`（不可逆）。MSE/`blob:` 播放、m3u8 地址不带
+     * `.m3u8` 字面量、弱网首帧 > 25 秒 —— 这三种正常在播的情况都会被误判，
+     * 用户正在看的小窗连同整个任务一起消失，找都找不回来。
+     */
+    val playbackSuspect: Boolean = false,
+    /**
      * 错误提示的自增序号。
      *
      * 界面用它当 LaunchedEffect 的 key：只拿 [errorMessage] 当 key 时，
@@ -118,10 +143,21 @@ class MainViewModel(
      */
     private val repository: MatchRepository = MatchRepository.shared,
     /**
-     * 列表加载入口。生产默认走 [MatchRepository.loadMatches]；
-     * 测试注入它以可控地驱动刷新时序（全程不触网）。
+     * 列表加载入口（**测试专用**覆盖点）。
+     *
+     * 非 null 时优先于 [loadOutcome]：测试注入它以可控地驱动刷新时序（全程不触网）。
+     * 生产路径传 null，走 [loadOutcome] 拿完整结果。
      */
-    private val loadMatches: suspend () -> Result<List<Match>> = { repository.loadMatches() },
+    private val loadMatches: (suspend () -> Result<List<Match>>)? = null,
+    /**
+     * 带"哪些源失败了"的加载入口（P1-2）。
+     *
+     * 生产默认走它：单源失败不再是只写一行 Log.w 的静默缺数据，
+     * 调用方能把"JRS 源暂时不可用，仅显示部分场次"如实告诉用户。
+     */
+    private val loadOutcome: suspend () -> MatchRepository.LoadOutcome = {
+        repository.loadMatchesOutcome()
+    },
     /**
      * 信号加载入口。测试注入它以驱动"进场期间返回/抛异常"等时序，
      * 也覆盖 loadSignals 的取消与失败路径（与 [loadMatches] 同一个理由）。
@@ -148,6 +184,20 @@ class MainViewModel(
 
     private val _route = MutableStateFlow(Route.LIST)
     val route: StateFlow<Route> = _route.asStateFlow()
+
+    /**
+     * 进入播放页**之前**所在的路由，决定返回键该回哪里。
+     *
+     * ⚠️ 历史 bug：`back()` 里 PLAYER 分支无条件回 DETAIL。
+     * 但进入播放页有两条路：
+     *  - 列表卡片的「立即观看」→ `playMatch()`，从 LIST 直接跳 PLAYER
+     *  - 详情页的线路列表 → `openPlayer()`，DETAIL -> PLAYER
+     * 前者按返回会掉进一个**用户从未见过的详情页**，再按一次才回列表。
+     * 切场（"同时在播"面板）同样从 LIST 直达 PLAYER，问题更明显。
+     *
+     * 所以必须记住来源，而不是写死 DETAIL。
+     */
+    private var routeBeforePlayer: Route = Route.DETAIL
 
     private val _listState = MutableStateFlow(MatchListUiState())
     val listState: StateFlow<MatchListUiState> = _listState.asStateFlow()
@@ -195,6 +245,15 @@ class MainViewModel(
         copy(playbackDead = dead)
 
     /**
+     * 标记「疑似异常」（P0-1）：只来自**推断**（嗅探超时），不是播放器报的错。
+     *
+     * 与 [markPlaybackDead] 的关键区别是处置权限 —— 疑似**只**影响提示与
+     * 「按 Home 自动进小窗」开关，不会触发任何关闭类的、不可逆的动作。
+     */
+    private fun PlayerUiState.markPlaybackSuspect(suspect: Boolean): PlayerUiState =
+        copy(playbackSuspect = suspect)
+
+    /**
      * 同一时刻只允许一个解析任务：用户快速连点线路时，
      * 慢的那个解析若后完成，会把快的那个（用户最新选择）覆盖掉，
      * 甚至把已经播起来的直连流换成 WebView。
@@ -222,21 +281,42 @@ class MainViewModel(
                 it.copy(loading = firstLoad, refreshing = !firstLoad, error = null)
             }
             try {
-                loadMatches()
-                    .onSuccess { matches ->
-                        _listState.update {
-                            it.copy(loading = false, refreshing = false, error = null, matches = matches)
+                // 测试注入 loadMatches 时走它（返回不带失败信息的 Result）；
+                // 生产走 loadOutcome，拿得到"哪些源失败了"（P1-2）
+                val injected = loadMatches
+                if (injected != null) {
+                    injected()
+                        .onSuccess { matches ->
+                            _listState.update {
+                                it.copy(
+                                    loading = false, refreshing = false,
+                                    error = null, partialError = null, matches = matches,
+                                )
+                            }
                         }
-                    }
-                    .onFailure { e ->
-                        _listState.update {
-                            it.copy(
-                                loading = false,
-                                refreshing = false,
-                                error = e.message ?: "网络异常，请稍后重试",
-                            )
+                        .onFailure { e ->
+                            _listState.update {
+                                it.copy(
+                                    loading = false,
+                                    refreshing = false,
+                                    error = safeMessage(e).ifBlank { "网络异常，请稍后重试" },
+                                )
+                            }
                         }
+                } else {
+                    val outcome = loadOutcome()
+                    _listState.update {
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            error = null,
+                            matches = outcome.matches,
+                            // 单源失败不再静默 —— 用户要能看出
+                            // "场次变少"是某个源挂了，而不是今天真没比赛
+                            partialError = outcome.partialError(),
+                        )
                     }
+                }
             } catch (ce: CancellationException) {
                 // 协程被取消：收尾 loading/refreshing。
                 // 取消发生的两个地方（refresh 自身重发、playMatch 切场）都会复位这两个标志，
@@ -246,12 +326,13 @@ class MainViewModel(
                 throw ce
             } catch (t: Throwable) {
                 // 注入的加载入口抛异常时也不能闪退，更不能把列表清空
-                Log.w("MainViewModel", "refresh failed: ${t.message}", t)
+                // ⚠️ 不把 throwable 交给 Log：堆栈帧的 message 可能内嵌带签名的源站 URL
+                safeLogWarn("MainViewModel", "refresh failed", t)
                 _listState.update {
                     it.copy(
                         loading = false,
                         refreshing = false,
-                        error = t.message ?: "网络异常，请稍后重试",
+                        error = safeMessage(t).ifBlank { "网络异常，请稍后重试" },
                     )
                 }
             }
@@ -260,6 +341,26 @@ class MainViewModel(
 
     fun selectLeague(league: League) {
         _listState.update { it.copy(selectedLeague = league) }
+    }
+
+    /**
+     * 让列表里已缓存的场次状态随时间老化（P1-1）。
+     *
+     * 状态原来只在 loadMatches 结束时算一次，之后永不重算 ——
+     * 用户不手动刷新，早上 10:00 开赛的比赛到晚上还挂着「直播中」。
+     * 这里做**纯内存**重算：零网络请求，不违反"不轮询源站"的取舍。
+     *
+     * 由界面在列表可见时每分钟调一次（切后台自动停，见 NbaLiveApp）。
+     */
+    fun ageListStatuses() {
+        val current = _listState.value.matches
+        if (current.isEmpty()) return
+        val aged = repository.agedMatches(current, java.time.ZonedDateTime.now())
+        // agedMatches 没变化时会返回原引用，这里再挡一层 equals，
+        // 避免 StateFlow 收到"内容相同但实例不同"的列表触发全列表重组
+        if (aged != current) {
+            _listState.update { it.copy(matches = aged) }
+        }
     }
 
     // ---------- 详情 ----------
@@ -285,9 +386,9 @@ class MainViewModel(
             } catch (t: Throwable) {
                 // 拉信号失败必须落成可见的错误态：
                 // 否则 loadingSignals 永远停在 true，详情页一直转圈且没有重试入口
-                Log.w("MainViewModel", "loadSignals failed: ${t.message}", t)
+                safeLogWarn("MainViewModel", "loadSignals failed", t)
                 _detailState.update {
-                    it.copy(loadingSignals = false, error = "加载线路失败：${t.message ?: "网络异常"}")
+                    it.copy(loadingSignals = false, error = "加载线路失败：${safeMessage(t)}")
                 }
                 return@launch
             }
@@ -308,6 +409,8 @@ class MainViewModel(
         val detail = _detailState.value
         val match = detail.match ?: return
         failedSources.clear()
+        // 从详情页的线路列表进来：返回键该回详情页
+        routeBeforePlayer = Route.DETAIL
         _route.value = Route.PLAYER
         _playerState.value = PlayerUiState(
             match = match,
@@ -373,6 +476,15 @@ class MainViewModel(
         refreshJob?.cancel()
         _listState.update { it.copy(loading = false, refreshing = false) }
         failedSources.clear()
+        // ⚠️ 记住**来源**而不是写死 DETAIL：
+        // 列表卡片「立即观看」、直播页、搜索页、"同时在播"面板切场
+        // 都是从 LIST 直达 PLAYER，返回时若回 DETAIL，
+        // 用户会掉进一个从未见过的详情页。
+        // 已经在 PLAYER（"同时在播"切场）时保持原来源不变，
+        // 否则返回键会把用户卡在 PLAYER 与 LIST 之间来回跳。
+        if (_route.value != Route.PLAYER) {
+            routeBeforePlayer = _route.value
+        }
         _route.value = Route.PLAYER
         _detailState.value = MatchDetailUiState(match = match, loadingSignals = true)
         _playerState.value = PlayerUiState(match = match, resolving = true)
@@ -384,9 +496,9 @@ class MainViewModel(
             } catch (t: Throwable) {
                 // 畸形地址 / 解析器回归会让拉线路抛异常：
                 // 没有兜底时它会逃逸出 viewModelScope 直接闪退
-                Log.w("MainViewModel", "loadSignals failed: ${t.message}", t)
+                safeLogWarn("MainViewModel", "loadSignals failed", t)
                 _detailState.update {
-                    it.copy(loadingSignals = false, error = "加载线路失败：${t.message ?: "网络异常"}")
+                    it.copy(loadingSignals = false, error = "加载线路失败：${safeMessage(t)}")
                 }
                 _playerState.update {
                     it.copy(resolving = false)
@@ -455,8 +567,8 @@ class MainViewModel(
             _playerState.update {
                 it.copy(resolving = true, streamUrl = null, streamReferer = null,
                     webFallbackUrl = null, sniffedStream = false, failedSniffUrl = null,
-                    // 重新开始解析：上一轮"彻底播不出来"的判定作废
-                    playbackDead = false)
+                    // 重新开始解析：上一轮"播不出来 / 疑似异常"的判定全部作废
+                    playbackDead = false, playbackSuspect = false)
                         .withError(null)
             }
 
@@ -489,8 +601,9 @@ class MainViewModel(
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
-                    Log.w("MainViewModel", "resolveStream failed: ${t.message}", t)
-                    resolveError = t.message
+                    safeLogWarn("MainViewModel", "resolveStream failed", t)
+                    // ⚠️ 用脱敏后的 message：这个字符串会落到 errorMessage 显示在界面上
+                    resolveError = safeMessage(t)
                     null
                 }
                 // 解析是挂起点：期间用户可能已切线路（本协程被 cancel）。
@@ -542,6 +655,7 @@ class MainViewModel(
                     // 那时 PlayerScreen 会通过 onPlaybackError 上报，才轮到 playbackDead=true。
                     // 这里若急着置 true，会在网页还没加载完时就把小窗收掉/禁止自动小窗。
                     playbackDead = false,
+                    playbackSuspect = false,
                 ).withError(
                     when {
                         resolveError != null -> "解析失败：${resolveError}"
@@ -582,21 +696,45 @@ class MainViewModel(
     }
 
     /**
-     * 网页线路确认播不出来（25 秒没嗅探到流 / 播放页加载失败）。
+     * 网页线路**疑似**播不出来（25 秒没嗅探到任何流）。
      *
-     * 只置"彻底失败"标志，**不**改线路、不重试：
-     * 这条路本来就是最后的兜底，再试一次只是把同一个黑屏再放一遍。
+     * ⚠️ 这是 P0-1 的核心分界：嗅探超时是**推断**，不是播放器报的事实，
+     * 所以这里只置 [PlayerUiState.playbackSuspect]，**不**置 `playbackDead`。
+     * 后果区别很大：
+     *  - 疑似：显示提示 + 停掉「按 Home 自动进小窗」，**不动已经在播的小窗**；
+     *  - 确认（[onPlaybackDead]）：才允许收掉小窗。
+     *
+     * 为什么必须这么分：至少三种正常在播的情况会嗅探不到流 ——
+     * 源站用 MSE/`blob:` 播放；m3u8 地址不带 `.m3u8` 字面量；弱网首帧超过 25 秒。
+     * 旧代码把它们一并判死，然后用 `finishAndRemoveTask()` 移除整个任务，
+     * 用户正在看的东西连同入口一起消失且找不回来。
+     *
+     * 不改线路、不重试：这条路本来就是最后的兜底。
+     */
+    fun onPlaybackSuspect() {
+        val state = _playerState.value
+        // 已经在直连播了就不管：网页组件可能滞后于嗅探升级才回调
+        if (state.streamUrl != null) return
+        if (state.playbackSuspect) return
+        _playerState.update { it.markPlaybackSuspect(true) }
+    }
+
+    /**
+     * 网页线路**确认**播不出来（播放页主框架加载失败，错误码经过筛选）。
+     *
+     * 页面都打不开，不可能有流 —— 这是 WebView 自己报的失败，属于**事实**，
+     * 因此允许置 [PlayerUiState.playbackDead]，上层据此关掉自动进小窗并收掉坏窗。
+     * 处置仍是可逆的：只 `finish()`，任务保留在最近任务里（见 MainActivity）。
+     *
+     * 不改线路、不重试：这条路本来就是最后的兜底，
      * 用户要恢复就点"重连"或手动换线。
-     *
-     * 置上之后 [PlayerUiState.playbackDead] 会让上层关掉自动进小窗，
-     * 并把已存在的小窗收掉 —— 见 [PipState.shouldAutoEnterPip] 的说明。
      */
     fun onPlaybackDead() {
         val state = _playerState.value
         // 已经在直连播了就不管：网页组件可能滞后于嗅探升级才回调
         if (state.streamUrl != null) return
         if (state.playbackDead) return
-        _playerState.update { it.markPlaybackDead(true) }
+        _playerState.update { it.markPlaybackDead(true).markPlaybackSuspect(false) }
     }
 
     /**
@@ -620,8 +758,9 @@ class MainViewModel(
                     // m3u8 每轮签名都不同，只记 URL 挡不住回环
                     failedSniffPage = pageUrl ?: it.failedSniffPage,
                     webFallbackUrl = pageUrl,
-                    // 退回网页后网页还在加载，不是"彻底死了"
+                    // 退回网页后网页还在加载，不是"彻底死了"，也还没到"疑似"
                     playbackDead = false,
+                    playbackSuspect = false,
                     // ⚠️ 必须给用户一句提示：
                     // 这里只 copy 不 withError 的话 errorId 不变，
                     // 界面的 LaunchedEffect 不会重启 —— 用户只看到画面从直连变回网页，
@@ -647,7 +786,10 @@ class MainViewModel(
             Route.PLAYER -> {
                 playJob?.cancel()
                 loadJob?.cancel()
-                _route.value = Route.DETAIL
+                // ⚠️ 回到**进入播放页之前**的路由，不是无条件回 DETAIL。
+                // 从列表「立即观看」直接播放时，回 DETAIL 会掉进
+                // 用户从未见过的详情页（要再按一次返回才到列表）。
+                _route.value = routeBeforePlayer
                 // 播放态要清干净：直连地址、兜底地址、错误提示都不能留在状态里
                 // （错误提示原来只靠 UI 层的 route==PLAYER 条件遮住，是隐性不变量）
                 _playerState.update {
@@ -660,6 +802,7 @@ class MainViewModel(
                         failedSniffUrl = null,
                         failedSniffPage = null,
                         playbackDead = false,
+                        playbackSuspect = false,
                     ).withError(null)
                 }
                 // ⚠️ 进场拉线路途中按返回：loadJob 被取消，它尾部那句
