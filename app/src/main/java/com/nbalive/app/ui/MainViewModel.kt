@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.util.Collections
 
 /** 页面路由 */
 enum class Route { LIST, DETAIL, PLAYER }
@@ -206,21 +205,24 @@ class MainViewModel(
     val detailState: StateFlow<MatchDetailUiState> = _detailState.asStateFlow()
 
     /**
-     * 已确认播不出来的线路，重试时跳过，避免死循环。
+     * 已被故障切换**临时**拉黑的线路（review/01-P1-5）。
      *
-     * ⚠️ 只在主线程读写：所有写点都在 viewModelScope 的协程里（Main 调度器），
-     * 不要把它挪到后台线程访问——普通 MutableSet 并发写会损坏内部结构。
-     */
-    /**
-     * 已被故障切换拉黑的线路。
+     * ⚠️ 用带 TTL 的记账而不是裸 Set：
+     * 15 秒看门狗会把"弱网首帧 >15s"的健康线路判成卡死，
+     * 而裸 Set 在会话内永不清除 —— 那条线其实是好的，只是第一帧慢了点，
+     * 之后整场都不会再被自动选中，用户看到"线路莫名被跳走且回不来"。
+     * 限流窗口、弱网、CDN 抖动都会过去，永久黑名单只是把暂时故障变长期故障
+     * （与 `02-P1-9` 域名候选是同一个错误）。
      *
-     * ⚠️ 用线程安全集合而不是裸 mutableSetOf：
-     * 原来的注释说"只在主线程读写"，但 viewModelScope 默认调度器是 Main
-     * 只是**实现细节**，不是语言/框架契约 —— 以后有人加一个
-     * `withContext(Dispatchers.IO)` 就会炸 ConcurrentModificationException。
-     * 用 Collections.synchronizedSet 兜住，成本几乎为零。
+     * 规则见 [SourceFailureBook]；单测 `SourceFailureBookTest` 钉住"过期解封"。
      */
-    private val failedSources: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+    private val failedSources = SourceFailureBook()
+
+    /** 单调时钟（毫秒）：不受用户改系统时间影响，与 [SourceFailureBook] 共用。 */
+    private fun nowMs(): Long = System.nanoTime() / 1_000_000L
+
+    /** 这条线现在还能不能被自动选中。 */
+    private fun isSourceFailed(pageUrl: String): Boolean = failedSources.isFailed(pageUrl, nowMs())
 
     private val _playerState = MutableStateFlow(PlayerUiState())
     val playerState: StateFlow<PlayerUiState> = _playerState.asStateFlow()
@@ -408,7 +410,7 @@ class MainViewModel(
     fun openPlayer(index: Int) {
         val detail = _detailState.value
         val match = detail.match ?: return
-        failedSources.clear()
+        failedSources.clearAll()
         // 从详情页的线路列表进来：返回键该回详情页
         routeBeforePlayer = Route.DETAIL
         _route.value = Route.PLAYER
@@ -425,7 +427,7 @@ class MainViewModel(
         val state = _playerState.value
         if (index !in state.signals.indices) return
         // 用户明确点了这条线，就再给它一次机会（此前被自动故障切换拉黑过）
-        state.signals.getOrNull(index)?.let { failedSources.remove(it.pageUrl) }
+        state.signals.getOrNull(index)?.let { failedSources.clear(it.pageUrl) }
         // 用户主动换线 = 换了个播放页，"这个页升级失败过"的记录不再适用。
         // ⚠️ 必须**无条件清空**：
         // 之前写成 `if (it.failedSniffPage == newPage) null else it.failedSniffPage`
@@ -456,7 +458,7 @@ class MainViewModel(
     fun reconnect() {
         val state = _playerState.value
         if (state.signals.isEmpty()) return
-        state.signals.getOrNull(state.selectedIndex)?.let { failedSources.remove(it.pageUrl) }
+        state.signals.getOrNull(state.selectedIndex)?.let { failedSources.clear(it.pageUrl) }
         play(state.selectedIndex)
     }
 
@@ -475,7 +477,7 @@ class MainViewModel(
         // 两边整表替换会互相抹掉对方的修正结果
         refreshJob?.cancel()
         _listState.update { it.copy(loading = false, refreshing = false) }
-        failedSources.clear()
+        failedSources.clearAll()
         // ⚠️ 记住**来源**而不是写死 DETAIL：
         // 列表卡片「立即观看」、直播页、搜索页、"同时在播"面板切场
         // 都是从 LIST 直达 PLAYER，返回时若回 DETAIL，
@@ -562,7 +564,7 @@ class MainViewModel(
             val start = index.coerceIn(0, state.signals.lastIndex)
             val chosen = state.signals[start]
             // 之前已经确认这条播不了（被自动故障切换拉黑过）：不再重复尝试
-            val chosenUsable = chosen.pageUrl !in failedSources
+            val chosenUsable = !isSourceFailed(chosen.pageUrl)
 
             _playerState.update {
                 it.copy(resolving = true, streamUrl = null, streamReferer = null,
@@ -578,7 +580,7 @@ class MainViewModel(
                 if (chosen.isDirectHls) {
                     if (chosenUsable) add(chosen)
                     state.signals.forEachIndexed { i, s ->
-                        if (i != start && s.isDirectHls && s.pageUrl !in failedSources) add(s)
+                        if (i != start && s.isDirectHls && !isSourceFailed(s.pageUrl)) add(s)
                     }
                 }
             }
@@ -769,7 +771,7 @@ class MainViewModel(
             }
             return
         }
-        state.signals.getOrNull(state.selectedIndex)?.let { failedSources += it.pageUrl }
+        state.signals.getOrNull(state.selectedIndex)?.let { failedSources.markFailed(it.pageUrl, nowMs()) }
         _playerState.update {
             it.copy(streamUrl = null, streamReferer = null, webFallbackUrl = null)
         }

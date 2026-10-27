@@ -611,16 +611,24 @@ fun PlayerScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             // 画面自适应：三档循环
-                            PlayerChip(
-                                label = "画面 ${aspectMode.label}",
-                                onClick = {
-                                    touchControls()
-                                    val next = AspectMode.entries[
-                                        (aspectMode.ordinal + 1) % AspectMode.entries.size,
-                                    ]
-                                    onAspectChange(next)
-                                },
-                            )
+                            // ⚠️ 网页兜底路径**不渲染**这个胶囊（review/01-P2-11）：
+                            // 网页路径的画面缩放由源站 H5 播放器决定，我们改不了，
+                            // 三档切下去画面毫无变化，却会被 PlayerPrefs 持久化，
+                            // 之后进直连线路才突然生效 —— 用户会觉得"按钮有时灵有时不灵"。
+                            // 判据在 PlayerControls.shouldShowAspectChip（有单测），
+                            // 早先写好了却零调用点，等于没修。
+                            if (PlayerControls.shouldShowAspectChip(streamUrl)) {
+                                PlayerChip(
+                                    label = "画面 ${aspectMode.label}",
+                                    onClick = {
+                                        touchControls()
+                                        val next = AspectMode.entries[
+                                            (aspectMode.ordinal + 1) % AspectMode.entries.size,
+                                        ]
+                                        onAspectChange(next)
+                                    },
+                                )
+                            }
                             if (signals.isNotEmpty()) {
                                 // 刷新线路后线路数会变，selectedIndex 可能越界 -> 显示"线路 5/3"
                                 val safeIndex = selectedIndex.coerceIn(0, signals.lastIndex)
@@ -1604,9 +1612,16 @@ private fun VideoSurface(
     }
 
     // 卡死看门狗：有些线路清单能拉到但直播边缘流卡住，永远停在 BUFFERING，
-    // 不会触发 onPlayerError，也就不会故障切换。15 秒内没进入 READY 视为失败。
+    // 不会触发 onPlayerError，也就不会故障切换。
+    //
+    // ⚠️ 阈值从 15s 提到 30s（review/01-P1-5）：
+    // 15 秒对弱网首帧太紧 —— 实测移动网络冷启动 + CDN 首次建连经常就要 20s+，
+    // 那些线路是**健康**的，只是第一帧慢。误判后它会被记进失败记账、
+    // 自动跳走，用户看到"线路莫名被跳走且回不来"。
+    // 现在失败记账本身有 TTL（SourceFailureBook，5 分钟自动解封），
+    // 双重降低"一次误判 = 整场看不了"的概率。
     LaunchedEffect(streamUrl) {
-        delay(15_000)
+        delay(FIRST_FRAME_WATCHDOG_MS)
         val player = playerView?.player
         // 只有"从未就绪过"才算卡死：直播流正常重缓冲时状态就是 BUFFERING，
         // 之前只看 !=STATE_READY，健康线路会被误杀并被永久拉黑（failedSources）
@@ -2033,6 +2048,24 @@ private fun WebSurface(
     }
 }
 
+
+/**
+ * 首帧看门狗：直连线路多久没进入 READY 就判"卡死"并触发故障切换。
+ *
+ * ## 为什么从 15 秒提到 30 秒（review/01-P1-5）
+ *
+ * 15 秒对**弱网首帧**太紧：移动网络冷启动 + CDN 首次建连，实测经常要 20s+。
+ * 那些线路是健康的，只是第一帧慢。误判的代价不是"换一条线"，而是
+ * 这条线被记进失败记账、本次会话不再自动选中 —— 用户看到
+ * "线路莫名被跳走且回不来"，而它本来能播。
+ *
+ * 30 秒仍在"用户愿意等"的范围内（这段时间界面有缓冲指示），
+ * 同时比"永远等下去"好得多：真卡死的线路 30 秒后仍然换得掉。
+ *
+ * 配套改动：失败记账本身加了 TTL（`SourceFailureBook`，5 分钟自动解封），
+ * 所以即使这次仍然误判，也不会把好线路永久拉黑。
+ */
+private const val FIRST_FRAME_WATCHDOG_MS: Long = 30_000
 
 /**
  * 全屏浮层「显示后多久无操作自动收起」。
