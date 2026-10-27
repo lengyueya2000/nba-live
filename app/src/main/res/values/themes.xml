@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  基础主题（API 24 ~ 34）。
+
+  ⚠️ statusBarColor / navigationBarColor 在 **API 35（Android 15）起被废弃**，
+  系统一律忽略（强制 edge-to-edge），继续在这里写只会让人误以为有效 ——
+  见 values-v35/themes.xml 的覆盖版本（review/04-security.md P2-9）。
+
+  这两个属性在 API 24~34 上仍然生效，所以保留：
+  删掉会让旧系统上状态栏变成不透明黑条，与页面背景割裂。
+-->
 <resources>
     <style name="Theme.NBALive" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>

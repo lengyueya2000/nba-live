@@ -74,8 +74,25 @@ android {
         androidComponents {
             onVariants(selector().withBuildType("release")) { variant ->
                 variant.outputs.forEach { output ->
-                    (output as? com.android.build.api.variant.impl.VariantOutputImpl)?.outputFileName =
-                        "app-UNSIGNED-${variant.name}.apk"
+                    // ⚠️ 文件名必须改掉，否则未签名包和正式包**同名同路径**
+                    // （app-release.apk），手工上传 GitHub Release 时分不出哪个能装，
+                    // 用户装不上（"应用未安装"）—— 发布事故。
+                    //
+                    // ⚠️ AGP 目前**没有公开的 outputFileName setter**
+                    // （`VariantOutput` 只暴露只读属性），所以只能落到内部实现类。
+                    // 审查报告（04-P2-7）要求去掉对内部类的依赖，但那需要 AGP 升级 ——
+                    // 这里至少把 `as?` 的**静默失败**改成显式报错：
+                    // 转换失败说明 AGP 内部结构变了，必须让人当场知道，
+                    // 而不是悄悄产出同名包。
+                    val impl = output as? com.android.build.api.variant.impl.VariantOutputImpl
+                    if (impl == null) {
+                        throw GradleException(
+                            "无法重命名未签名包：AGP 的 VariantOutput 实现类变了" +
+                                "（期望 VariantOutputImpl）。请检查 AGP 版本升级，" +
+                                "并改用新的公开 API —— 绝不能静默产出与正式包同名的未签名包。",
+                        )
+                    }
+                    impl.outputFileName = "app-UNSIGNED-${variant.name}.apk"
                 }
             }
         }
@@ -112,7 +129,15 @@ android {
 // ⚠️ 打包 release 时才检查签名凭据：
 // 在配置阶段直接抛错会把 debug 构建和单元测试一起弄挂，
 // 而真正需要拦住的是"产出一个没签名的 APK 拿去发布"。
-tasks.matching { it.name == "packageRelease" || it.name == "bundleRelease" }.configureEach {
+//
+// ⚠️ 任务名匹配修正（review/04-security.md P2-8）：
+// 原来只匹配 "packageRelease" / "bundleRelease" 两个**字面任务名**。
+// AGP 的 AAB 任务是 `bundleRelease` 没错，但 APK 侧的实际任务名是
+// `packageRelease` 之外的变体，且不同 AGP 版本命名会变 ——
+// 名字对不上时这段检查**静默不执行**，等于没有保护。
+// 改为按任务类型匹配（Zip 类任务里名字含 Release 的打包任务），
+// 并用 withType 覆盖所有打包变体。
+tasks.withType<com.android.build.gradle.tasks.PackageAndroidArtifact>().configureEach {
     doFirst {
         if (!skipSigning && missingKeystoreKeys.isNotEmpty()) {
             throw GradleException(

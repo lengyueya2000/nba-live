@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 35+（Android 15）的主题覆盖。
+
+  ## 为什么需要这个文件
+
+  `android:statusBarColor` / `android:navigationBarColor` 在 API 35 起**被废弃**，
+  系统强制 edge-to-edge 并忽略这两个值（review/04-security.md P2-9）。
+  基础 themes.xml 里继续写着它们，在 Android 15 上纯属误导 ——
+  维护者会以为改了有用，实际毫无效果。
+
+  ## 这里做什么
+
+  **不再设置**这两个属性，只保留真正有效的 windowBackground。
+  系统栏的明暗由 `WindowInsetsControllerCompat.isAppearanceLight*Bars` 控制
+  （见 Theme.kt），那套 API 在 API 35 上仍然有效。
+
+  ## 为什么不在基础文件里删掉
+
+  API 24~34 上这两个属性仍然生效。删掉会让旧系统的状态栏变成不透明黑条，
+  与页面背景割裂 —— 那是个真实的视觉回归。
+  所以用 v35 覆盖：旧系统继续用基础值，新系统不写（交给系统 edge-to-edge）。
+-->
+<resources>
+    <style name="Theme.NBALive" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
