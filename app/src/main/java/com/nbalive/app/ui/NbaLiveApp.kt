@@ -233,7 +233,9 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         }
     }
     // 全屏时横屏 + 隐藏系统栏
-    FullscreenSystemEffect(enabled = fullscreen && !inPip)
+    // ⚠️ 必须把 inPip 传进去（P2-7）：进小窗时 enabled 从 true 变 false，
+    // 但方向不能复位 —— 否则小窗窗口跟着设备方向乱转。
+    FullscreenSystemEffect(enabled = fullscreen && !inPip, inPip = inPip)
 
     // 系统返回键：搜索页 > 全屏 > 路由
     // ⚠️ 画中画时要放行：部分系统版本在关小窗时会把返回键派发给界面，
@@ -741,24 +743,38 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
  * 只在真正的全屏（非画中画）下生效。
  */
 @Composable
-private fun FullscreenSystemEffect(enabled: Boolean) {
+private fun FullscreenSystemEffect(enabled: Boolean, inPip: Boolean) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
-    DisposableEffect(enabled, activity) {
+    DisposableEffect(enabled, inPip, activity) {
         if (activity == null) return@DisposableEffect onDispose { }
         val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
-        if (enabled) {
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        // ⚠️ 判据抽在 SystemBarsPolicy（有单测），这里只负责执行。
+        // P2-7：进小窗时 enabled 会从 true 变 false，DisposableEffect 走 onDispose ——
+        // 那里若把方向复位成 UNSPECIFIED，小窗窗口会跟着设备方向乱转
+        // （用户正看着的画面突然竖过来）。所以小窗期间是 KeepLandscape。
+        when (SystemBarsPolicy.orientationFor(fullscreen = enabled, inPip = inPip, onPlayer = true)) {
+            OrientationAction.Landscape,
+            OrientationAction.KeepLandscape,
+            -> activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            OrientationAction.Reset ->
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        if (SystemBarsPolicy.shouldHideSystemBars(fullscreen = enabled, inPip = inPip)) {
             controller.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
         onDispose {
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            controller.show(WindowInsetsCompat.Type.systemBars())
+            // ⚠️ onDispose 里也要判小窗（P2-7 的核心）：
+            // 进小窗会销毁这个 effect，若这里无条件 Reset，
+            // 小窗一出现方向就被复位 —— 正是审查指出的那个 bug。
+            if (!inPip) {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
         }
     }
 }

@@ -217,6 +217,42 @@ class DeadCodeWiringGuardTest {
         )
     }
 
+    @Test
+    fun `方向与浮层计时都必须走 SystemBarsPolicy`() {
+        val files = productionFiles()
+        assumeTrue("找不到生产源码，跳过源码扫描", files.isNotEmpty())
+
+        val app = files.firstOrNull { it.name == "NbaLiveApp.kt" }
+        assumeTrue("找不到 NbaLiveApp.kt，跳过", app != null)
+        val appCode = stripComments(app!!.readText())
+        assertTrue(
+            "全屏方向判定必须走 SystemBarsPolicy.orientationFor（01-P2-7）：\n" +
+                "进小窗时 effect 会销毁，onDispose 里无条件复位方向会让小窗跟着乱转",
+            appCode.contains("SystemBarsPolicy.orientationFor"),
+        )
+        // ⚠️ 必须用正则精确匹配 "inPip = inPip"：
+        // 用 contains("inPip = inPip") 时 "inPip = false" 不匹配，
+        // 但 contains("inPip") 会 —— 传常量等于没传，守卫却照样绿。
+        assertTrue(
+            "FullscreenSystemEffect 必须接收**真实的** inPip（传常量等于没传，\n" +
+                "onDispose 判不出小窗，方向还是会被复位）：",
+            Regex("""FullscreenSystemEffect\([^)]*inPip\s*=\s*inPip\b""").containsMatchIn(appCode),
+        )
+
+        val player = files.firstOrNull { it.name == "PlayerScreen.kt" }
+        assumeTrue("找不到 PlayerScreen.kt，跳过", player != null)
+        val playerCode = stripComments(player!!.readText())
+        assertTrue(
+            "浮层自动收起必须走 SystemBarsPolicy.shouldAutoHideControls（01-P2-8）：\n" +
+                "面板打开时若继续计时，面板关闭后控制栏不再出现",
+            playerCode.contains("shouldAutoHideControls"),
+        )
+        assertTrue(
+            "面板关闭后必须回补控制栏（01-P2-8 第二半）",
+            playerCode.contains("shouldRestoreControlsOnPanelClose"),
+        )
+    }
+
     /** 去掉行注释与块注释，只留代码（注释里出现同样字面量会让守卫永远全绿）。 */
     private fun stripComments(text: String): String =
         text.lineSequence()

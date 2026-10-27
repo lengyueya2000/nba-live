@@ -118,6 +118,7 @@ import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.StalledPlayback
 import com.nbalive.app.ui.ManualPipDecision
 import com.nbalive.app.ui.ManualPipPolicy
+import com.nbalive.app.ui.SystemBarsPolicy
 import com.nbalive.app.ui.PipAspectReset
 import com.nbalive.app.ui.WebMediaPauseScript
 import com.nbalive.app.ui.WebNavigationPolicy
@@ -256,8 +257,20 @@ fun PlayerScreen(
     //  - controlsVisible 变化 → 每次"显示"重新计时
     //  - controlsTouchSeq 变化 → 用户在浮层上做了操作（点按钮/开面板）
     //    也重新计时，否则操作到一半浮层自己消失
-    LaunchedEffect(fullscreen, controlsVisible, locked, inPip, controlsTouchSeq) {
-        if (fullscreen && !inPip && controlsVisible && !locked) {
+    //
+    // ⚠️ 面板打开期间**暂停计时**（review/01-player.md P2-8）：
+    // 用户在面板里挑线路超过 10 秒，计时器到点会把控制栏收掉；
+    // 面板关闭后没人回补 —— 全屏底部控制栏就再也不出现了。
+    // 判据抽在 SystemBarsPolicy.shouldAutoHideControls（有单测）。
+    LaunchedEffect(fullscreen, controlsVisible, locked, inPip, controlsTouchSeq, picker, showLivePanel) {
+        if (SystemBarsPolicy.shouldAutoHideControls(
+                fullscreen = fullscreen,
+                locked = locked,
+                inPip = inPip,
+                pickerOpen = picker != null,
+                livePanelOpen = showLivePanel,
+            ) && controlsVisible
+        ) {
             delay(FULLSCREEN_CONTROLS_TIMEOUT_MS)
             controlsVisible = false
         }
@@ -275,6 +288,20 @@ fun PlayerScreen(
     // 打开任一选择面板时强制露出控制栏，避免面板还开着栏却消失了
     LaunchedEffect(picker, showLivePanel) {
         if (picker != null || showLivePanel) controlsVisible = true
+    }
+    // ⚠️ 面板**关闭**后要回补控制栏（review/01-player.md P2-8 的第二半）：
+    // 只暂停计时还不够 —— 若面板开着期间计时器已经触发过（或用户手动收起了栏），
+    // 关闭面板时必须有一步显式恢复，否则栏不会自己回来，用户以为 UI 卡住了。
+    // 判据抽在 SystemBarsPolicy.shouldRestoreControlsOnPanelClose（有单测）。
+    LaunchedEffect(picker, showLivePanel, fullscreen) {
+        if (SystemBarsPolicy.shouldRestoreControlsOnPanelClose(
+                pickerOpen = picker != null,
+                livePanelOpen = showLivePanel,
+                fullscreen = fullscreen,
+            )
+        ) {
+            controlsVisible = true
+        }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
