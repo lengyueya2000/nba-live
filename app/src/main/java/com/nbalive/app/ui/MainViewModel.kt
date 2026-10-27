@@ -698,6 +698,16 @@ class MainViewModel(
         // 只挡"同一个 URL"挡不住 升级→直连失败→退回网页→再嗅探→再升级 的回环
         // （每轮都销毁重建 WebView、重载源站页，画面闪黑、耗流量）
         if (state.failedSniffPage != null && state.failedSniffPage == state.webFallbackUrl) return
+        // ⚠️ referer 归属校验（review/01-player.md P2-4）：
+        // 切网页线路时旧页面的在途请求可能晚到，把**旧线路**的流当成新线路升级，
+        // 界面显示线路 B、实际播的是已判失败的线路 A。
+        // WebSurface 侧已用 key(webFallbackUrl) 重建 WebView 兜住，
+        // 这里再加一道：嗅探到的流的 Referer 必须属于当前播放页，
+        // 否则忽略（拿不到 referer 时放行 —— 不能因为缺信息就丢掉真流）。
+        if (referer != null && !belongsToPage(referer, state.webFallbackUrl!!)) {
+            Log.w("MainViewModel", "忽略不属于当前播放页的嗅探结果（P2-4）")
+            return
+        }
         _playerState.update {
             it.copy(
                 streamUrl = m3u8Url,
@@ -706,6 +716,22 @@ class MainViewModel(
                 sniffedStream = true,
             ).withError(null)
         }
+    }
+
+    /**
+     * 嗅探到的流的 Referer 是否属于当前播放页。
+     *
+     * 只比**注册域**（不是完整 URL）：播放页与 m3u8 常在同一站点的不同 host 上
+     * （列表页在 `jrszbt.com`、播放页在 `play.sportsteam*.com`），
+     * 比完整 URL 会把正常升级全部挡掉。
+     */
+    private fun belongsToPage(referer: String, pageUrl: String): Boolean {
+        fun host(u: String): String =
+            runCatching { java.net.URI(u).host.orEmpty() }.getOrDefault("").lowercase()
+        val refHost = host(referer)
+        val pageHost = host(pageUrl)
+        if (refHost.isEmpty() || pageHost.isEmpty()) return true // 解析不了就放行
+        return refHost == pageHost || refHost.endsWith("." + pageHost) || pageHost.endsWith("." + refHost)
     }
 
     /**

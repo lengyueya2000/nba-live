@@ -326,13 +326,21 @@ fun PlayerScreen(
                                 Modifier.fillMaxSize()
                             },
                         ) {
-                            WebSurface(
-                                url = webFallbackUrl,
-                                onStreamFound = onStreamSniffed,
-                                suppressHint = sniffFailed,
-                                onPlaybackDead = onPlaybackDead,
-                                onPlaybackSuspect = onPlaybackSuspect,
-                            )
+                            // ⚠️ key(webFallbackUrl) 是必须的（review/01-player.md P2-4）：
+                            // 换网页线路时如果复用同一个 WebView，旧页面**在途的嗅探回调**
+                            // 仍会打到 onStreamSniffed —— 界面显示线路 B，
+                            // 实际升级去播的却是线路 A 的流（而 A 已被判失败）。
+                            // 加 key 让切换线路时销毁重建，旧页面的回调随 WebView 一起作废。
+                            // （直连路径早就有 key(streamUrl, streamReferer)，这里补齐。）
+                            key(webFallbackUrl) {
+                                WebSurface(
+                                    url = webFallbackUrl,
+                                    onStreamFound = onStreamSniffed,
+                                    suppressHint = sniffFailed,
+                                    onPlaybackDead = onPlaybackDead,
+                                    onPlaybackSuspect = onPlaybackSuspect,
+                                )
+                            }
                         }
                     }
                 }

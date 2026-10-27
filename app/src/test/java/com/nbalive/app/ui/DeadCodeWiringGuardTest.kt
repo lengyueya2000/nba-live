@@ -80,6 +80,35 @@ class DeadCodeWiringGuardTest {
         assertTrue("不应再出现裸 delay(15_000) 的首帧判定", !bareDelay)
     }
 
+    @Test
+    fun `网页播放器必须按 URL 重建 否则切线路会串流`() {
+        // 01-P2-4 的第一层修法：切网页线路时若复用同一个 WebView，
+        // 旧页面在途的嗅探回调会把旧线路的流当成新线路升级。
+        val files = productionFiles()
+        assumeTrue("找不到生产源码，跳过源码扫描", files.isNotEmpty())
+        val playerScreen = files.firstOrNull { it.name == "PlayerScreen.kt" }
+        assumeTrue("找不到 PlayerScreen.kt，跳过", playerScreen != null)
+        val text = playerScreen!!.readText()
+
+        assertTrue(
+            "WebSurface 必须包在 key(webFallbackUrl) 里：换网页线路时要重建 WebView，\n" +
+                "否则旧页面的在途嗅探会把已判失败的线路重新升级（界面显示 B、实际播 A）。",
+            text.contains("key(webFallbackUrl)"),
+        )
+    }
+
+    @Test
+    fun `嗅探升级必须校验页面归属`() {
+        val files = productionFiles()
+        assumeTrue("找不到生产源码，跳过源码扫描", files.isNotEmpty())
+        val mainVm = files.firstOrNull { it.name == "MainViewModel.kt" }
+        assumeTrue("找不到 MainViewModel.kt，跳过", mainVm != null)
+        assertTrue(
+            "onStreamSniffed 必须校验 Referer 归属当前播放页（01-P2-4 第二层防线）",
+            mainVm!!.readText().contains("belongsToPage"),
+        )
+    }
+
     private fun productionFiles(): List<File> {
         val root = listOf(
             File("src/main/java/com/nbalive/app"),
