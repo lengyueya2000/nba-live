@@ -40,8 +40,11 @@ object PlayerControls {
         webFallbackUrl: String?,
     ): Boolean = fullscreen && !inPip && controlsVisible && !locked
 
+    /** 一个矩形区域的像素尺寸。 */
+    data class BoxSize(val width: Int, val height: Int)
+
     /**
-     * 网页兜底全屏时，WebView 的高度（像素）。
+     * 网页兜底全屏时，WebView 该占的尺寸。
      *
      * ## 为什么要算这个
      *
@@ -54,25 +57,39 @@ object PlayerControls {
      *
      * 实测对照：同一场比赛
      *  - 16:9 屏幕（1280x720）全屏 -> 比分条可见
-     *  - 20:9 屏幕（2400x1080）全屏 -> 比分条被裁掉
+     *  - 20:9 屏幕全屏 -> 比分条被裁掉
      *
-     * ## 算法
+     * ## 算法：等比缩放取「内接矩形」
      *
-     * 按 16:9 算出 WebView 应有的高度，取「容器高度」和「按宽度换算的高度」
-     * 中较小的那个 —— 这样画面完整、不被裁，多出来的空间上下留黑边。
+     * 把 16:9 的矩形塞进容器，两个方向都要试，取能完整放下的那个：
+     *  - 先按宽度顶满 -> 算高度，若高度不超容器，宽度就是限制项
+     *  - 否则按高度顶满 -> 算宽度
      *
-     * @return WebView 高度（像素）；非全屏时返回 -1 表示"不用改"
+     * ⚠️ **只算高度是不够的**。横屏 20:9 容器（1600x720）里，
+     * 16:9 视频受限的是**宽度**（应得 1280x720）；
+     * 早先只算高度会得到 `min(720, 1600/1.78=900) = 720`，
+     * 和原样完全一样 —— 横屏下等于没修，画面照样被裁。
+     *
+     * @return 16:9 内接矩形；非全屏时返回 null 表示"不用改"
      *   （非全屏容器本来就是 `aspectRatio(16:9)`，再套一层是多余的）
      */
-    fun webViewHeightForAspect(
+    fun webViewSizeForAspect(
         containerWidth: Int,
         containerHeight: Int,
         aspectRatio: Float,
         fullscreen: Boolean = true,
-    ): Int {
-        if (!fullscreen) return -1
-        if (containerWidth <= 0 || containerHeight <= 0 || aspectRatio <= 0f) return containerHeight
-        val byWidth = (containerWidth / aspectRatio).toInt()
-        return minOf(containerHeight, byWidth)
+    ): BoxSize? {
+        if (!fullscreen) return null
+        if (containerWidth <= 0 || containerHeight <= 0 || aspectRatio <= 0f) return null
+
+        // 先假设宽度顶满，看高度放不放得下
+        val heightIfFullWidth = (containerWidth / aspectRatio).toInt()
+        return if (heightIfFullWidth <= containerHeight) {
+            // 宽度是限制项：左右留黑边
+            BoxSize(containerWidth, heightIfFullWidth)
+        } else {
+            // 高度是限制项：上下留黑边
+            BoxSize((containerHeight * aspectRatio).toInt(), containerHeight)
+        }
     }
 }

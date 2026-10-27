@@ -296,21 +296,22 @@ fun PlayerScreen(
                     // 修法：给 WebView 一个 16:9 的区域（居中、上下留黑边），
                     // 画面完整不裁切，比分条留在画面里。
                     BoxWithConstraints(Modifier.fillMaxSize()) {
-                        val targetH = if (videoOnly) {
-                            PlayerControls.webViewHeightForAspect(
+                        val targetSize = if (videoOnly) {
+                            PlayerControls.webViewSizeForAspect(
                                 containerWidth = constraints.maxWidth,
                                 containerHeight = constraints.maxHeight,
                                 aspectRatio = 16f / 9f,
                             )
                         } else {
-                            -1
+                            null
                         }
                         Box(
-                            modifier = if (targetH > 0) {
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(with(LocalDensity.current) { targetH.toDp() })
-                                    .align(Alignment.Center)
+                            modifier = if (targetSize != null) {
+                                with(LocalDensity.current) {
+                                    Modifier
+                                        .width(targetSize.width.toDp())
+                                        .height(targetSize.height.toDp())
+                                }.align(Alignment.Center)
                             } else {
                                 Modifier.fillMaxSize()
                             },
