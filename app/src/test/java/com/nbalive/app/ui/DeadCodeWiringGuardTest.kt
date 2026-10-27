@@ -109,6 +109,25 @@ class DeadCodeWiringGuardTest {
         )
     }
 
+    @Test
+    fun `网页退后台必须注入媒体暂停脚本`() {
+        val files = productionFiles()
+        assumeTrue("找不到生产源码，跳过源码扫描", files.isNotEmpty())
+        val playerScreen = files.firstOrNull { it.name == "PlayerScreen.kt" }
+        assumeTrue("找不到 PlayerScreen.kt，跳过", playerScreen != null)
+        val text = playerScreen!!.readText()
+
+        assertTrue(
+            "ON_STOP 必须注入 WebMediaPauseScript.PAUSE_ALL：\n" +
+                "webView.onPause()/pauseTimers() 停不掉 HTML5 媒体，锁屏后声音还会外放（01-P2-3）",
+            text.contains("WebMediaPauseScript.PAUSE_ALL"),
+        )
+        assertTrue(
+            "ON_START 必须恢复被我们暂停过的媒体（不能只暂停不恢复，否则回前台就没声了）",
+            text.contains("WebMediaPauseScript.RESUME_PAUSED"),
+        )
+    }
+
     private fun productionFiles(): List<File> {
         val root = listOf(
             File("src/main/java/com/nbalive/app"),

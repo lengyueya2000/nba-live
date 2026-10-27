@@ -115,6 +115,7 @@ import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlayerControls
 import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.StalledPlayback
+import com.nbalive.app.ui.WebMediaPauseScript
 import com.nbalive.app.ui.WebNavigationPolicy
 import com.nbalive.app.ui.PlayerLock
 import com.nbalive.app.ui.components.LeagueChip
@@ -1847,12 +1848,27 @@ private fun WebSurface(
         onPlaybackSuspectState.value()
     }
 
-    // 与 ExoPlayer 同理：退到后台（非小窗）时暂停页面定时器，省电并防止声音后台外放
+    // 与 ExoPlayer 同理：退到后台（非小窗）时暂停页面定时器，省电并防止声音后台外放。
+    //
+    // ⚠️ `onPause()` + `pauseTimers()` **停不掉 HTML5 媒体**（review/01-player.md P2-3）：
+    // 它们只暂停页面渲染与 JS 定时器，`<video>`/`<audio>` 照样出声 ——
+    // 用户锁屏后声音还在外放。WebView 没有公开 API 能停媒体，
+    // 只能注入脚本调 pause()（脚本见 WebMediaPauseScript，有单测）。
+    // 直连路径没这个问题：ExoPlayer 由 ON_STOP 显式 pause()。
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_STOP -> { webView?.pauseTimers(); webView?.onPause() }
-                Lifecycle.Event.ON_START -> { webView?.resumeTimers(); webView?.onResume() }
+                Lifecycle.Event.ON_STOP -> {
+                    webView?.evaluateJavascript(WebMediaPauseScript.PAUSE_ALL, null)
+                    webView?.pauseTimers()
+                    webView?.onPause()
+                }
+                Lifecycle.Event.ON_START -> {
+                    webView?.resumeTimers()
+                    webView?.onResume()
+                    // 只恢复**被我们暂停过**的媒体，不碰用户自己暂停的
+                    webView?.evaluateJavascript(WebMediaPauseScript.RESUME_PAUSED, null)
+                }
                 else -> Unit
             }
         }
