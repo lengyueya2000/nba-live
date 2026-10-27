@@ -53,6 +53,7 @@ import com.nbalive.app.ui.components.TeamLogo
 import com.nbalive.app.ui.hhmm
 import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.mmdd
+import com.nbalive.app.ui.theme.AccentContrast
 import com.nbalive.app.ui.theme.GradLiveOnWhite
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.accentBrush
@@ -181,7 +182,7 @@ private fun LeagueSelector(
                         if (n > 0) {
                             Text(
                                 text = "$n",
-                                color = if (active) Color.White.copy(alpha = 0.8f)
+                                color = if (active) AccentContrast.OnAccent
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 10.sp,
                                 style = MaterialTheme.typography.labelSmall,
@@ -293,7 +294,7 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
                 Spacer(Modifier.width(Space.sm))
                 Text(
                     text = match.leagueLabel(),
-                    color = Color.White.copy(alpha = 0.92f),
+                    color = AccentContrast.OnAccent,
                     style = MaterialTheme.typography.labelLarge,
                     maxLines = 1,
                 )
@@ -315,7 +316,7 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
                 HeroTeam(name = match.homeTeam, logo = match.homeLogo, modifier = Modifier.weight(1f))
                 Text(
                     text = "VS",
-                    color = Color.White.copy(alpha = 0.7f),
+                    color = AccentContrast.OnAccent,
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.padding(horizontal = Space.sm),
                 )
@@ -343,7 +344,10 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
                 Spacer(Modifier.weight(1f))
                 Surface(
                     shape = RoundedCornerShape(Radius.btn),
-                    color = Color.White.copy(alpha = 0.22f),
+                    // ⚠️ 原来这里是 22% **白**：那是把渐变底**提亮**，
+                    // 提亮后的底色上压纯白字只有 3.09~3.47:1，达不到 AA。
+                    // 改用 20% **黑**（与 HeroPill 同一配方），白字 6.4:1。
+                    color = AccentContrast.HeroPillBackground,
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),

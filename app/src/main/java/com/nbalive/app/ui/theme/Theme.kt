@@ -121,9 +121,7 @@ fun accentBrush(): Brush {
     val primary = MaterialTheme.colorScheme.primary
     // remember：Brush 每次重建都会让使用它的节点失效，主题不变就该复用
     return remember(primary) {
-        Brush.linearGradient(
-            colors = listOf(primary.whiteTextSafe(), primary.whiteTextSafe(0.75f)),
-        )
+        Brush.linearGradient(colors = AccentContrast.accentStops(primary))
     }
 }
 
