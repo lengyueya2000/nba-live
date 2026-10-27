@@ -72,9 +72,16 @@ class JrsParser {
                 }
 
                 val logos = anchor.select(".list-team-image")
+                // 联赛名取不到时用队名兜底（review/02-data.md P1-3）：
+                // 旧实现直接落 OTHER，而 merge 会把 OTHER 整场丢掉 ——
+                // 那是一条连日志都没有的丢场次路径。
+                val league = League.resolve(leagueRaw, home, away)
+                if (leagueRaw.isBlank()) {
+                    Log.w(TAG, "JRS 列表项缺联赛名，按队名兜底：id=$id 判定=${league.displayName}")
+                }
                 result += Match(
                     id = "jrs-$id",
-                    league = League.fromSource(leagueRaw),
+                    league = league,
                     leagueRawName = leagueRaw,
                     homeTeam = home,
                     awayTeam = away,
@@ -154,9 +161,25 @@ class JrsParser {
      * 详情页里的计划开赛时间（如 "07:00"）。
      * JRS 列表页的"直播中"会因缓存严重滞后（实测结束 3 小时仍标直播中），
      * 详情页的时间是校正真实状态的依据。
+     *
+     * ⚠️ 这里用 Jsoup 的**类选择器**而不是正则（review/02-data.md P1-8）：
+     * 旧正则要求 `match-info-time"` —— class 值必须以它结尾且紧跟引号，
+     * 源站只要给这个 `<p>` 追加一个状态 class（`live` / `picked` / `active`，
+     * 这类站点极常见的改版动作），就再也匹配不上。
+     * 后果不是少一场，而是 `correctedStatus` 全部拿到 null，
+     * 列表里当天**所有**已结束场次继续亮红「直播中」——
+     * 覆盖面比"超出校正预算的那几场"大得多。
+     *
+     * CSS 类选择器按**完整 token** 匹配：`class="match-info-time live"` 能命中，
+     * 而 `class="match-info-time-extra"` 不会误命中。
      */
-    fun parseScheduledTime(html: String): String? =
-        Regex("""match-info-time"[^>]*>\s*(\d{1,2}:\d{2})""").find(html)?.groupValues?.get(1)
+    fun parseScheduledTime(html: String): String? {
+        val text = runCatching {
+            Jsoup.parse(html).selectFirst(".match-info-time")?.text()
+        }.getOrNull() ?: return null
+        // 文案型内容（"直播中"）拿不到 HH:mm 就返回 null —— 不猜、不误杀
+        return Regex("""\d{1,2}:\d{2}""").find(text)?.value
+    }
 
     /**
      * 用计划开赛时间校正"直播中"：

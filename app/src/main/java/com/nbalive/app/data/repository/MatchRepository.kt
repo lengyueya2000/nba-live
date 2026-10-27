@@ -150,12 +150,12 @@ class MatchRepository(
         // 超出预算的场次保留源站状态（多半是"直播中"），不做时钟校正：
         // JRS 的"直播中"行没有真实开赛时间（startAtMillis 是分组日期的 00:00 占位），
         // 套时钟校正会把正在直播的比赛全判成"已结束"，比标错严重得多。
-        val toFix = live.filter { it.jrsDetailId != null }
-        val skipped = toFix.size - MAX_DETAIL_FETCH
+        val toFix = selectDetailBudget(live, MAX_DETAIL_FETCH)
+        val skipped = live.count { it.jrsDetailId != null } - toFix.size
         if (skipped > 0) {
             Log.w("MatchRepo", "详情页校正超预算：$skipped 场跳过（本次最多 $MAX_DETAIL_FETCH 场）")
         }
-        val fixes = toFix.take(MAX_DETAIL_FETCH).map { m ->
+        val fixes = toFix.map { m ->
             async {
                 gate.withPermit {
                     catching {
@@ -315,8 +315,15 @@ class MatchRepository(
          * 并发封顶只限"同时几个"，不限"一共几个"：
          * 直播中的场次有十几场时，即使并发 4，总量仍是十几次请求，
          * 只是分批打出去 —— 对源站的压力没变，还把界面多撑了几秒。
+         *
+         * ⚠️ 从 8 提到 16（review/02-data.md P1-4）：
+         * CBA 一个比赛日 19:35 同时开球 6~8 场，JRS 侧标 `LIVE` 的很容易超过 8，
+         * 第 9 场起就只能等"整日过完"的兜底 —— 19:35 开球、22:00 早就结束的比赛
+         * 到午夜前都还亮红「直播中」（v1.2.8 用户截图那个 bug 的未覆盖余量）。
+         * 详情页约 5KB，在 4 并发门限下把预算提到 16 对源站压力差异可接受，
+         * 却能让"一个比赛日"基本总是落在预算内。
          */
-        private const val MAX_DETAIL_FETCH = 8
+        private const val MAX_DETAIL_FETCH = 16
 
         /**
          * m3u8 候选校验预算：最多试几个候选。
@@ -863,4 +870,34 @@ class MatchRepository(
             )
             null
         }
+}
+
+/**
+ * 详情页校正的**预算选取**：在预算内优先校正**最早开赛**的场次
+ * （review/02-data.md P1-4）。
+ *
+ * ## 为什么不能按列表顺序取前 N 场
+ *
+ * 旧实现是 `toFix.take(MAX_DETAIL_FETCH)` —— 纯按列表顺序。
+ * 列表顺序是源站给的，**和"哪场最可能已经结束"毫无关系**，
+ * 于是最该被纠正的场次可能落在预算之外，
+ * 只能等"整个自然日过完"才被兜底判结束：
+ *
+ * > 19:35 开球、22:00 早就结束的比赛，到午夜前都还亮红「直播中」。
+ *
+ * ## 排序键
+ *
+ * - 主键 `startAtMillis` 升序：JRS「直播中」行的 `startAtMillis` 是分组日期的
+ *   00:00 占位，所以**跨天**能分出先后 —— 昨天/前天的场次一定是过期最久的，
+ *   最该先校正。同一天内分不出（都是同一个 00:00），但至少不会把
+ *   "肯定过期的前几天"排在预算之外。
+ * - 次键 `id` 升序：同一天内必须有稳定的次级键，
+ *   否则同一份数据两次运行会拉不同的详情页，测试也会时绿时红。
+ */
+internal fun selectDetailBudget(matches: List<Match>, budget: Int): List<Match> {
+    if (budget <= 0) return emptyList()
+    return matches
+        .filter { it.jrsDetailId != null }
+        .sortedWith(compareBy({ it.startAtMillis ?: Long.MAX_VALUE }, { it.id }))
+        .take(budget)
 }

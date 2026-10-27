@@ -81,6 +81,14 @@ class JrkanParser {
                 Log.w(TAG, "JRKAN 场次缺队名，跳过：eventId=$eventId")
                 return@forEach
             }
+            if (leagueRaw.isBlank()) {
+                // 联赛名取不到本身也必须留痕：它会让整场落 OTHER 后被 merge 丢掉
+                Log.w(
+                    TAG,
+                    "JRKAN 场次缺联赛名，按队名兜底：eventId=$eventId 判定=" +
+                        League.resolve(leagueRaw, home, away).displayName,
+                )
+            }
 
             // 锚定到本方 li 内（跨行匹配），避免主队无图时误拿客队队徽
             val homeLogo = Regex("""lab_team_home[^>]*>.*?<img[^>]*src="([^"]+)""", RegexOption.DOT_MATCHES_ALL)
@@ -109,7 +117,12 @@ class JrkanParser {
 
             result += Match(
                 id = "jrkan-$eventId",
-                league = League.fromSource(leagueRaw),
+                // 联赛名取不到时用队名兜底（review/02-data.md P1-3）：
+                // 旧实现直接落 OTHER，而 merge 会把 OTHER 整场丢掉 ——
+                // 那是一条连日志都没有的丢场次路径：
+                // 源站把 `<span class="name">` 换成 `<span class="league">`，
+                // 整个 JRKAN 源的场次会全部消失。
+                league = League.resolve(leagueRaw, home, away),
                 leagueRawName = leagueRaw,
                 homeTeam = home,
                 awayTeam = away,

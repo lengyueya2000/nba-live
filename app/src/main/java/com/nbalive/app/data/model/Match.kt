@@ -35,6 +35,86 @@ enum class League(val displayName: String) {
             else if (CBA_RE.containsMatchIn(key)) CBA
             else OTHER
         }
+
+        /**
+         * 联赛名解析失败时，用**队名**反查联赛（review/02-data.md P1-3）。
+         *
+         * ## 为什么需要兜底
+         *
+         * 旧链路是「联赛名解析失败 → `League.OTHER` → merge 里
+         * `filter { league in supported }` → 整场被丢弃」，
+         * 而且这是一条**连日志都没有**的丢场次路径：
+         * 源站把 `<span class="name">` 换成 `<span class="league">`，
+         * 整个 JRKAN 源的 119 场会全部变成 OTHER、全部被丢掉，
+         * App 的表现只是"场次少了"。
+         *
+         * 队名是**独立字段**，比联赛名更难被一次性改版打空；
+         * 而且 CBA 球队在源站普遍用省份/城市简称（"浙江"、"山东"），
+         * NBA 球队用通用昵称（"湖人"、"勇士"），辨识度很高。
+         *
+         * ## 什么时候能用
+         *
+         * ⚠️ **只在联赛名为空时**用（调用方保证）。
+         * 联赛名是"英超"这种**非空但认不出**的值时，那是真的非篮球赛事，
+         * 不能靠队名硬猜 —— 否则会把足球赛塞进篮球列表。
+         *
+         * ## 什么时候不猜
+         *
+         * 两队指向**不同**联赛、或有一队同时命中 NBA 与 CBA 关键字、
+         * 或都认不出时，一律返回 null —— 宁可标 OTHER 也不乱归类。
+         */
+        fun inferFromTeams(home: String, away: String): League? {
+            val leagues = listOf(guessByTeam(home), guessByTeam(away))
+                .filterNotNull()
+                .toSet()
+            return if (leagues.size == 1) leagues.first() else null
+        }
+
+        /**
+         * 解析源站给的联赛名；**为空时**用队名兜底反查。
+         *
+         * ⚠️ 只有**空字符串**才走兜底：
+         * 联赛名是"英超"这种非空但认不出的值时，那是真的非篮球赛事，
+         * 硬猜成 NBA/CBA 会把足球赛塞进篮球列表。
+         */
+        fun resolve(raw: String, home: String, away: String): League {
+            val key = raw.trim()
+            if (key.isNotEmpty()) return fromSource(key)
+            return inferFromTeams(home, away) ?: OTHER
+        }
+
+        /** 单个队名 -> 联赛；认不出或同时命中两边时返回 null。 */
+        private fun guessByTeam(team: String): League? {
+            if (team.isBlank()) return null
+            val nba = NBA_TEAM_KEYWORDS.any { team.contains(it) }
+            val cba = CBA_TEAM_KEYWORDS.any { team.contains(it) }
+            return when {
+                nba && !cba -> NBA
+                cba && !nba -> CBA
+                else -> null
+            }
+        }
+
+        /**
+         * NBA 球队的中文名关键字（源站常用昵称）。
+         *
+         * ⚠️ 只在这条兜底路径上生效（联赛名解析失败时），
+         * 所以宁可漏（返回 null）也不要错 —— 漏的代价是"这一场仍被丢弃"，
+         * 错的代价是"把足球赛放进篮球列表"，后者更糟。
+         */
+        private val NBA_TEAM_KEYWORDS = listOf(
+            "湖人", "勇士", "凯尔特人", "雄鹿", "热火", "太阳", "掘金", "快船",
+            "鹈鹕", "爵士", "开拓者", "火箭", "马刺", "灰熊", "森林狼", "独行侠",
+            "小牛", "76人", "步行者", "活塞", "魔术", "黄蜂", "老鹰", "骑士",
+            "公牛", "尼克斯", "篮网", "国王",
+        )
+
+        /** CBA 球队的中文名关键字（源站多用省份/城市简称）。 */
+        private val CBA_TEAM_KEYWORDS = listOf(
+            "广东", "辽宁", "浙江", "深圳", "新疆", "八一", "上海", "广厦",
+            "北京", "山东", "山西", "天津", "宁波", "同曦", "厦门", "北控",
+            "四川", "广州", "福建", "江苏", "青岛", "龙狮", "吉林",
+        )
     }
 }
 

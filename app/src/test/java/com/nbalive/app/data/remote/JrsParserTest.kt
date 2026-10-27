@@ -84,4 +84,39 @@ class JrsParserTest {
         assertEquals(1, signals.size)
         assertTrue(signals.first().pageUrl.contains("id=9"))
     }
+
+    // ---------- 详情页计划开赛时间（review/02-data.md P1-8） ----------
+
+    /**
+     * 源站给这个 `<p>` 加一个状态 class（`live` / `picked` / `active`）是极常见的改版动作。
+     *
+     * 旧正则要求 `match-info-time"` —— class 值**必须以它结尾且紧跟引号**，
+     * 于是 `class="match-info-time live"` 直接返回 null。
+     * 后果不是少一场，而是 `correctedStatus` 全部拿到 null，
+     * 列表里当天**所有**已结束场次继续亮红「直播中」（比"超出 8 场"覆盖面更大）。
+     */
+    @Test
+    fun `计划开赛时间容忍 class 上追加的状态 token`() {
+        val cases = listOf(
+            """<p class="match-info-time">19:35</p>""" to "19:35",
+            """<p class="match-info-time live">19:35</p>""" to "19:35",
+            """<p class="match-info-time picked">07:00</p>""" to "07:00",
+            """<p class="foo match-info-time">19:35</p>""" to "19:35",
+            """<p class="match-info-time live" id="t">19:35</p>""" to "19:35",
+        )
+        for ((html, expected) in cases) {
+            assertEquals(
+                "形态 [$html] 解析不出计划开赛时间",
+                expected,
+                parser.parseScheduledTime(html),
+            )
+        }
+    }
+
+    @Test
+    fun `计划开赛时间在文案不是时刻时返回 null`() {
+        // 不猜、不误杀：文案型内容（"直播中"）拿不到 HH:mm 就该返回 null
+        assertEquals(null, parser.parseScheduledTime("""<p class="match-info-time">直播中</p>"""))
+        assertEquals(null, parser.parseScheduledTime("""<p class="other">19:35</p>"""))
+    }
 }

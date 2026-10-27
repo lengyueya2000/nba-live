@@ -166,11 +166,20 @@ class LoadOutcomeTest {
         val outcome = repo.loadMatchesWithOutcome { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Rejected(403) else FetchResult.Ok(noLeague)
         }
-        // 联赛名缺失仍按"非 NBA/CBA"过滤（产品范围不变），
-        // 但必须能被观测到：过滤数量要出现在结果里，不能静默。
-        assertTrue(
-            "被过滤掉的场次数要能被观测（实际: ${outcome.filteredOutCount}）",
-            outcome.filteredOutCount >= 1,
+        // ⚠️ 队名兜底之后，这场**根本不该再被丢掉**（review/02-data.md P1-3）：
+        // 联赛名解析失败只说明那一个字段坏了，队名"湖人 vs 勇士"足以判定是 NBA。
+        // 旧行为是落 OTHER 后被 supported 过滤掉，用户只看到"场次少了"。
+        val kept = outcome.matches.filter { it.homeTeam == "湖人" }
+        assertEquals("联赛名缺失但队名可判定的场次必须留在列表里", 1, kept.size)
+        assertEquals(
+            "队名兜底要判定成 NBA",
+            com.nbalive.app.data.model.League.NBA,
+            kept.first().league,
+        )
+        assertEquals(
+            "既然没被丢掉，过滤计数就不该再计入它",
+            0,
+            outcome.filteredOutCount,
         )
     }
 }
