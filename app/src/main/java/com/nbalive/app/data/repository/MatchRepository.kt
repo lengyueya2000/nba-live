@@ -68,10 +68,6 @@ class MatchRepository(
             Result.failure(t)
         }
 
-    /** 拉取并合并两个源的全部赛事。一个源抛异常不能带走另一个源的好数据。 */
-    suspend fun loadMatches(): Result<List<Match>> =
-        loadMatchesInternal { url, referer -> http.fetch(url, referer) }
-
     /**
      * 上一轮失败过的源站 host（小写）。
      *
@@ -81,51 +77,6 @@ class MatchRepository(
      * 同步容器：两个源的抓取在不同协程里并发。
      */
     private val listFailedHosts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
-
-    /**
-     * 可注入 fetch 的实现，供单元测试覆盖"单源瞬时失败要重试"这类逻辑。
-     *
-     * ⚠️ 参数类型是 [FetchResult] 而不是 `String?`：
-     * 两个版本在 Kotlin 侧是合法重载（可空性不同），但擦除后 JVM 签名相同，
-     * 且对 lambda 会产生重载歧义 —— 只保留信息更全的这个，
-     * 老测试里返回 `String?` 的 lambda 已同步迁移。
-     */
-    internal suspend fun loadMatches(
-        fetch: suspend (String, String?) -> FetchResult,
-    ): Result<List<Match>> = loadMatchesInternal(fetch)
-
-    /**
-     * 真正干活的实现：区分"源站拒绝"与"网络不通"，据此决定要不要重试。
-     *
-     * @param fetch 返回 [FetchResult]：403/429 明确拒绝 → 不重试；网络故障 → 重试
-     */
-    internal suspend fun loadMatchesInternal(
-        fetch: suspend (String, String?) -> FetchResult,
-    ): Result<List<Match>> = withContext(Dispatchers.IO) {
-        catching {
-            supervisorScope {
-                val jrsDeferred = async { fetchJrs(fetch) }
-                val jrkanDeferred = async { fetchJrkan(fetch) }
-                val jrs = jrsDeferred.await().getOrElse {
-                    // ⚠️ 不把 throwable 交给 Log：OkHttp 异常消息内嵌完整带 auth_key 的 URL
-                    safeLogWarn("MatchRepo", "JRS fetch failed", it)
-                    emptyList()
-                }
-                val jrkan = jrkanDeferred.await().getOrElse {
-                    safeLogWarn("MatchRepo", "JRKAN fetch failed", it)
-                    emptyList()
-                }
-                if (jrs.isEmpty() && jrkan.isEmpty()) {
-                    // 两边都空：大概率是网络/源站故障，而不是"今天真没比赛"
-                    throw IOException("两个数据源都没有返回赛事，请检查网络")
-                }
-                // 先校正再排序：源站列表的"直播中"会滞后，不修就全堆在最前面
-                // ⚠️ 校正拉详情页与列表 fetch 走**同一个缓存**：
-                // 否则"刷新列表"和"点进播放页"会把同一个详情页拉两遍。
-                sort(correctLiveStatuses(merge(jrs, jrkan).matches, fetch))
-            }
-        }
-    }
 
     /**
      * 列表级状态校正：源站列表对已结束的场次仍标"直播中"（实测滞后 3 小时+）。
@@ -550,74 +501,9 @@ class MatchRepository(
     }
 
     /**
-     * 列表页单源拉取，带线性退避重试。
-     *
-     * 回归背景：实测源站 20/20 稳定，但此前 fetch 返回 null（非 2xx / 超时 / DNS 抖动）
-     * 会直接 return emptyList() 且不重试 —— 手机网络一次瞬时抖动就把整个源静默吞掉，
-     * 用户看到的正是"有时只剩 JRS、有时只剩 JRKAN"。
-     *
-     * ⚠️ 但**被源站拒绝（403/429）时不能重试**：
-     * 那是限流信号，再打 3 次只会让限流窗口越拖越长，退避 400/800ms 也太短。
-     * 详见 [FetchResult]。
-     */
-    private suspend fun fetchListWithRetry(
-        fetch: suspend (String, String?) -> FetchResult,
-        urls: List<String>,
-    ): String? {
-        // 一个域名失效按顺序试下一个（review/02-data.md P1-9）；
-        // 失败 host 记进 listFailedHosts，下一轮直接从镜像域名开始。
-        val candidates = SourceEndpoints.attemptOrder(
-            urls,
-            synchronized(listFailedHosts) { listFailedHosts.toSet() },
-        )
-        var lastReason: String? = null
-        for ((index, url) in candidates.withIndex()) {
-            // 首个候选跑满重试（瞬时抖动靠它兜），镜像只试一次：
-            // 镜像存在的意义是"这个域名死了"（DNS/主机故障），
-            // 那种情况下在死域名上重试三次纯属浪费几秒超时
-            val attempts = if (index == 0) LIST_FETCH_ATTEMPTS else 1
-            var rejected = false
-            var gotBody: String? = null
-            for (attempt in 0 until attempts) {
-                when (val result = fetch(url, null)) {
-                    is FetchResult.Ok -> {
-                        synchronized(listFailedHosts) { listFailedHosts -= hostOf(url) }
-                        gotBody = result.body
-                        break // 成功立刻收工，绝不再多打
-                    }
-                    is FetchResult.Rejected -> {
-                        // ⚠️ 403/429 是限流信号：**立即停整个源，不试镜像**。
-                        // 镜像与主域名是同一站点家族，大概率共享限流窗口，
-                        // 继续打只会让窗口越拖越长（review 的"限流放大器"）。
-                        Log.w("MatchRepo", "源站拒绝请求(HTTP ${result.code})，放弃重试: ${redactUrl(url)}")
-                        synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
-                        rejected = true
-                        break
-                    }
-                    is FetchResult.Unreachable -> {
-                        lastReason = result.reason
-                        if (attempt < attempts - 1) {
-                            delay(LIST_RETRY_BACKOFF_MS * (attempt + 1))
-                        }
-                    }
-                }
-            }
-            if (rejected) return null
-            if (gotBody != null) return gotBody
-            synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
-        }
-        return null
-    }
-
-    private suspend fun fetchJrs(fetch: suspend (String, String?) -> FetchResult): Result<List<Match>> = catching {
-        val html = fetchListWithRetry(fetch, SourceEndpoints.JRS_LIST) ?: return@catching emptyList()
-        jrsParser.parseList(html)
-    }
-
-    /**
      * 单个源的抓取结果，**带失败原因**。
      *
-     * 原来只有 [fetchJrs] 这种 `Result<List<Match>>`：
+     * 原来只有 `Result<List<Match>>` 一种形态：
      * 网络不通、被限流、HTTP 200 但解析出零场，三种情况都塌缩成
      * "空列表"或"一个异常"，调用方无法向用户解释"为什么场次变少了"。
      * 这里把三者分开，[loadMatchesWithOutcome] 才能报出 failedProviders。
@@ -833,7 +719,7 @@ class MatchRepository(
     private fun hostOf(url: String): String =
         runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("").lowercase()
 
-    /** [fetchListWithRetry] 的带原因版本：把"为什么没拿到正文"分清楚。 */
+    /** [runSource] 的底层：把"为什么没拿到正文"分清楚。 */
     private sealed class Fetched {
         data class Body(val body: String) : Fetched()
         data class Rejected(val code: Int) : Fetched()
@@ -862,12 +748,6 @@ class MatchRepository(
             }
         }
         return Fetched.Unreachable(lastReason)
-    }
-
-
-    private suspend fun fetchJrkan(fetch: suspend (String, String?) -> FetchResult): Result<List<Match>> = catching {
-        val js = fetchListWithRetry(fetch, SourceEndpoints.JRKAN_LIST_JS) ?: return@catching emptyList()
-        jrkanParser.parseList(js)
     }
 
     /**

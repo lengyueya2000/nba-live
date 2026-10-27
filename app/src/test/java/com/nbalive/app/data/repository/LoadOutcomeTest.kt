@@ -122,31 +122,48 @@ class LoadOutcomeTest {
         assertTrue("原因里应含状态码：$reason", reason!!.contains("429"))
     }
 
-    // ---------- 原有 Result API 不能被破坏 ----------
+    // ---------- 生产入口的行为（原 loadMatches Result API 已删除） ----------
+    //
+    // ⚠️ 这三条原来测的是 `loadMatches(fetch): Result<List<Match>>`。
+    // 那条路径在生产代码里**零调用点**（生产走 loadMatchesOutcome），
+    // 测试守着一份线上跑不到的代码 —— 是典型的"假安全感"。
+    // 旧管线已删除，这里改为在**生产入口**上验证同样的三条约定。
 
     @Test
-    fun `原有 loadMatches 仍然可用`() = runBlocking {
-        val result = repo.loadMatches { url, _ ->
+    fun `生产入口两源都成功时给出全部场次`() = runBlocking {
+        val outcome = repo.loadMatchesWithOutcome { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Ok(jrsHtml("555")) else FetchResult.Ok(jrkanJs("900"))
         }
-        assertTrue(result.isSuccess)
-        assertEquals(2, result.getOrThrow().size)
+        assertEquals(2, outcome.matches.size)
+        assertTrue("两源都成功时不该报失败源", outcome.failedProviders.isEmpty())
     }
 
     @Test
-    fun `两源都空时原有 API 仍然报错`() = runBlocking {
-        val result = repo.loadMatches { _, _ -> FetchResult.Unreachable("timeout") }
-        assertTrue("两源都空必须报错，而不是显示「今天没比赛」", result.isFailure)
-        assertTrue(result.exceptionOrNull()?.message?.contains("数据源") == true)
+    fun `生产入口两源都空时如实报出两个失败源`() = runBlocking {
+        // 原约定是"两源都空必须抛异常（而不是显示今天没比赛）"。
+        // 生产入口不抛异常（抛了 UI 只剩错误页、拿不到部分数据），
+        // 改为**如实报出两个失败源** —— partialError() 会给出可读文案。
+        val outcome = repo.loadMatchesWithOutcome { _, _ -> FetchResult.Unreachable("timeout") }
+        assertEquals(
+            "两源都空必须让用户知道是源站问题，而不是「今天没比赛」",
+            listOf(com.nbalive.app.data.model.Provider.JRS, com.nbalive.app.data.model.Provider.JRKAN),
+            outcome.failedProviders,
+        )
+        assertTrue(outcome.matches.isEmpty())
+        assertTrue("必须能给出可读原因", outcome.partialError() != null || outcome.failedProviders.isNotEmpty())
     }
 
     @Test
-    fun `单源成功时原有 API 不报错`() = runBlocking {
-        val result = repo.loadMatches { url, _ ->
+    fun `生产入口单源成功时不报整次失败`() = runBlocking {
+        val outcome = repo.loadMatchesWithOutcome { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Ok(jrsHtml("555")) else FetchResult.Unreachable("timeout")
         }
-        assertTrue("部分成功不该让整次加载失败（否则旧列表会被错误态顶掉）", result.isSuccess)
-        assertFalse(result.getOrThrow().isEmpty())
+        assertTrue("部分成功不该让整次加载失败（否则旧列表会被错误态顶掉）", outcome.matches.isNotEmpty())
+        assertEquals(
+            "但要如实报出失败的那个源",
+            listOf(com.nbalive.app.data.model.Provider.JRKAN),
+            outcome.failedProviders,
+        )
     }
 
     // ---------- 联赛名缺失不能静默丢整场（P1-新） ----------

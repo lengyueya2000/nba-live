@@ -35,10 +35,13 @@ class MatchRepositoryRetryTest {
 
     @Test
     fun `源站限流 403 时不重试`() = runBlocking {
-        // 只统计**列表页**的请求次数：详情页校正也是 jrszbt.com 的请求，
-        // 但那是另一条路径（状态校正），不属于"列表拉取的重试"这件事。
+        // ⚠️ 走**生产管线** loadMatchesWithOutcome（review 遗留问题）：
+        // 这些重试纪律测试原来测的是 loadMatchesInternal ——
+        // 那条路径在生产代码里零调用点（生产走 loadMatchesOutcome）。
+        // 测试守着一份线上跑不到的代码，是典型的"假安全感"。
+        // 现在改为直接测生产入口，纪律才真正被守住。
         var listAttempts = 0
-        val result = repo.loadMatchesInternal { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome { url, _ ->
             if (url.contains("jrszbt")) {
                 if (url.endsWith("/")) listAttempts++
                 // 模拟源站限流：直接拒绝
@@ -53,13 +56,16 @@ class MatchRepositoryRetryTest {
             1,
             listAttempts,
         )
-        assertTrue("被拒绝时列表应为空但要有错误", result.isFailure || result.getOrNull()?.isEmpty() == true)
+        assertTrue(
+            "被拒绝时要如实报出失败源（而不是静默当成'今天没比赛'）",
+            outcome.failedProviders.contains(com.nbalive.app.data.model.Provider.JRS),
+        )
     }
 
     @Test
     fun `429 限流同样不重试`() = runBlocking {
         var listAttempts = 0
-        repo.loadMatchesInternal { url, _ ->
+        repo.loadMatchesWithOutcome { url, _ ->
             if (url.contains("jrszbt")) {
                 if (url.endsWith("/")) listAttempts++
                 FetchResult.Rejected(429)
@@ -73,7 +79,7 @@ class MatchRepositoryRetryTest {
     @Test
     fun `网络故障 超时 DNS抖动 仍然重试`() = runBlocking {
         var attempts = 0
-        val result = repo.loadMatchesInternal { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome { url, _ ->
             if (url.contains("jrszbt")) {
                 attempts++
                 if (attempts == 1) FetchResult.Unreachable("timeout") else FetchResult.Ok(jrsHtml("555"))
@@ -83,17 +89,16 @@ class MatchRepositoryRetryTest {
         }
 
         assertTrue("网络抖动应该重试", attempts >= 2)
-        val matches = result.getOrNull() ?: error("loadMatches 失败: ${result.exceptionOrNull()}")
         assertTrue(
-            "重试成功后必须仍能拿到赛事（实际: ${matches.map { it.id }}）",
-            matches.any { it.id == "jrs-555" },
+            "重试成功后必须仍能拿到赛事（实际: ${outcome.matches.map { it.id }}）",
+            outcome.matches.any { it.id == "jrs-555" },
         )
     }
 
     @Test
     fun `重试次数有上限 不会无限打源站`() = runBlocking {
         var attempts = 0
-        repo.loadMatchesInternal { _, _ ->
+        repo.loadMatchesWithOutcome { _, _ ->
             attempts++
             FetchResult.Unreachable("timeout")
         }
@@ -128,8 +133,8 @@ class MatchRepositoryRetryTest {
             }
         }
 
-        // 第一次：列表状态校正会拉详情页
-        repo.loadMatchesInternal(fetch)
+        // 第一次：列表状态校正会拉详情页（走生产管线）
+        repo.loadMatchesWithOutcome(fetch)
         val afterFirst = detailFetches
 
         // 第二次：进播放页 loadSignals 拉**同一个**详情页

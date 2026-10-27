@@ -13,6 +13,12 @@
 必须用源码扫描守卫测试钉住（这是审查反复点名的最大风险形态）。
 
 ## 本轮已完成并提交（最新在上）
+- `b23cdc7` 02-P2-12/13：合并键不再退化成字面量「直播中」（两级兜底：
+  timeLabel 的 MM-dd → 当天），League.OTHER 死分支加注释
+- `311ccec` 02-P2-7/8/9：详情页 single-flight 去重、缓存时间戳移到请求之后、
+  redactUrl 补 userinfo 脱敏与超长 path 截断
+- `54d6ead` 01-P2-3 网页线路锁屏/切后台不再外放（WebMediaPauseScript 注入 JS）
+- `11a8da4` 01-P2-4 切网页线路不再串流（key(webFallbackUrl) + Referer 归属校验）
 - `2784851` 时区纪律守卫：解析/判定层出现 systemDefault() 即红（已验证会红）
 - `8371c40` 02-P2-2 + 02-P2-11：源站时间统一按北京时间解析
   （JrkanParser.parseDateTime/parseStatus、JrsParser 合成、normalizeKey）；
@@ -34,28 +40,24 @@
   jrsDetailUrls 候选、详情页缓存 key 改 detailId（02-P2-6）
 - `cc0ed66` 02-P1-9 前半：SourceEndpoints 候选列表 + 403/429 立即停源 + 镜像只试一次
 
-当前全量测试 **309 通过 / 0 失败 / 0 跳过**，`assembleDebug` 通过。
+当前全量测试 **331 通过 / 0 失败 / 0 跳过**，`assembleDebug` 通过。
 
 ## 已验证落地（不必重做）
 P0-1 判死分级、P0-2 m3u8 正则、01-P1-2/3/4/6、02-P1-1/3/4/5/6/7/8、
 03-P1-1~4、04-P1-1/2/3/4、01-P2-2/10/12、02-P2-1
 
 ## 仍存在的主要缺口（按价值排序，来自 95 条矩阵）
-1. **01-P2-4** 切网页线路时旧页在途 m3u8 可能被当新线路升级 →
-   WebSurface 加 key(webFallbackUrl) 或 onStreamSniffed 校验 pageUrl（小/中）
-2. **01-P2-3** 网页线路锁屏/切 App 后台仍可能出声（无 JS pause）（小）
-3. **01-P2-5/6/7/8** 小窗比例沿用上一场、解析中点画中画得黑窗、进小窗方向复位、
+1. **01-P2-5/6/7/8** 小窗比例沿用上一场、解析中点画中画得黑窗、进小窗方向复位、
    面板停留>10s 选完线全屏无底部栏（各小）
-4. **02-P2-7/8/9** TTL 时间戳在请求前取、无 single-flight、redactUrl 不处理 path/userinfo（小）
-5. **02-P2-12/13** normalizeKey 退化成 timeLabel、League.OTHER 死分支（小）
-6. **02-P2-10** Match.isPostponed 算好了没人渲染（小）
-7. **03 组 33 条 P2**（多数是 UI 打磨/重复代码/无障碍；其中 03-P2-1 非默认标签按返回
+2. **02-P2-10** Match.isPostponed 算好了没人渲染（小，产品决策：要不要在卡片上标"延期"）
+3. **03 组 33 条 P2**（多数是 UI 打磨/重复代码/无障碍；其中 03-P2-1 非默认标签按返回
    直接退出 App、03-P2-5 缺 match 静默白屏，各小）
-8. **04-P2-3/4/6/7/8/9** WebView file/content access、.gitignore 是 GBK、
+4. **04-P2-3/4/6/7/8/9** WebView file/content access、.gitignore 是 GBK、
    依赖声明不一致、AGP 内部类、AAB 任务名、废弃主题属性（各小）
-9. **遗留**：`MatchRepository.loadMatches()/loadMatchesInternal` 是零生产调用的旧管线
+5. **遗留**：`MatchRepository.loadMatches()/loadMatchesInternal` 是零生产调用的旧管线
    （生产走 loadMatchesOutcome），但 5 条限流/重试测试测的是旧管线 ——
-   要么删旧管线并把测试迁到生产管线，要么在旧管线上加注释说明只服务测试
+   要么删旧管线并把测试迁到生产管线，要么在旧管线上加注释说明只服务测试。
+   ⚠️ 这是个**真实的假安全感**：那 5 条测试守的代码线上跑不到。
 
 ## 教训（务必遵守）
 - **不要用 PowerShell 的 Set-Content/Replace 改 .kt 源码**：会把 UTF-8 中文写成乱码

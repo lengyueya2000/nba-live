@@ -149,7 +149,9 @@ class MatchRepositoryTest {
             </a></div>
         """.trimIndent()
 
-        val result = repo.loadMatches { url, _ ->
+        // ⚠️ 走生产管线 loadMatchesWithOutcome（旧 loadMatches 已删除）：
+        // 这条守的是"单源瞬时失败要重试"，而重试逻辑在生产管线的 runSource 里。
+        val outcome = repo.loadMatchesWithOutcome { url, _ ->
             when {
                 // 第一次"网络不通"（可重试），第二次成功 —— 钉住重试逻辑
                 url.contains("jrszbt") ->
@@ -160,10 +162,9 @@ class MatchRepositoryTest {
         }
 
         assertTrue("重试后 JRS 必须被成功拉取", jrsAttempts >= 2)
-        val matches = result.getOrNull() ?: error("loadMatches 失败: ${result.exceptionOrNull()}")
         assertTrue(
-            "JRS 第一次瞬时失败后，列表必须仍含其赛事（实际: ${matches.map { it.id }}）",
-            matches.any { it.id == "jrs-555" },
+            "JRS 第一次瞬时失败后，列表必须仍含其赛事（实际: ${outcome.matches.map { it.id }}）",
+            outcome.matches.any { it.id == "jrs-555" },
         )
     }
 
