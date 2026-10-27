@@ -4,6 +4,7 @@ import android.util.Log
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.MatchStatusClock
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import kotlinx.coroutines.Dispatchers
@@ -200,14 +201,16 @@ class JrsParser {
         now: java.time.ZonedDateTime,
     ): StatusCorrection? {
         if (match.status != MatchStatus.LIVE || scheduledTime == null) return null
+        // ⚠️ 源站时间按北京时间解释（review/02-data.md P2-2）：
+        // 设备时区非东八区时，用 systemDefault() 会让判定整体偏移。
         val day = match.startAtMillis?.let {
-            java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+            java.time.Instant.ofEpochMilli(it).atZone(MatchStatusClock.SOURCE_ZONE).toLocalDate()
         } ?: return null
         val hm = Regex("""(\d{1,2}):(\d{2})""").find(scheduledTime) ?: return null
         val hour = hm.groupValues[1].toIntOrNull() ?: return null
         val minute = hm.groupValues[2].toIntOrNull() ?: return null
         val base = runCatching {
-            day.atTime(hour, minute).atZone(java.time.ZoneId.systemDefault())
+            day.atTime(hour, minute).atZone(MatchStatusClock.SOURCE_ZONE)
         }.getOrNull() ?: return null
 
         fun statusAt(start: java.time.ZonedDateTime): MatchStatus = when {
@@ -253,7 +256,8 @@ class JrsParser {
         val m = hm?.groupValues?.get(2)?.toIntOrNull() ?: 0
         // 直播中行没有 HH:mm：退回当天 00:00，至少分组/排序落在正确的一天
         return runCatching {
-            date.atTime(h, m).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            // 同样固定北京时间（review/02-data.md P2-2）
+            date.atTime(h, m).atZone(MatchStatusClock.SOURCE_ZONE).toInstant().toEpochMilli()
         }.getOrNull()
     }
 }

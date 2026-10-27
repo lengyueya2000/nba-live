@@ -904,7 +904,13 @@ class MatchRepository(
      */
     private fun normalizeKey(m: Match): String {
         val day = m.startAtMillis?.let {
-            java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+            // ⚠️ 合并键的"哪一天"必须按北京时间算（review/02-data.md P2-2）：
+            // 用 systemDefault() 时，设备在 UTC-5 会让同一个 epoch 落到前一天的日期，
+            // 两源对同一场的 key 就对不上 —— 同一场拆成两张卡、各只有半边信号。
+            java.time.Instant.ofEpochMilli(it)
+                .atZone(MatchStatusClock.SOURCE_ZONE)
+                .toLocalDate()
+                .toString()
         } ?: m.timeLabel.substringBefore(' ').ifBlank { "?" }
         val (t1, t2) = listOf(m.homeTeam, m.awayTeam).map { it.replace(WHITESPACE, "") }.sorted()
         return "$day|$t1|$t2"

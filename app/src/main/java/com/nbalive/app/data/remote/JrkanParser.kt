@@ -4,6 +4,7 @@ import android.util.Log
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.MatchStatusClock
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import org.jsoup.Jsoup
@@ -260,14 +261,12 @@ class JrkanParser {
         if (explicit != MatchStatus.UPCOMING) return explicit
 
         val startMillis = parseDateTime(timeRaw) ?: return MatchStatus.UPCOMING
-        val start = java.time.Instant.ofEpochMilli(startMillis)
-            .atZone(java.time.ZoneId.systemDefault())
-        val now = java.time.ZonedDateTime.now()
-        return when {
-            now.isAfter(start.plusHours(3).plusMinutes(30)) -> MatchStatus.FINISHED
-            now.isBefore(start.minusMinutes(15)) -> MatchStatus.UPCOMING
-            else -> MatchStatus.LIVE
-        }
+        // ⚠️ 判定委托给 MatchStatusClock（review/02-data.md P2-2）：
+        // 旧实现用 ZoneId.systemDefault() 解释源站的北京时间，
+        // 设备时区设成 UTC-5 时状态整体偏移 13 小时 —— 正在打的比赛会被判成未开赛。
+        // 而且它内部自己取 now()，与 correctLiveStatuses(now=...) 的注入时钟脱钩。
+        val now = java.time.ZonedDateTime.now(MatchStatusClock.SOURCE_ZONE)
+        return MatchStatusClock.byClock(startMillis, now)
     }
 
     /**
@@ -343,14 +342,26 @@ class JrkanParser {
         val day = m.groupValues[2].toIntOrNull() ?: return null
         val hour = m.groupValues[3].toIntOrNull() ?: return null
         val minute = m.groupValues[4].toIntOrNull() ?: return null
-        val now = java.time.LocalDate.now()
+        // ⚠️ "今天"与合成时区都用北京时间（review/02-data.md P2-2）：
+        // 源站给的是北京时间，用设备时区解释会让设备在 UTC-5 时整体偏移 13 小时，
+        // 跨源合并键（按 LocalDate）也对不上，同一场变成两张卡。
+        val now = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
         return runCatching {
-            var date = java.time.LocalDate.of(now.year, month, day)
-            // 在 ±6 个月窗口内取最近的一次：过去太久 -> 顺延一年，未来太久 -> 倒退一年
-            if (date.isBefore(now.minusMonths(6))) date = date.plusYears(1)
-            if (date.isAfter(now.plusMonths(6))) date = date.minusYears(1)
-            date.atTime(hour, minute)
-                .atZone(java.time.ZoneId.systemDefault())
+            // ⚠️ 用 MonthDay.atYear 而不是 LocalDate.of(year, 2, 29)：
+            // 平年 2 月 29 日会抛 DateTimeException 被 runCatching 吞成 null
+            // -> startAtMillis 静默为 null -> 状态退回 UPCOMING 且合并不上（02-P2-11）。
+            java.time.MonthDay.of(month, day)
+                .atYear(now.year)
+                .let { date ->
+                    // 在 ±6 个月窗口内取最近的一次：过去太久 -> 顺延一年，未来太久 -> 倒退一年
+                    when {
+                        date.isBefore(now.minusMonths(6)) -> date.plusYears(1)
+                        date.isAfter(now.plusMonths(6)) -> date.minusYears(1)
+                        else -> date
+                    }
+                }
+                .atTime(hour, minute)
+                .atZone(MatchStatusClock.SOURCE_ZONE)
                 .toInstant().toEpochMilli()
         }.getOrNull()
     }
