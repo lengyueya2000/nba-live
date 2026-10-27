@@ -13,6 +13,12 @@
 必须用源码扫描守卫测试钉住（这是审查反复点名的最大风险形态）。
 
 ## 本轮已完成并提交（最新在上）
+- `2784851` 时区纪律守卫：解析/判定层出现 systemDefault() 即红（已验证会红）
+- `8371c40` 02-P2-2 + 02-P2-11：源站时间统一按北京时间解析
+  （JrkanParser.parseDateTime/parseStatus、JrsParser 合成、normalizeKey）；
+  顺带用 MonthDay.atYear 修平年 2/29 抛异常
+- `a8633ec` 01-P2-1 中途卡死检测：StalledPlayback（Tracker 状态机，8 条单测），
+  30 秒无进展自动换线；与首帧看门狗不重叠
 - `25dfde9` 04-P1-5 精确收紧明文流量：jrszbt.com 与 OSS 加速域加
   domain-config cleartextTrafficPermitted=false；**base-config 明文许可必须保留**
   （抓包实测播放页本身就是 http，JRS 页面 28 处 http 引用）。
@@ -28,31 +34,28 @@
   jrsDetailUrls 候选、详情页缓存 key 改 detailId（02-P2-6）
 - `cc0ed66` 02-P1-9 前半：SourceEndpoints 候选列表 + 403/429 立即停源 + 镜像只试一次
 
+当前全量测试 **309 通过 / 0 失败 / 0 跳过**，`assembleDebug` 通过。
+
 ## 已验证落地（不必重做）
 P0-1 判死分级、P0-2 m3u8 正则、01-P1-2/3/4/6、02-P1-1/3/4/5/6/7/8、
 03-P1-1~4、04-P1-1/2/3/4、01-P2-2/10/12、02-P2-1
 
 ## 仍存在的主要缺口（按价值排序，来自 95 条矩阵）
-1. **01-P2-1** 播到一半 CDN 断流（连接不断、onPlayerError 不触发）只有缓冲圈，
-   永不自动换线 → PlayerScreen 首帧看门狗旁加 BUFFERING 计时（中）
-2. **02-P2-2** 解析侧仍用 ZoneId.systemDefault()（JrkanParser.parseStatus/parseDateTime、
-   JrsParser、normalizeKey），设备时区非东八区时初始状态与合并键整体偏移（中）
-3. **01-P2-4** 切网页线路时旧页在途 m3u8 可能被当新线路升级 →
+1. **01-P2-4** 切网页线路时旧页在途 m3u8 可能被当新线路升级 →
    WebSurface 加 key(webFallbackUrl) 或 onStreamSniffed 校验 pageUrl（小/中）
-4. **01-P2-3** 网页线路锁屏/切 App 后台仍可能出声（无 JS pause）（小）
-5. **01-P2-5/6/7/8** 小窗比例沿用上一场、解析中点画中画得黑窗、进小窗方向复位、
+2. **01-P2-3** 网页线路锁屏/切 App 后台仍可能出声（无 JS pause）（小）
+3. **01-P2-5/6/7/8** 小窗比例沿用上一场、解析中点画中画得黑窗、进小窗方向复位、
    面板停留>10s 选完线全屏无底部栏（各小）
-6. **02-P2-7/8/9** TTL 时间戳在请求前取、无 single-flight、redactUrl 不处理 path/userinfo（小）
-7. **02-P2-11** 平年 2/29 抛异常 → startAtMillis 静默 null（小）
-8. **02-P2-12/13** normalizeKey 退化成 timeLabel、League.OTHER 死分支（小）
-9. **02-P2-10** Match.isPostponed 算好了没人渲染（小）
-10. **03 组 33 条 P2**（多数是 UI 打磨/重复代码/无障碍；其中 03-P2-1 非默认标签按返回
-    直接退出 App、03-P2-5 缺 match 静默白屏，各小）
-11. **04-P2-3/4/6/7/8/9** WebView file/content access、.gitignore 是 GBK、
-    依赖声明不一致、AGP 内部类、AAB 任务名、废弃主题属性（各小）
-12. **遗留**：`MatchRepository.loadMatches()/loadMatchesInternal` 是零生产调用的旧管线
-    （生产走 loadMatchesOutcome），但 5 条限流/重试测试测的是旧管线 ——
-    要么删旧管线并把测试迁到生产管线，要么在旧管线上加注释说明只服务测试
+4. **02-P2-7/8/9** TTL 时间戳在请求前取、无 single-flight、redactUrl 不处理 path/userinfo（小）
+5. **02-P2-12/13** normalizeKey 退化成 timeLabel、League.OTHER 死分支（小）
+6. **02-P2-10** Match.isPostponed 算好了没人渲染（小）
+7. **03 组 33 条 P2**（多数是 UI 打磨/重复代码/无障碍；其中 03-P2-1 非默认标签按返回
+   直接退出 App、03-P2-5 缺 match 静默白屏，各小）
+8. **04-P2-3/4/6/7/8/9** WebView file/content access、.gitignore 是 GBK、
+   依赖声明不一致、AGP 内部类、AAB 任务名、废弃主题属性（各小）
+9. **遗留**：`MatchRepository.loadMatches()/loadMatchesInternal` 是零生产调用的旧管线
+   （生产走 loadMatchesOutcome），但 5 条限流/重试测试测的是旧管线 ——
+   要么删旧管线并把测试迁到生产管线，要么在旧管线上加注释说明只服务测试
 
 ## 教训（务必遵守）
 - **不要用 PowerShell 的 Set-Content/Replace 改 .kt 源码**：会把 UTF-8 中文写成乱码
