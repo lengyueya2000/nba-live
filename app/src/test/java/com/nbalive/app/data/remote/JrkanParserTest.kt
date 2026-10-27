@@ -97,6 +97,102 @@ class JrkanParserTest {
         assertEquals(League.CBA, m.league)
     }
 
+    // ---- 源站改版容错（review/02-data.md P1-7 / P2-1） ----
+    //
+    // 旧实现是「手写正则切 HTML」，三个脆弱点都源于写死了字面量：
+    //  1. 块起点写死 `<ul class="item play"`；
+    //  2. `data-lid` 严格三段纯数字；
+    //  3. 队名正则用 DOT_MATCHES_ALL 跨 li 匹配。
+    // 任何一个被上游改掉，结果都是**整表归零且静默**。
+    // 改用 Jsoup 之后，块边界交给 HTML 解析器，字段交给 CSS 类选择器。
+
+    @Test
+    fun `块起点写法变了也要能解析`() {
+        val variants = mapOf(
+            "属性顺序颠倒" to indexJs.replace(
+                """<ul class="item play d-touch active hot" data-lid="3931527,2,3931527" data-stype="zqlq">""",
+                """<ul data-lid="3931527,2,3931527" data-stype="zqlq" class="item play d-touch active hot">""",
+            ),
+            "class 用单引号" to indexJs.replace(
+                """<ul class="item play d-touch active hot" """,
+                """<ul class='item play d-touch active hot' """,
+            ),
+            "class 里多一个空格" to indexJs.replace(
+                """<ul class="item play d-touch active hot" """,
+                """<ul class="item  play d-touch active hot" """,
+            ),
+            "class 顺序颠倒" to indexJs.replace(
+                """<ul class="item play d-touch active hot" """,
+                """<ul class="play item d-touch active hot" """,
+            ),
+        )
+        for ((name, js) in variants) {
+            val m = parser.parseList(js).firstOrNull()
+            assertTrue("[$name] 上游改版后整场消失", m != null)
+            assertEquals("[$name] 队名解析错", "凯尔特人", m!!.homeTeam)
+            assertEquals("[$name] 队名解析错", "老鹰", m.awayTeam)
+        }
+    }
+
+    @Test
+    fun `data-lid 多出一段时仍能解析`() {
+        // 上游给 data-lid 加第四段（eventId,sportId,leagueId,matchId）是常见改法
+        val js = indexJs.replace("data-lid=\"3931527,2,3931527\"", "data-lid=\"3931527,2,3931527,9\"")
+        val m = parser.parseList(js).firstOrNull()
+        assertTrue("data-lid 多一段不能让整场消失", m != null)
+        assertEquals("凯尔特人", m!!.homeTeam)
+        // eventId 取第一段
+        assertTrue("id 应由 data-lid 第一段构成：${m.id}", m.id.contains("3931527"))
+    }
+
+    @Test
+    fun `主队没有 strong name 时不能串味到客队`() {
+        // review/02-data.md P2-1：旧正则是 DOT_MATCHES_ALL 跨 li 匹配，
+        // 主队 li 里没有 strong.name 时会一路扫到客队 li，
+        // 把客队名当成主队名 —— 产出一张「篮网 vs 篮网」的卡片。
+        val js = """
+            document.write('<ul class="item play" data-lid="777,2,777" data-stype="zqlq">');
+            document.write('  <li class="lab_events"><span class="name">NBA</span></li>');
+            document.write('  <li class="lab_time">10-23 10:00</li>');
+            document.write('  <li class="lab_team_home"><em class="tbd">待定</em></li>');
+            document.write('  <li class="lab_team_away"><strong class="name">篮网</strong></li>');
+            document.write('</ul>');
+        """.trimIndent()
+        val m = parser.parseList(js).firstOrNull()
+        assertTrue("不该整场消失", m != null)
+        assertEquals("主队不能被客队名顶替", "待定", m!!.homeTeam)
+        assertEquals("篮网", m.awayTeam)
+        assertTrue("主客队不能解析成同一支队", m.homeTeam != m.awayTeam)
+    }
+
+    @Test
+    fun `队名容器换成别的标签也能解析`() {
+        // 源站把 <strong> 换成 <span>：CSS 选择器只认 class，不认标签
+        val js = indexJs
+            .replace(
+                """<strong class="name">凯尔特人</strong>""",
+                """<span class="name">凯尔特人</span>""",
+            )
+            .replace(
+                """<strong class="name">老鹰</strong>""",
+                """<span class="name">老鹰</span>""",
+            )
+        val m = parser.parseList(js).firstOrNull()
+        assertTrue("换标签不能让整场消失", m != null)
+        assertEquals("凯尔特人", m!!.homeTeam)
+        assertEquals("老鹰", m.awayTeam)
+    }
+
+    @Test
+    fun `document write 的引号形式变了也能解析`() {
+        // 源站改成 document.write("...") 双引号形式
+        val js = indexJs.replace("document.write('", "document.write(\"")
+            .replace("');", "\");")
+        val m = parser.parseList(js).firstOrNull()
+        assertTrue("换引号形式不能让整场消失", m != null)
+        assertEquals("凯尔特人", m!!.homeTeam)
+    }
+
     /** 真实播放页 sub_playlist 结构（已实测）。 */
     private val playPage = """
         <div class="sub_playlist">

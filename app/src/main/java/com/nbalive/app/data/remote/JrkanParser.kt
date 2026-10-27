@@ -6,6 +6,7 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
+import org.jsoup.Jsoup
 
 /**
  * JRKAN 源站（m.jrkan.com）解析器。
@@ -58,47 +59,71 @@ class JrkanParser {
         // 惰性量词 + DOT_MATCHES_ALL 会在**整份 index.js**（18 万字符）上回溯，
         // 每来一个 <ul 都要扫到下一个 </ul>，源站页面一大就是指数级开销。
         // 改成"先定位起点，再从那里找第一个结束标记"，是线性的。
-        val blockRegex = Regex("""<ul class="item play""")
-        blockRegex.findAll(js).forEach { m ->
-            val start = m.range.first
-            val end = js.indexOf("</ul>", start).takeIf { it >= 0 } ?: return@forEach
-            val block = js.substring(start, end)
-            val lid = Regex("""data-lid="(\d+),(\d+),(\d+)"""").find(block)?.groupValues ?: return@forEach
-            val eventId = lid[1]
+        // ⚠️ 为什么不用 `document.write('...')` 的边界来切块：
+        // 源站的内容里有 `href="' + getPlayUrl("line1", "824761") + '"`，
+        // 字符串里**又含单引号**，按引号找结束位置会把一块拦腰截断。
+        // 所以这里根本不做 JS 反转义 —— 直接在原文里按 `<ul>...</ul>` 切块，
+        // 再把每块交给 Jsoup 解析。
+        //
+        // 块边界也不再依赖 `class="item play"` 这个字面量：
+        // 旧实现写死 `<ul class="item play`，上游只要改成单引号、
+        // 属性顺序颠倒、或 class 里多个空格，findAll 就返回空 ——
+        // **整表归零且静默**（review/02-data.md P1-7）。
+        for (block in splitUlBlocks(js)) {
+            val ul = Jsoup.parse(block).selectFirst("ul") ?: continue
+            // 不是赛事块（页面导航之类的 ul）：要求块里至少有一行 lab_* 结构
+            if (!ul.select("li").any { li -> li.classNames().any { it.startsWith("lab_") } }) {
+                continue
+            }
 
-            val leagueRaw = Regex("""lab_events\b[^>]*>.*?<span class="name">([^<]*)""", RegexOption.DOT_MATCHES_ALL)
-                .find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            val timeRaw = Regex("""lab_time\b[^>]*>([^<]*)""").find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            // ⚠️ 不要写死 `lab_team_home"><strong class="name">`：
-            // 那个精确字面量只要上游给 li 多加一个属性（或换行/空格）就整场丢失，
-            // 而且丢的是**全部**场次（列表直接空）。放宽到"本 li 内第一个 strong.name"。
-            val home = Regex("""lab_team_home\b[^>]*>.*?<strong class="name">([^<]*)""", RegexOption.DOT_MATCHES_ALL)
-                .find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            val away = Regex("""lab_team_away\b[^>]*>.*?<strong class="name">([^<]*)""", RegexOption.DOT_MATCHES_ALL)
-                .find(block)?.groupValues?.get(1)?.trim().orEmpty()
+            val lid = ul.attr("data-lid")
+            val eventId = lid.split(",").firstOrNull()?.trim()
+                ?.takeIf { it.isNotEmpty() && it.all(Char::isDigit) }
+            if (eventId == null) {
+                // data-lid 缺失/变形：旧实现直接跳过（整场静默消失）。
+                // 现在至少留痕，并且用队名+时间兜底出一个稳定的 id。
+                Log.w(TAG, "JRKAN 场次缺 data-lid，按队名与时间兜底 id")
+            }
+
+            val eventsLi = ul.selectFirst("li.lab_events")
+            val leagueRaw = eventsLi?.selectFirst(".name")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: eventsLi?.selectFirst(".league")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: eventsLi?.text()?.trim().orEmpty()
+            val timeRaw = ul.selectFirst("li.lab_time")?.text()?.trim().orEmpty()
+
+            // ⚠️ 队名必须**限定在各自的 li 内**（review/02-data.md P2-1）：
+            // 旧实现用 DOT_MATCHES_ALL 跨 li 匹配，主队 li 里没有 strong.name 时
+            // （比如改成 `<em class="tbd">待定</em>`）会一路扫到客队 li，
+            // 把客队名当成主队名 —— 产出一张「篮网 vs 篮网」的卡片。
+            // CSS 选择器天然限定在元素自己的子树内。
+            val homeLi = ul.selectFirst("li.lab_team_home")
+            val awayLi = ul.selectFirst("li.lab_team_away")
+            val home = teamName(homeLi)
+            val away = teamName(awayLi)
             if (home.isBlank() || away.isBlank()) {
                 // 上游改版时这里会静默吞掉整场比赛，必须留痕
-                Log.w(TAG, "JRKAN 场次缺队名，跳过：eventId=$eventId")
-                return@forEach
+                Log.w(TAG, "JRKAN 场次缺队名，跳过：eventId=${eventId ?: "-"}")
+                continue
             }
+            val stableId = eventId ?: stableFallbackId(home, away, timeRaw)
             if (leagueRaw.isBlank()) {
                 // 联赛名取不到本身也必须留痕：它会让整场落 OTHER 后被 merge 丢掉
                 Log.w(
                     TAG,
-                    "JRKAN 场次缺联赛名，按队名兜底：eventId=$eventId 判定=" +
+                    "JRKAN 场次缺联赛名，按队名兜底：eventId=$stableId 判定=" +
                         League.resolve(leagueRaw, home, away).displayName,
                 )
             }
 
-            // 锚定到本方 li 内（跨行匹配），避免主队无图时误拿客队队徽
-            val homeLogo = Regex("""lab_team_home[^>]*>.*?<img[^>]*src="([^"]+)""", RegexOption.DOT_MATCHES_ALL)
-                .find(block.substringBefore("lab_team_away"))?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
-                ?.let { absUrl(it) }
-            val awayLogo = Regex("""lab_team_away[^>]*>.*?<img[^>]*src="([^"]+)""", RegexOption.DOT_MATCHES_ALL)
-                .find(block)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
-                ?.let { absUrl(it) }
+            val homeLogo = homeLi?.selectFirst("img")?.attr("src")?.trim()
+                ?.takeIf { it.isNotEmpty() }?.let { absUrl(it) }
+            val awayLogo = awayLi?.selectFirst("img")?.attr("src")?.trim()
+                ?.takeIf { it.isNotEmpty() }?.let { absUrl(it) }
 
             // 列表页只给一个 playId；具体线路在播放页内部，进详情页再展开。
+            // ⚠️ 必须从**原始块文本**里取：Jsoup 解析时
+            // `href="' + getPlayUrl("line1", "824761") + '"` 这个坏掉的属性
+            // 会被拆散，重新序列化后正则再也匹配不到。
             val playId = Regex("""getPlayUrl\("line\d",\s*"(\d+)"\)""")
                 .find(block)?.groupValues?.get(1)
 
@@ -107,7 +132,7 @@ class JrkanParser {
             } else {
                 listOf(
                     StreamSource(
-                        id = "jrkan-$eventId-s0",
+                        id = "jrkan-$stableId-s0",
                         label = "信号1",
                         provider = Provider.JRKAN,
                         pageUrl = "$PLAY_HOST/play/steam$playId.html",
@@ -116,7 +141,7 @@ class JrkanParser {
             }
 
             result += Match(
-                id = "jrkan-$eventId",
+                id = "jrkan-$stableId",
                 // 联赛名取不到时用队名兜底（review/02-data.md P1-3）：
                 // 旧实现直接落 OTHER，而 merge 会把 OTHER 整场丢掉 ——
                 // 那是一条连日志都没有的丢场次路径：
@@ -135,7 +160,89 @@ class JrkanParser {
                 sources = sources,
             )
         }
+        if (result.isEmpty()) {
+            // 静默归零是最难查的一类故障：源站改版后列表直接空了，
+            // 而 App 的表现只是"今天没比赛"。至少留一条痕。
+            Log.w(TAG, "JRKAN 列表解析结果为空（源站可能已改版）")
+        }
         return result
+    }
+
+    /**
+     * 队名：优先 `.name`，其次 `strong`，最后退到本 li 的文本。
+     *
+     * 退到本 li 文本是为了覆盖「待定」这类没有 strong 的形态 ——
+     * 拿不到就整场丢掉太激进，而**绝不会**跑到别的 li 去拿。
+     */
+    private fun teamName(li: org.jsoup.nodes.Element?): String {
+        if (li == null) return ""
+        return li.selectFirst(".name")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+            ?: li.selectFirst("strong")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+            ?: li.text()?.trim().orEmpty()
+    }
+
+    /**
+     * `data-lid` 缺失时的稳定兜底 id。
+     *
+     * 用「主队 + 客队 + 时间」拼，源站同一场的内容不变时 id 就不变 ——
+     * 跨源合并键与信号 id 依赖它是稳定的。
+     */
+    private fun stableFallbackId(home: String, away: String, timeRaw: String): String {
+        val hash = "$home|$away|$timeRaw".hashCode().toUInt().toString(16)
+        return "auto-$hash"
+    }
+
+    /**
+     * 在原文里按 `<ul>...</ul>` 切块（支持嵌套，按深度配对）。
+     *
+     * ⚠️ 必须是**线性**扫描：源站的 index.js 有 18 万字符，
+     * 早先试过 `(?s)<ul class="item play.*?</ul>`，惰性量词 + DOT_MATCHES_ALL
+     * 会在整份文件上回溯，源站页面一大就是指数级开销。
+     */
+    private fun splitUlBlocks(js: String): List<String> {
+        val out = ArrayList<String>()
+        var searchFrom = 0
+        while (true) {
+            val start = findTag(js, "ul", searchFrom)
+            if (start < 0) break
+            val end = findBlockEnd(js, start)
+            if (end < 0) break
+            out += js.substring(start, end)
+            searchFrom = end
+        }
+        return out
+    }
+
+    /** 找下一个 `<tag` 起始位置（后面必须跟空白、`>` 或 `/`）。 */
+    private fun findTag(html: String, tag: String, from: Int): Int {
+        val needle = "<$tag"
+        var i = from
+        while (true) {
+            val idx = html.indexOf(needle, i)
+            if (idx < 0) return -1
+            val next = html.getOrNull(idx + needle.length)
+            if (next == null || next == '>' || next == '/' || next.isWhitespace()) return idx
+            i = idx + 1
+        }
+    }
+
+    /** 从 `<ul>` 起点找到配对的 `</ul>` 结束位置（含）。 */
+    private fun findBlockEnd(html: String, start: Int): Int {
+        var depth = 0
+        var pos = start
+        while (true) {
+            val open = findTag(html, "ul", pos)
+            val close = html.indexOf("</ul>", pos)
+            if (close < 0) return -1
+            if (open in 0 until close) {
+                depth++
+                pos = open + 4
+                continue
+            }
+            depth--
+            if (depth == 0) return close + "</ul>".length
+            pos = close + "</ul>".length
+        }
     }
 
     /**
