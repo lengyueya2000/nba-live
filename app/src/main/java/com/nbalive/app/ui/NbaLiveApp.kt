@@ -307,6 +307,10 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                         loading = listState.loading,
                         refreshing = listState.refreshing,
                         error = listState.error,
+                        // 单源失败时把"少了什么"告诉用户（review/02-data.md P1-2）：
+                        // 数据层早就算好了 failedProviders，此前没有任何 UI 读它，
+                        // 用户只能看到「场次变少了」，无法区分源挂了与今天没比赛。
+                        partialError = listState.partialError,
                         selectedLeague = listState.selectedLeague,
                         counts = leagueCounts,
                         onLeagueSelected = viewModel::selectLeague,

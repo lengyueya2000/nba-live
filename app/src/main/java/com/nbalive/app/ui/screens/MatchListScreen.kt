@@ -50,6 +50,8 @@ import com.nbalive.app.ui.components.LeagueStrip
 import com.nbalive.app.ui.components.SignalBadge
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
+import com.nbalive.app.ui.ListNotice
+import com.nbalive.app.ui.ListNoticePolicy
 import com.nbalive.app.ui.hhmm
 import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.mmdd
@@ -105,6 +107,13 @@ fun MatchListScreen(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
     refreshing: Boolean = false,
+    /**
+     * 部分数据源不可用时的说明（review/02-data.md P1-2）。
+     *
+     * ⚠️ 不能只写进状态了事：单源挂掉时用户原来只看到"场次变少了"，
+     * 无法区分"源挂了"和"今天真没比赛"，线上问题也就没法被准确反馈。
+     */
+    partialError: String? = null,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
         LeagueSelector(
@@ -122,8 +131,14 @@ fun MatchListScreen(
                 // 刷新中：保留旧列表，只在顶部挂一条细进度条。
                 // 原来刷新时整屏换成转圈，已有卡片全消失、滚动位置也丢。
                 if (refreshing) RefreshingBar()
-                // 有旧数据但这次刷新失败了：错误要看得见（还能点重试）
-                if (error != null) ErrorBanner(message = error, onRetry = onRetry)
+                // 有旧数据：错误提示要看得见（还能点重试）；
+                // 没有整次错误但某个源缺了数据时，也要让用户知道少了什么
+                // —— 规则见 ListNoticePolicy（纯判据，有单测）。
+                when (val notice = ListNoticePolicy.of(error, partialError)) {
+                    is ListNotice.Failed -> ErrorBanner(message = notice.message, onRetry = onRetry)
+                    is ListNotice.Partial -> PartialBanner(message = notice.message)
+                    ListNotice.None -> Unit
+                }
                 MatchGrid(matches = matches, onMatchClick = onMatchClick)
             }
         }
@@ -570,6 +585,51 @@ private fun ErrorBanner(message: String, onRetry: () -> Unit) {
                 text = "重试",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
+    }
+}
+
+/**
+ * 部分源不可用横幅（review/02-data.md P1-2）。
+ *
+ * 与 [ErrorBanner] 的三点不同，都是有意的：
+ *  1. **不可点**：这不是"刷新失败"，重试多半没用（源站限流/宕机有自己的恢复节奏），
+ *     给一个点了没用的按钮比不给更糟；
+ *  2. 文案不带「刷新失败：」前缀 —— 整次失败和缺一个源必须能区分；
+ *  3. 用 `surfaceVariant` 而不是 error 色：列表本身是可用的，
+ *     不该把界面染成"出错了"的样子。
+ */
+@Composable
+private fun PartialBanner(message: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(Radius.chip),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.lg)
+            .padding(bottom = Space.sm),
+    ) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .padding(horizontal = Space.md, vertical = Space.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = message,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
         }
     }
