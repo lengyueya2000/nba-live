@@ -13,6 +13,10 @@
 必须用源码扫描守卫测试钉住（这是审查反复点名的最大风险形态）。
 
 ## 本轮已完成并提交（最新在上）
+- `5627336` 03-P2-13：呼吸红点改共享动画相位（LiveDotPhase + LocalLiveDotAlpha），
+  原来每颗红点一份独立无限动画
+- `9cadbd2` 03-P2-23/24：搜索框加可读 label（placeholder 不是无障碍标签）、
+  底栏标签加 selectableGroup()
 - `b5d24be` 04-P2-7/8/9：values-v35 主题覆盖（API 35 起系统栏颜色被忽略）、
   清单启用预测式返回、打包签名检查改按任务类型匹配（原来字面任务名对不上时
   静默不执行）；P2-7 只能部分修（AGP 无公开 outputFileName setter），
@@ -57,36 +61,39 @@
   jrsDetailUrls 候选、详情页缓存 key 改 detailId（02-P2-6）
 - `cc0ed66` 02-P1-9 前半：SourceEndpoints 候选列表 + 403/429 立即停源 + 镜像只试一次
 
-当前全量测试 **382 通过 / 0 失败 / 0 跳过**，`assembleDebug` 通过，工作区干净。
-本轮（`fdc9f73` 之后）共 27 个提交。
+当前全量测试 **390 通过 / 0 失败 / 0 跳过**，`assembleDebug` 通过，工作区干净。
+本轮（`fdc9f73` 之后）共 30 个提交。
 
 ## 已验证落地（不必重做）
 P0-1 判死分级、P0-2 m3u8 正则、01-P1-2/3/4/6、01-P2-1/2/3/4/5/6/7/8/10/11/12、
 02-P1-1/2/3/4/5/6/7/8/9、02-P2-1/2/3/4/5/6/7/8/9/10/11/12/13、
-03-P1-1~4、03-P2-1/5/25、04-P1-1/2/3/4/5、04-P2-3/4/6/7(部分)/8/9
+03-P1-1~4、03-P2-1/5/13/23/24/25、04-P1-1/2/3/4/5、04-P2-3/4/6/7(部分)/8/9
 
 ## 仍存在的主要缺口（按价值排序，来自 95 条矩阵）
-1. **03 组剩余 P2**（约 28 条，多为 UI 打磨/重复代码/无障碍）：
-   最值得做的 —— 03-P2-23/24 无障碍（TextField 无 label、底栏未成组）、
-   03-P2-13 每个 LIVE chip 一份无限动画、03-P2-19/20 重复组件（InfoRow ×2、
-   错误态 ×5）、03-P2-15 根节点 collect 7 个 flow、03-P2-18 上帝组件 681 行
+1. **03 组剩余 P2**（约 26 条，多为 UI 打磨/重复代码/性能）：
+   最值得做的 —— 03-P2-19/20 重复组件（InfoRow ×2、错误态 ×5）、
+   03-P2-15 根节点 collect 7 个 flow（任一变化推动整树重组）、
+   03-P2-18 上帝组件 681 行、03-P2-11 remember 里的局部 lambda、
+   03-P2-12 条件性 remember、03-P2-14 详情页全量组合线路列表
 2. **04-P2-5** release mapping 归档（仓库外流程，需要 CI 或发布脚本配合）
 3. **04-P2-7 剩余部分**：彻底去掉 AGP 内部类依赖需要升级 AGP
    （当前已把 `as?` 静默失败改成显式报错，风险已降到"会当场报错"）
 4. 其余 P2 已在审查矩阵里逐条给出 file:line，可按需继续
 
 ## 教训（务必遵守）
-- **不要用 PowerShell 的 Set-Content/Replace 改 .kt 源码**：会把 UTF-8 中文写成乱码
-  （本轮踩过两次，一次把 MainViewModel 写成 400 个替换字符）。
-  只用 edit/write 工具改源码；改完可用
-  `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 检查替换字符数
-- 编辑前必须 read；`git checkout -- <file>` 可恢复
-  （⚠️ 但 checkout 会丢掉**未提交**的修复，本轮 .gitignore 就因此被还原成 GBK）
+- **源码一律只用 edit/write 工具改**。PowerShell 的 Set-Content / -replace
+  会把 UTF-8 中文写坏（本轮踩了三次：MainViewModel 400 个替换字符、
+  LiveDotAnimationTest 全文乱码、.gitignore 被 checkout 还原成 GBK）。
+  改完可用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 检查
+- 编辑前必须 read；`git checkout -- <file>` 可恢复，但会丢掉**未提交**的修复
 - 新测试必须验证「去掉修复会变红」，否则就是又一个假安全感
 - **验证守卫时 Gradle 可能 UP-TO-DATE 跳过执行**，必须加 `--rerun-tasks` 才是真跑
-  （本轮几次"通过"其实是没执行，这个坑很隐蔽）
 - 守卫测试用源码扫描时：
   - 断言前**必须剔除注释**（注释里常写着"为什么这么改"，含同样的字面量）
+  - 必须匹配**调用**而不是字符串出现（如 `.selectableGroup()` 而非 `selectableGroup`，
+    否则 import 行会让守卫永远绿）
   - 别写成永真断言（如 `assertEquals(A.first(), A.first())`）
-  - 别用 `contains("x = x")` 这种宽松匹配（`x = false` 也能过，本轮踩到）
+  - 别用 `contains("x = x")` 这种宽松匹配（`x = false` 也能过）
   - 路径解析失败时**不要用 assumeTrue**（会静默跳过变全绿），直接 error()
+  - 提取函数体时 marker 要带左括号（`fun LiveDot(` 而非 `fun LiveDot`，
+    否则会命中 `fun LiveDotPhase(`）
