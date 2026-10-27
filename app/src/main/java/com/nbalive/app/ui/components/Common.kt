@@ -313,25 +313,60 @@ fun AspectModeSelector(
 }
 
 /**
- * 呼吸红点：颜色之外还有"直播中"文字，不依赖颜色单独传达信息。
+ * 共享的呼吸相位（review/03-ui.md P2-13）。
  *
- * ⚠️ 透明度走 [graphicsLayer] 的 lambda 而不是 `Modifier.alpha(a)`：
- * 前者只在**绘制阶段**读状态，不触发重组；后者每帧都会重组这个节点。
- * 列表里可能有十几颗红点同时呼吸，差别是可观的。
+ * ## 为什么需要共享
+ *
+ * 原来 `LiveDot` 内部各自 `rememberInfiniteTransition`。列表页一屏可能有
+ * 十几场正在直播的比赛，每颗红点一份**独立无限动画**，十几份动画同时
+ * 逐帧运行且永不停止 —— 是列表页持续耗电的来源之一。
+ *
+ * 现在由 [LiveDotPhase] 在列表/页面层级算**一次** alpha，
+ * 通过 CompositionLocal 下发；所有红点复用同一个值。
+ * 好处不只是省电：所有红点相位一致，视觉上也更整齐。
+ *
+ * ⚠️ 默认值是 `1f`（不呼吸）而不是 0.35f：没有 Provider 时
+ * （比如详情页单独用 LiveDot）红点应该是稳定可见的，不能一上来就是暗的。
+ */
+val LocalLiveDotAlpha = androidx.compose.runtime.staticCompositionLocalOf { 1f }
+
+/**
+ * 提供共享呼吸相位的容器（在列表/页面层级用一次）。
+ *
+ * 内部只建**一个** `rememberInfiniteTransition`，子树的红点全部复用它。
+ * 透明度走 [graphicsLayer] 的 lambda，只在绘制阶段读状态、不触发重组。
  */
 @Composable
-fun LiveDot(size: Dp = 6.dp) {
-    val t = rememberInfiniteTransition(label = "live-dot")
+fun LiveDotPhase(content: @Composable () -> Unit) {
+    val t = rememberInfiniteTransition(label = "live-dot-phase")
     val a by t.animateFloat(
         initialValue = 1f,
         targetValue = 0.35f,
         animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
         label = "alpha",
     )
+    androidx.compose.runtime.CompositionLocalProvider(LocalLiveDotAlpha provides a) {
+        content()
+    }
+}
+
+/**
+ * 呼吸红点：颜色之外还有"直播中"文字，不依赖颜色单独传达信息。
+ *
+ * ⚠️ 透明度走 [graphicsLayer] 的 lambda 而不是 `Modifier.alpha(a)`：
+ * 前者只在**绘制阶段**读状态，不触发重组；后者每帧都会重组这个节点。
+ *
+ * ⚠️ 动画相位来自 [LocalLiveDotAlpha]（由 [LiveDotPhase] 提供），
+ * 不在函数内部自建 —— 否则每颗红点一份无限动画（P2-13）。
+ *
+ * @param alpha 透明度；默认读共享相位，显式传入可用于静态展示（如截图/测试）
+ */
+@Composable
+fun LiveDot(size: Dp = 6.dp, alpha: Float = LocalLiveDotAlpha.current) {
     Box(
         Modifier
             .size(size)
-            .graphicsLayer { alpha = a }
+            .graphicsLayer { this.alpha = alpha }
             .clip(CircleShape)
             .background(Color.White),
     )

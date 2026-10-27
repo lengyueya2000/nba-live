@@ -78,6 +78,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.BuildConfig
 import com.nbalive.app.MainActivity
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.ui.components.LiveDotPhase
 import com.nbalive.app.ui.screens.LiveNowScreen
 import com.nbalive.app.ui.screens.MatchDetailScreen
 import com.nbalive.app.ui.screens.MatchListScreen
@@ -332,7 +333,12 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                 .then(if (videoOnly) Modifier else Modifier.padding(padding)),
         ) {
             when (route) {
-                Route.LIST -> when (tab) {
+                // ⚠️ 列表/直播页的红点共用**一个**呼吸相位（review/03-ui.md P2-13）：
+                // 原来每颗 LiveDot 各自 rememberInfiniteTransition，
+                // 一屏十几场直播就是十几份独立无限动画、永不停止。
+                // 包在这一层后整屏只有一份动画，且所有红点相位一致。
+                Route.LIST -> LiveDotPhase {
+                    when (tab) {
                     Tab.MATCHES -> MatchListScreen(
                         matches = visibleMatches,
                         loading = listState.loading,
@@ -374,6 +380,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                         onAspectChange = { PlayerPrefs.setAspect(context, it) },
                         onDarkModeChange = { AppPrefs.setDarkMode(context, it) },
                     )
+                    }
                 }
 
                 Route.DETAIL -> when (
