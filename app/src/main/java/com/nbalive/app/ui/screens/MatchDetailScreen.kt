@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.StreamSource
+import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
@@ -85,7 +86,7 @@ fun MatchDetailScreen(
                 maxLines = 1,
             )
             Spacer(Modifier.width(Space.sm))
-            StatusChip(status = match.status)
+            StatusChip(status = match.status, isPostponed = match.isPostponed)
             Spacer(Modifier.weight(1f))
             Text(
                 text = if (loadingSignals) "加载中…" else "${signals.size} 条信号",

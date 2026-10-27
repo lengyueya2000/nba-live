@@ -128,6 +128,33 @@ class DeadCodeWiringGuardTest {
         )
     }
 
+    @Test
+    fun `所有状态胶囊调用点都要传 isPostponed`() {
+        // 02-P2-10：Match.isPostponed 算好了却没人渲染，延期场次在界面上
+        // 与「未开赛」无法区分。接线后必须**每个**调用点都传，
+        // 漏一个就会在那一页继续显示错误的「未开赛」。
+        val files = productionFiles()
+        assumeTrue("找不到生产源码，跳过源码扫描", files.isNotEmpty())
+
+        val violations = files.flatMap { file ->
+            file.readLines().mapIndexedNotNull { index, line ->
+                val code = line.trim()
+                if (code.startsWith("//") || code.startsWith("*")) return@mapIndexedNotNull null
+                // 只查调用点（`StatusChip(` 后跟参数），跳过定义与 LIVE 常量调用
+                if (!code.contains("StatusChip(status =")) return@mapIndexedNotNull null
+                // 全量直播场次用固定 LIVE 状态，没有延期语义，允许不传
+                if (code.contains("MatchStatus.LIVE")) return@mapIndexedNotNull null
+                if (code.contains("isPostponed")) return@mapIndexedNotNull null
+                "${file.name}:${index + 1}  $code"
+            }
+        }
+        assertTrue(
+            "以下 StatusChip 调用点没有传 isPostponed，那一页的延期场次会显示成「未开赛」：\n" +
+                violations.joinToString("\n"),
+            violations.isEmpty(),
+        )
+    }
+
     private fun productionFiles(): List<File> {
         val root = listOf(
             File("src/main/java/com/nbalive/app"),

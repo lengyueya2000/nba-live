@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.SignalBadge
 import com.nbalive.app.ui.components.StatusChip
@@ -265,7 +266,7 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
             .padding(Space.md),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusChip(status = match.status)
+            StatusChip(status = match.status, isPostponed = match.isPostponed)
             Spacer(Modifier.width(Space.sm))
             LeagueChip(
                 text = match.leagueLabel(),

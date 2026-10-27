@@ -55,6 +55,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nbalive.app.data.model.Match
+import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
@@ -255,7 +256,7 @@ private fun SearchResultRow(match: Match, onClick: () -> Unit) {
                     league = match.league,
                 )
                 Spacer(Modifier.width(Space.sm))
-                StatusChip(status = match.status)
+                StatusChip(status = match.status, isPostponed = match.isPostponed)
                 Spacer(Modifier.weight(1f))
                 Text(
                     text = match.timeLabel,

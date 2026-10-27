@@ -106,6 +106,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.data.remote.debugLog
@@ -1188,7 +1189,7 @@ private fun LiveNowRow(match: Match, onClick: () -> Unit) {
             .padding(Space.md),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusChip(status = match.status)
+            StatusChip(status = match.status, isPostponed = match.isPostponed)
             Spacer(Modifier.width(Space.xs))
             LeagueChip(
                 text = match.leagueLabel(),

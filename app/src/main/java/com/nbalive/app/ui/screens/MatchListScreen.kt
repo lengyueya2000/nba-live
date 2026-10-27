@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.LeagueStrip
 import com.nbalive.app.ui.components.SignalBadge
@@ -496,7 +497,7 @@ private fun MatchCard(match: Match, onClick: () -> Unit) {
                 .fillMaxWidth()
                 .padding(start = Space.md, end = Space.md, top = Space.sm),
         ) {
-            StatusChip(status = match.status)
+            StatusChip(status = match.status, isPostponed = match.isPostponed)
         }
     }
 }

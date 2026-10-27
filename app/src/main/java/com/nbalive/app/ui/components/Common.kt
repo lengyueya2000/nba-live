@@ -44,6 +44,7 @@ import coil.request.ImageRequest
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.AspectMode
+import com.nbalive.app.ui.StatusLabel
 import com.nbalive.app.ui.theme.GradCba
 import com.nbalive.app.ui.theme.GradCbaOnWhite
 import com.nbalive.app.ui.theme.GradLiveOnWhite
@@ -195,6 +196,13 @@ fun StatusChip(
     status: MatchStatus,
     modifier: Modifier = Modifier,
     liveLabel: String = "直播中",
+    /**
+     * 源站是否标注了延期/推迟/待定（`Match.isPostponed`）。
+     *
+     * 延期场次的状态也是 UPCOMING，文案必须与「未开赛」区分 ——
+     * 否则用户会一直等一场不会开打的比赛。
+     */
+    isPostponed: Boolean = false,
 ) {
     val (bg, fg, border) = when (status) {
         // LIVE 用压暗版：这条渐变上压的是 10.5sp 白字，原始渐变只有 2.3~2.7:1
@@ -223,10 +231,14 @@ fun StatusChip(
             )
         }
     }
-    val label = when (status) {
-        MatchStatus.LIVE -> liveLabel
-        MatchStatus.UPCOMING -> "未开赛"
-        MatchStatus.FINISHED -> "已结束"
+    // ⚠️ 文案走 StatusLabel（review/02-data.md P2-10）：
+    // 延期场次的状态是 UPCOMING，原来一律显示「未开赛」——
+    // 用户按时间找过去发现没有直播，以为数据错了。
+    // 规则抽在 StatusLabel（有单测），这里只负责渲染。
+    val label = if (status == MatchStatus.LIVE) {
+        liveLabel
+    } else {
+        StatusLabel.of(status, isPostponed)
     }
     Row(
         modifier = modifier
