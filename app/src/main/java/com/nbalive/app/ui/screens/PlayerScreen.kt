@@ -1897,6 +1897,13 @@ private fun WebSurface(
                         // 收紧成 COMPATIBILITY 会黑屏，这是实测后的有意取舍
                         mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                         userAgentString = HttpClient.USER_AGENT
+                        // ⚠️ 显式关掉本地文件访问（review/04-security.md P2-3）：
+                        // API 24~29 上这两个开关**默认是 true**，源站页面里的 JS
+                        // 可以借此探测 `file://` 路径下的文件是否存在
+                        // （存在性探测 → 指纹/本地文件枚举）。
+                        // 播放页完全不需要读本地文件，关掉零成本。
+                        allowFileAccess = false
+                        allowContentAccess = false
                     }
                     // ⚠️ 主框架导航必须过白名单（review/01「广告把播放页导航走」+ 04-P1-3/4）。
                     // 旧实现只挡非 http(s)：源站广告脚本一句 location.href = "https://广告页"
