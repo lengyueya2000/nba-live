@@ -35,6 +35,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -113,6 +114,7 @@ import com.nbalive.app.ui.AudioFocusPolicy
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlayerControls
 import com.nbalive.app.ui.PlaybackHealth
+import com.nbalive.app.ui.StalledPlayback
 import com.nbalive.app.ui.WebNavigationPolicy
 import com.nbalive.app.ui.PlayerLock
 import com.nbalive.app.ui.components.LeagueChip
@@ -1633,6 +1635,35 @@ private fun VideoSurface(
         }
     }
 
+    // 中途卡死看门狗（review/01-player.md P2-1）。
+    //
+    // 上面的首帧看门狗只覆盖"从未就绪"。首帧成功、播十分钟后 CDN 抽风时，
+    // 播放器停在 BUFFERING 而 onPlayerError **不触发** —— 界面只有转圈，
+    // 永远不会自动换线，用户只能自己点。
+    //
+    // 判据抽在 StalledPlayback（纯逻辑，有单测）：
+    //  - 未就绪过 -> NOT_APPLICABLE，交给首帧看门狗，两条判据不重叠
+    //    （重叠会让首帧慢的线路被两边各判一次、连续换两条线）；
+    //  - 已就绪且连续缓冲满阈值 -> STALLED，触发一次换线；
+    //  - 同一段卡死只报一次，避免连续触发多次故障切换。
+    LaunchedEffect(streamUrl) {
+        val tracker = StalledPlayback.Tracker()
+        while (isActive) {
+            delay(STALL_POLL_INTERVAL_MS)
+            val player = playerView?.player ?: continue
+            // 位置前进说明在播（有些播放器追帧时短暂停在 BUFFERING）
+            tracker.onProgress(player.currentPosition, System.nanoTime() / 1_000_000L)
+            val shouldSwitch = tracker.onTick(
+                reachedReady = reachedReady,
+                playbackState = player.playbackState,
+                nowMs = System.nanoTime() / 1_000_000L,
+            )
+            if (shouldSwitch && reportedRef.add(streamUrl)) {
+                onErrorState.value()
+            }
+        }
+    }
+
     AndroidView(
         factory = { ctx ->
             val headers = buildMap {
@@ -2066,6 +2097,14 @@ private fun WebSurface(
  * 所以即使这次仍然误判，也不会把好线路永久拉黑。
  */
 private const val FIRST_FRAME_WATCHDOG_MS: Long = 30_000
+
+/**
+ * 中途卡死判据的采样间隔（review/01-player.md P2-1）。
+ *
+ * 1 秒：卡死阈值是 30 秒，1 秒粒度足够准；再快只是白烧电（这条循环
+ * 在整个播放期间都跑着），再慢则换线延迟可感知。
+ */
+private const val STALL_POLL_INTERVAL_MS: Long = 1_000
 
 /**
  * 全屏浮层「显示后多久无操作自动收起」。
