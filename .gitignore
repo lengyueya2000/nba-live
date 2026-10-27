@@ -33,5 +33,5 @@ node_modules/
 design/app-run/
 build-shots/
 
-# ������ץȡ��Դվҳ����գ��������ض�λ�ã�����⣩
+# 调查期抓取的源站页面快照（仅供本地定位用，不入库）
 .forensics/

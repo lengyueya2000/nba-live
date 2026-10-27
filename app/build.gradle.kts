@@ -155,7 +155,12 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    // ⚠️ 版本必须与上面的 kotlinx-coroutines-android 一致（review/04-security.md P2-6）：
+    // 原来这里写 1.8.1、运行库是 1.9.0。实际编译/运行用的是 1.9.0
+    // （lockfile 里 debugUnitTestRuntimeClasspath 锁的就是 1.9.0），
+    // 但 testImplementationDependenciesMetadata 配置仍锁着 1.8.1 ——
+    // 声明与锁定不一致，升级时容易漏改，也让人误以为测试跑在 1.8.1 上。
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
 
 // ⚠️ 依赖锁定：
