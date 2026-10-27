@@ -197,6 +197,35 @@ class DeadCodeWiringGuardTest {
         )
     }
 
+    @Test
+    fun `手动画中画必须走守卫 且切场要复位小窗尺寸`() {
+        val files = productionFiles()
+        assumeTrue("找不到生产源码，跳过源码扫描", files.isNotEmpty())
+        val playerScreen = files.firstOrNull { it.name == "PlayerScreen.kt" }
+        assumeTrue("找不到 PlayerScreen.kt，跳过", playerScreen != null)
+        val code = stripComments(playerScreen!!.readText())
+
+        assertTrue(
+            "手动点画中画必须走 ManualPipPolicy（01-P2-6）：\n" +
+                "解析中/全失败时点出来是一块黑窗，而按 Home 那条路早有守卫 —— 两条路径不能只守一条",
+            code.contains("ManualPipPolicy.decide"),
+        )
+        assertTrue(
+            "切场必须复位小窗视频尺寸（01-P2-5）：否则新场次首帧到达前，\n" +
+                "小窗按上一场的比例显示",
+            code.contains("PipAspectReset.shouldResetOnMatchSwitch"),
+        )
+    }
+
+    /** 去掉行注释与块注释，只留代码（注释里出现同样字面量会让守卫永远全绿）。 */
+    private fun stripComments(text: String): String =
+        text.lineSequence()
+            .map { line ->
+                val t = line.trimStart()
+                if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) "" else line
+            }
+            .joinToString("\n")
+
     private fun productionFiles(): List<File> {
         val root = listOf(
             File("src/main/java/com/nbalive/app"),

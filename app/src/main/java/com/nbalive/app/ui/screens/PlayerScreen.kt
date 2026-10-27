@@ -116,6 +116,9 @@ import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlayerControls
 import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.StalledPlayback
+import com.nbalive.app.ui.ManualPipDecision
+import com.nbalive.app.ui.ManualPipPolicy
+import com.nbalive.app.ui.PipAspectReset
 import com.nbalive.app.ui.WebMediaPauseScript
 import com.nbalive.app.ui.WebNavigationPolicy
 import com.nbalive.app.ui.PlayerLock
@@ -184,6 +187,14 @@ fun PlayerScreen(
     inPip: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
     onEnterPip: () -> Unit = {},
+    /**
+     * 点「画中画」但当前没有流可播时，给用户一句提示（review/01-player.md P2-6）。
+     *
+     * ⚠️ 为什么手动路径需要提示而自动路径（按 Home）不需要：
+     * 按 Home 的用户本来没打算进小窗，静默不弹即可；
+     * 点按钮的用户明确表达了意图，不给反馈他会以为按钮坏了。
+     */
+    onPipBlocked: (String) -> Unit = {},
     /**
      * 锁定（防误触）：浮层全隐藏、手势停用。
      * 解锁入口唯一 —— 右侧中间的锁按钮（见 [onToggleLock]）。
@@ -460,7 +471,21 @@ fun PlayerScreen(
                         description = "画中画",
                         onClick = {
                             touchControls()
-                            onEnterPip()
+                            // ⚠️ 手动点画中画也要判"有没有流可播"（review/01-player.md P2-6）：
+                            // 「按 Home 自动进小窗」那条路早有 shouldAutoEnterPip 守卫，
+                            // 手动按钮这条路原来直接调 onEnterPip —— 解析中/全失败时
+                            // 点出来是一块转圈或黑掉的小窗。
+                            // 两条路径用**同一条**判据（ManualPipPolicy 内部委托它），
+                            // 但手动必须给提示，否则用户以为按钮坏了。
+                            when (val decision = ManualPipPolicy.decide(
+                                isPlayerRoute = true,
+                                hasStream = streamUrl != null || webFallbackUrl != null,
+                            )) {
+                                ManualPipDecision.Allow -> onEnterPip()
+                                is ManualPipDecision.Blocked ->
+                                    // 提示走界面已有的 snackbar 通道（由 errorMessage 驱动）
+                                    onPipBlocked(decision.message)
+                            }
                         },
                     )
                     VideoControlButton(
@@ -1621,6 +1646,17 @@ private fun VideoSurface(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // ⚠️ 切场时复位小窗视频尺寸（review/01-player.md P2-5）：
+    // setVideoSize 只在 onVideoSizeChanged 里写，切到另一场比赛后
+    // 新场次首帧到达之前**没人清零** —— 小窗按上一场的比例显示
+    // （上一场 4:3、这一场 16:9 时，小窗会被拉成错误形状）。
+    // 清零后 pipAspectRatio() 回退 16:9，等真实宽高到了再更新。
+    LaunchedEffect(streamUrl) {
+        if (PipAspectReset.shouldResetOnMatchSwitch()) {
+            PipState.setVideoSize(0, 0)
+        }
     }
 
     // 卡死看门狗：有些线路清单能拉到但直播边缘流卡住，永远停在 BUFFERING，

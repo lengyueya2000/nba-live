@@ -426,6 +426,9 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     inPip = inPip,
                     onToggleFullscreen = { fullscreen = !fullscreen },
                     onEnterPip = { activity?.enterPip() },
+                    // 点画中画但还没流可播：给一句提示（P2-6）。
+                    // 复用播放页已有的错误提示通道（snackbar 由 errorMessage 驱动）。
+                    onPipBlocked = { message -> viewModel.showPlayerNotice(message) },
                     locked = playerLocked,
                     onToggleLock = {
                         val id = playerState.match?.id

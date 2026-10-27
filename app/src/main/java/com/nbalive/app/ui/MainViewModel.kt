@@ -757,6 +757,21 @@ class MainViewModel(
      *
      * 不改线路、不重试：这条路本来就是最后的兜底。
      */
+    /**
+     * 播放页的一次性提示（review/01-player.md P2-6）。
+     *
+     * 用于"用户明确操作了、但当前条件不满足"这类反馈 ——
+     * 例如点了「画中画」但线路还没解析出流。
+     * 走 [PlayerUiState.errorMessage] + errorId 这条通道：
+     * 界面已有 snackbar 消费它，不需要新增一套提示机制。
+     *
+     * ⚠️ 必须走 withError（而不是直接 copy message）：errorId 自增才能让
+     * 同样的文案连着弹两次（StateFlow 会合并相等值）。
+     */
+    fun showPlayerNotice(message: String) {
+        _playerState.update { it.withError(message) }
+    }
+
     fun onPlaybackSuspect() {
         val state = _playerState.value
         // 已经在直连播了就不管：网页组件可能滞后于嗅探升级才回调
