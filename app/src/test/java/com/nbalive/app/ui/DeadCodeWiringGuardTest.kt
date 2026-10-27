@@ -155,6 +155,48 @@ class DeadCodeWiringGuardTest {
         )
     }
 
+    @Test
+    fun `返回键判据必须走 BackPolicy 且含标签页`() {
+        // 03-P2-1：enabled 条件漏掉标签页 -> 在「直播」/「我的」按返回直接退出 App
+        val files = productionFiles()
+        assumeTrue("找不到生产源码，跳过源码扫描", files.isNotEmpty())
+        val app = files.firstOrNull { it.name == "NbaLiveApp.kt" }
+        assumeTrue("找不到 NbaLiveApp.kt，跳过", app != null)
+        val text = app!!.readText()
+
+        assertTrue(
+            "BackHandler 的 enabled 必须走 BackPolicy.shouldIntercept（含标签页判据）",
+            text.contains("BackPolicy.shouldIntercept"),
+        )
+        assertTrue(
+            "按返回的动作必须走 BackPolicy.action",
+            text.contains("BackPolicy.action"),
+        )
+        assertTrue(
+            "非默认标签按返回要回赛事标签（BackAction.ResetTab）",
+            text.contains("BackAction.ResetTab"),
+        )
+    }
+
+    @Test
+    fun `详情页缺 match 不能 return 白屏`() {
+        // 03-P2-5：`match = detailState.match ?: return@Box` 会静默白屏
+        val files = productionFiles()
+        assumeTrue("找不到生产源码，跳过源码扫描", files.isNotEmpty())
+        val app = files.firstOrNull { it.name == "NbaLiveApp.kt" }
+        assumeTrue("找不到 NbaLiveApp.kt，跳过", app != null)
+        val text = app!!.readText()
+
+        assertTrue(
+            "详情路由必须用 MissingMatchPolicy 判缺数据并给占位",
+            text.contains("MissingMatchPolicy.forDetail"),
+        )
+        assertTrue(
+            "占位必须有返回入口（否则用户对着白屏没法操作）",
+            text.contains("MissingMatchPlaceholder"),
+        )
+    }
+
     private fun productionFiles(): List<File> {
         val root = listOf(
             File("src/main/java/com/nbalive/app"),

@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Person
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -64,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -237,13 +240,38 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     // 被这里吃掉就会变成"先退详情页、再退列表"，小窗关不掉。
     // ⚠️ 锁定时返回键不退出播放页：用户明确要求「只有点解锁键才会解锁」，
     // 锁定期间返回键被吃掉（而不是退出播放页），否则用户会被困在锁定态。
-    BackHandler(enabled = !inPip && (searchOpen || route != Route.LIST || fullscreen)) {
-        when {
-            searchOpen -> searchOpen = false
-            // 锁定中：吃掉这次返回，什么都不做
-            route == Route.PLAYER && !PlayerLock.backExitsPlayer(playerLocked) -> Unit
-            fullscreen -> fullscreen = false
-            else -> viewModel.back()
+    //
+    // ⚠️ 判据抽在 BackPolicy（有单测）。原来的 enabled 条件不含**标签页**：
+    // 用户切到「直播」/「我的」后按返回，条件全为假 → 不接管 →
+    // 系统默认行为 = 退出 Activity（用户只是想回「赛事」标签）。
+    val onDefaultTab = tab == Tab.MATCHES
+    BackHandler(
+        enabled = !inPip && BackPolicy.shouldIntercept(
+            searchOpen = searchOpen,
+            route = route,
+            fullscreen = fullscreen,
+            onDefaultTab = onDefaultTab,
+        ),
+    ) {
+        when (
+            BackPolicy.action(
+                searchOpen = searchOpen,
+                route = route,
+                fullscreen = fullscreen,
+                onDefaultTab = onDefaultTab,
+                // 锁定语义只有一份实现：PlayerLock.backExitsPlayer
+                backExitsPlayer = PlayerLock.backExitsPlayer(playerLocked),
+            )
+        ) {
+            BackAction.CloseSearch -> searchOpen = false
+            // 锁定态：吃掉这次返回，什么都不做
+            BackAction.Swallow -> Unit
+            BackAction.ExitFullscreen -> fullscreen = false
+            BackAction.LeaveRoute -> viewModel.back()
+            // 非默认标签：回赛事标签，而不是退出 App
+            BackAction.ResetTab -> tab = Tab.MATCHES
+            // 理论上不该走到（enabled 已经挡住了），保留穷尽分支
+            BackAction.None -> Unit
         }
     }
 
@@ -345,16 +373,27 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     )
                 }
 
-                Route.DETAIL -> MatchDetailScreen(
-                    match = detailState.match ?: return@Box,
-                    signals = detailState.signals,
-                    loadingSignals = detailState.loadingSignals,
-                    onSignalClick = viewModel::openPlayer,
-                    // 拉线路失败必须让用户看见并能重试：
-                    // 原来只传 loading，失败就被渲染成"该赛事暂无可用线路"
-                    error = detailState.error,
-                    onRetry = viewModel::refreshSignals,
-                )
+                Route.DETAIL -> when (
+                    val state = MissingMatchPolicy.forDetail(detailState.match != null)
+                ) {
+                    // ⚠️ 缺 match 时不能 `return@Box` 静默白屏（review/03-ui.md P2-5）：
+                    // 界面上什么都没有，没有提示也没有返回入口。
+                    // 进程被系统回收后恢复路由时最容易触发。
+                    is MissingMatchState.ShowPlaceholder -> MissingMatchPlaceholder(
+                        message = state.message,
+                        onBack = viewModel::back,
+                    )
+                    MissingMatchState.Render -> MatchDetailScreen(
+                        match = detailState.match!!,
+                        signals = detailState.signals,
+                        loadingSignals = detailState.loadingSignals,
+                        onSignalClick = viewModel::openPlayer,
+                        // 拉线路失败必须让用户看见并能重试：
+                        // 原来只传 loading，失败就被渲染成"该赛事暂无可用线路"
+                        error = detailState.error,
+                        onRetry = viewModel::refreshSignals,
+                    )
+                }
 
                 Route.PLAYER -> PlayerScreen(
                     match = playerState.match,
@@ -416,6 +455,43 @@ fun NbaLiveApp(viewModel: MainViewModel) {
         }
     }
     } // end Box
+}
+
+/**
+ * 缺数据占位（review/03-ui.md P2-5）。
+ *
+ * 原来 `Route.DETAIL -> MatchDetailScreen(match = detailState.match ?: return@Box)`
+ * 拿不到 match 就直接 return —— 界面纯白屏，没有提示、没有返回入口。
+ * 进程被系统回收后恢复路由时最容易触发。
+ *
+ * 这里给一句能解释问题的提示 + 一个明确的返回按钮，
+ * 而不是让用户对着白屏不知道该做什么。
+ */
+@Composable
+private fun MissingMatchPlaceholder(message: String, onBack: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(Space.xl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Filled.ErrorOutline,
+            contentDescription = null,
+            modifier = Modifier.size(40.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(Space.lg))
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(Space.lg))
+        Button(onClick = onBack) { Text("返回列表") }
+    }
 }
 
 /** 品牌顶栏：渐变标记 + 标题 + 副标题 + 右侧操作 */
