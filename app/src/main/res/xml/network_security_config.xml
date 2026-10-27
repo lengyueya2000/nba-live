@@ -1,19 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  明文流量策略。
+  明文流量策略（review/04-security.md P1-5）。
 
-  这个 App 必须允许明文 HTTP：源站的播放页与切片走 http，
-  而 m3u8 清单所在的 CDN 主机名是**运行时由源站生成并混淆**的
-  （hdl2.<反转后的主域名>），无法预先写进域名白名单——
-  写死了就等于播放器拿不到清单。
+  ## 为什么 base-config 必须放行明文
 
-  因此这里显式保留 base-config 的明文许可，并把已知主机列出来备案，
-  便于日后源站支持 https 时收紧策略。
+  这个 App 必须允许明文 HTTP，这不是疏忽，是硬需求：
+    - 源站播放页本身就是明文：实测抓包
+      `.forensics/detail_364127.html` 里 `toLive` 的 data-url 是
+      `http://play.sportsteam368.com/play/mgxl/?id=...`；
+    - JRS 列表页自身大量引用 `http://www.jrszb444.com`（实测 28 处 http
+      对 3 处 https）；
+    - m3u8 清单所在的 CDN 主机名是**运行时由源站生成并混淆**的
+      （`hdl2.<反转后的主域名>`），无法预先写进域名白名单 ——
+      写死了就等于播放器拿不到清单。
 
-  已知的明文主机：
-    play.sportsteam356.com   JRKAN 播放页
-    play.sportsteam368.com   JRS 播放页
-    jrszbt.com              JRS 源站
+  ## 那收紧的是什么
+
+  App **自己发起**、且**只走 https** 的请求，不该被全局明文许可兜着：
+  一旦被降级或中间人改写，策略层不会拒绝。这些主机名是写死在代码里的常量
+  （不需要运行时生成），所以可以精确收紧：
+    - jrszbt.com：JRS 列表页与详情页，代码里全部是 https://
+    - im-imgs-bucket.oss-accelerate.aliyuncs.com：JRKAN 列表 js，https://
+
+  ⚠️ 绝不要把 play.sportsteam*.com 或 *.jrszb444.com 收进"禁明文"清单：
+  它们**就是**明文提供服务的，收了等于播放全挂。
+  这条边界由 CleartextPolicyTest 双向钉住（该禁的禁、该放的放）。
 -->
 <network-security-config xmlns:tools="http://schemas.android.com/tools">
     <!--
@@ -27,4 +38,17 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
+
+    <!--
+      JRS 源站：代码里全部以 https:// 访问（SourceEndpoints.JRS_LIST 主域名、
+      详情页 URL 模板）。收紧后若被降级成明文，连接会直接失败而不是静默裸奔。
+    -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">jrszbt.com</domain>
+    </domain-config>
+
+    <!-- JRKAN 列表 js：OSS 加速域名，代码里是 https:// -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">im-imgs-bucket.oss-accelerate.aliyuncs.com</domain>
+    </domain-config>
 </network-security-config>
