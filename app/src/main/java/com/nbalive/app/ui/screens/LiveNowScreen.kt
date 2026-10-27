@@ -34,10 +34,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.SignalBadge
@@ -262,7 +264,19 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.card))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
+            // ⚠️ 卡片里还有「立即观看」按钮，两者是**同一个** onClick。
+            // 不合并语义时 TalkBack 会读成两个独立可点节点：用户滑到这里要停两次、
+            // 听到两遍相同动作（review/03-ui.md P2-25）。
+            // mergeDescendants 把它并成一个节点，onClickLabel 给出动作词
+            // —— 读屏用户听到的是一句话、一个动作。
+            // 判据见 CardSemantics（有单测）。
+            .semantics(mergeDescendants = CardSemantics.shouldMergeIntoParent(hasInnerButton = true)) {
+                // 语义合并后由父节点统一承载点击动作
+            }
+            .clickable(
+                onClickLabel = CardSemantics.actionLabel(hasInnerButton = true),
+                onClick = onClick,
+            )
             .padding(Space.md),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
