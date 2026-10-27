@@ -17,6 +17,7 @@ import com.nbalive.app.data.remote.JrkanParser
 import com.nbalive.app.data.remote.StreamUrlResolver
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -318,6 +319,57 @@ class MatchRepository(
             }
         }
 
+        // ⚠️ single-flight（review/02-data.md P2-8）：
+        // 缓存只挡"已完成的请求"，挡不住"正在飞的请求"。
+        // 状态校正（4 并发）与 loadSignals 若同时请求同一 detailId，
+        // 两边都会 miss 并各打一次源站 —— 用户"刷新列表还没结束就点进播放页"
+        // 就是这个场景，源站会同时收到两份相同请求。
+        // 这里用 in-flight map 让后来者等第一个请求的结果。
+        if (!forceRefresh) {
+            val existing = synchronized(inFlightDetails) { inFlightDetails[detailId] }
+            if (existing != null) {
+                return existing.await()
+            }
+        }
+        val deferred = CompletableDeferred<String?>()
+        if (!forceRefresh) {
+            val raced = synchronized(inFlightDetails) {
+                // 双重检查：拿锁前可能已有别人放进去了
+                inFlightDetails[detailId] ?: run {
+                    inFlightDetails[detailId] = deferred
+                    null
+                }
+            }
+            if (raced != null) return raced.await()
+        }
+        val body = try {
+            fetchDetailBody(detailId, fetch)
+        } finally {
+            // ⚠️ 必须在 finally 里移除并完成：任何异常路径都不能把 detailId 永久卡在
+            // in-flight map 里 —— 那会让这个场次的详情页永远等待一个已经结束的 Deferred。
+            synchronized(inFlightDetails) { inFlightDetails.remove(detailId) }
+            deferred.complete(
+                synchronized(detailCache) { detailCache[detailId]?.second },
+            )
+        }
+
+        if (!body.isNullOrBlank()) {
+            // ⚠️ 时间戳在**拿到正文之后**取（review/02-data.md P2-7）：
+            // 原来的 now 在发起请求**之前**算，请求耗时（最长 35s）被算进缓存年龄，
+            // 等于把 5 分钟 TTL 悄悄缩短成 4 分半 —— 越慢的请求，缓存越短。
+            val cachedAt = System.nanoTime() / 1_000_000L
+            synchronized(detailCache) {
+                detailCache[detailId] = cachedAt to body
+            }
+        }
+        return body
+    }
+
+    /** 真正发请求的部分（按候选域名顺序试），从 [fetchJrsDetail] 里拆出来便于 single-flight 包裹。 */
+    private suspend fun fetchDetailBody(
+        detailId: String,
+        fetch: suspend (String, String?) -> FetchResult,
+    ): String? {
         val candidates = SourceEndpoints.attemptOrder(
             SourceEndpoints.jrsDetailUrls(detailId),
             synchronized(listFailedHosts) { listFailedHosts.toSet() },
@@ -342,12 +394,6 @@ class MatchRepository(
                 }
             }
             if (body != null) break
-        }
-
-        if (!body.isNullOrBlank()) {
-            synchronized(detailCache) {
-                detailCache[detailId] = now to body
-            }
         }
         return body
     }
@@ -421,6 +467,17 @@ class MatchRepository(
          */
         private val WHITESPACE = Regex("\\s+")
     }
+
+    /**
+     * 正在飞的详情页请求：detailId -> Deferred。
+     *
+     * ⚠️ 缓存只挡"已完成的请求"，挡不住"正在飞的请求"（review/02-data.md P2-8）：
+     * 状态校正（4 并发）与 loadSignals 同时请求同一 detailId 时，
+     * 两边都会 miss 并各打一次源站。用户"刷新列表还没结束就点进播放页"就是这个场景。
+     *
+     * 必须在 finally 里移除，任何异常路径都不能把 detailId 永久卡住。
+     */
+    private val inFlightDetails = mutableMapOf<String, CompletableDeferred<String?>>()
 
     /**
      * 详情页短缓存：**detailId** -> (缓存时刻, 正文)。

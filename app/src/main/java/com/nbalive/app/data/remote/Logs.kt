@@ -17,11 +17,20 @@ internal fun debugLog(tag: String, message: String) {
 }
 
 /**
- * URL 脱敏：保留 scheme + host + path，**抹掉 query 与 fragment**。
+ * URL 脱敏：保留 scheme + host + path，**抹掉 userinfo、query 与 fragment**。
  *
  * 源站的播放地址把签名放在 query 里（`auth_key`、`sign`、`token`、`t`…），
  * 那个签名就是"谁能播这条流"的凭证，直接写进 logcat 等于公开它。
  * 保留 path 是为了还能定位是哪个页面/哪条线路出了问题。
+ *
+ * ## 两类补充（review/02-data.md P2-9）
+ *
+ * 1. **userinfo 必须抹掉**：`https://user:pass@host/path` 的口令原样进日志，
+ *    比 query 签名更直接（有些源站备用地址确实带这种形态）。
+ * 2. **超长 path 要截断**：部分 CDN 把签名拼在 path 里
+ *    （`/sign/<hash>/live/a.m3u8`）。保留 path 对排障有价值，
+ *    但几百字符的 path 既没有排障价值、又可能夹带凭证 —— 超过
+ *    [MAX_PATH_CHARS] 就截断并加省略号。
  *
  * @return 形如 `https://cdn.example.com/live/abc.m3u8?<redacted>`
  */
@@ -30,15 +39,42 @@ internal fun redactUrl(url: String): String {
     if (schemeEnd < 0) return "<invalid-url>"
     val prefix = url.substring(0, schemeEnd + 3)
     val rest = url.substring(schemeEnd + 3)
-    val queryStart = rest.indexOf('?')
-    val fragmentStart = rest.indexOf('#')
-    // query 与 fragment 都要抹掉，取最早的那个
-    val cut = listOf(queryStart, fragmentStart).filter { it >= 0 }.minOrNull()
-        ?: return url
-    val base = prefix + rest.substring(0, cut)
+
+    // ① 抹掉 userinfo（authority 里最后一个 '@' 之前的部分）
+    val authorityEnd = rest.indexOfFirst { it == '/' || it == '?' || it == '#' }
+        .takeIf { it >= 0 } ?: rest.length
+    val at = rest.lastIndexOf('@', startIndex = authorityEnd - 1)
+    val restNoUser = if (at >= 0) rest.substring(at + 1) else rest
+
+    val queryStart = restNoUser.indexOf('?')
+    val fragmentStart = restNoUser.indexOf('#')
+    // query 与 fragment 都要抹掉，取最早的那个；都没有时用 -1 表示"无需截断"
+    val cut: Int = listOf(queryStart, fragmentStart).filter { it >= 0 }.minOrNull() ?: -1
+    // 无 query/fragment 时也要走下面的截断逻辑，不能直接 return url
+    val base = prefix + truncatePath(if (cut >= 0) restNoUser.substring(0, cut) else restNoUser)
+    if (cut < 0) return base
     // path 本身也可能带签名（源站把 id 拼在路径里），但没有 query 就没有时间戳签名，
     // 保留它对排障有用。query/fragment 一律抹掉。
     return if (queryStart >= 0 && queryStart == cut) "$base?<redacted>" else "$base#<redacted>"
+}
+
+/** path 部分的长度上限：够看清"哪个页面/哪条线路"，又不会把凭证整段带走。 */
+private const val MAX_PATH_CHARS = 120
+
+/**
+ * 截断过长的 path（保留开头 + 省略号）。
+ *
+ * 只看 `?`/`#` 之前那段，且**不截断 host**：host 本身很短，
+ * 而丢掉 host 会让日志彻底失去排障价值。
+ */
+private fun truncatePath(schemeAndHostAndPath: String): String {
+    // 从 scheme:// 之后找第一个 '/'，那之前是 authority（host[:port]）
+    val afterScheme = schemeAndHostAndPath.indexOf("://") + 3
+    val slash = schemeAndHostAndPath.indexOf('/', afterScheme)
+    if (slash < 0) return schemeAndHostAndPath
+    val path = schemeAndHostAndPath.substring(slash)
+    if (path.length <= MAX_PATH_CHARS) return schemeAndHostAndPath
+    return schemeAndHostAndPath.substring(0, slash) + path.take(MAX_PATH_CHARS) + "…"
 }
 
 /**
