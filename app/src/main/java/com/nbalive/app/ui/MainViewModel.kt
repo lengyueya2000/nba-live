@@ -275,7 +275,13 @@ class MainViewModel(
         // 取消上一次：连点刷新会让多次 loadMatches 并发跑，
         // 每次都要为直播中的场次并发拉详情页，对源站是成倍的请求量
         refreshJob?.cancel()
-        refreshJob = viewModelScope.launch {
+        val job = viewModelScope.launch {
+            // ⚠️ 记住"我是不是当前那次刷新"（review/02-data.md P2-4）。
+            // 取消收尾里若无条件写 refreshing=false，会把**新任务**刚设的
+            // refreshing=true 抹掉 —— 指示器闪一下就消失，但请求还在跑。
+            // 用协程自身的 Job 与 refreshJob 比对：被替换掉的旧协程不该再写状态。
+            val self = coroutineContext[Job]
+            fun stillCurrent(): Boolean = refreshJob === self
             // 刷新时**保留旧列表**：整屏换成转圈会把已有卡片全抹掉（滚动位置也丢）。
             // 只有首载（一条数据都还没有）才用全屏 loading。
             val firstLoad = _listState.value.matches.isEmpty()
@@ -321,24 +327,29 @@ class MainViewModel(
                 }
             } catch (ce: CancellationException) {
                 // 协程被取消：收尾 loading/refreshing。
-                // 取消发生的两个地方（refresh 自身重发、playMatch 切场）都会复位这两个标志，
-                // 所以这条目前是**冗余保险**——但它让"取消必须收尾"这条约定落在代码里，
-                // 以后新增取消点时不会忘了收尾。
-                _listState.update { it.copy(loading = false, refreshing = false) }
+                // ⚠️ 只在**自己仍是当前那次刷新**时才收尾（review/02-data.md P2-4）：
+                // refresh() 先 cancel 旧的再起新的，旧协程的这个 catch 若比新协程
+                // 写 refreshing=true 更晚落地，无条件写 false 就会把新任务的
+                // 指示器抹掉 —— 用户看到指示器闪一下消失，但请求还在跑。
+                if (stillCurrent()) { _listState.update { it.copy(loading = false, refreshing = false) } }
                 throw ce
             } catch (t: Throwable) {
                 // 注入的加载入口抛异常时也不能闪退，更不能把列表清空
                 // ⚠️ 不把 throwable 交给 Log：堆栈帧的 message 可能内嵌带签名的源站 URL
                 safeLogWarn("MainViewModel", "refresh failed", t)
-                _listState.update {
-                    it.copy(
-                        loading = false,
-                        refreshing = false,
-                        error = safeMessage(t).ifBlank { "网络异常，请稍后重试" },
-                    )
+                // 同理：被替换掉的旧任务不该覆盖新任务的状态
+                if (stillCurrent()) {
+                    _listState.update {
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            error = safeMessage(t).ifBlank { "网络异常，请稍后重试" },
+                        )
+                    }
                 }
             }
         }
+        refreshJob = job
     }
 
     fun selectLeague(league: League) {
@@ -788,6 +799,11 @@ class MainViewModel(
             Route.PLAYER -> {
                 playJob?.cancel()
                 loadJob?.cancel()
+                // ⚠️ detailJob 也要取消（review/02-data.md P2-5）：
+                // 用户点「刷新线路」后立刻进播放页再返回，这个 job 可能在返回后
+                // 才落地并写 _detailState —— 界面已经离开详情页了，
+                // 却还在被一个早该结束的请求改状态。
+                detailJob?.cancel()
                 // ⚠️ 回到**进入播放页之前**的路由，不是无条件回 DETAIL。
                 // 从列表「立即观看」直接播放时，回 DETAIL 会掉进
                 // 用户从未见过的详情页（要再按一次返回才到列表）。

@@ -26,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 
 /**
@@ -39,6 +40,18 @@ class MatchRepository(
     private val jrsParser: JrsParser = JrsParser(),
     private val jrkanParser: JrkanParser = JrkanParser(),
     private val resolver: StreamUrlResolver = StreamUrlResolver(),
+    /**
+     * 列表加载的整体 deadline（review/02-data.md P2-3）。
+     *
+     * 单源 3 次尝试 × `callTimeout = 35s`，两源并发约 105s；
+     * 之后状态校正最多 16 场 / 4 并发 = 4 批 × 35s = 140s。
+     * 最坏情况用户盯着转圈接近 **3 分钟**，期间没有任何出口。
+     *
+     * 60 秒是"用户还愿意等"与"覆盖正常慢网"的折中：
+     * 正常两源并发首屏在 1~3 秒，慢网也在 10 秒级；
+     * 超过 60 秒基本可以确定是源站/网络挂了，再等只是让用户干瞪眼。
+     */
+    private val loadDeadlineMs: Long = DEFAULT_LOAD_DEADLINE_MS,
 ) {
     /**
      * runCatching 会把 [CancellationException] 也吞掉，
@@ -340,6 +353,14 @@ class MatchRepository(
     }
 
     companion object {
+        /**
+         * 列表加载的整体 deadline（review/02-data.md P2-3）。
+         *
+         * 60 秒：正常两源并发首屏 1~3 秒，慢网也在 10 秒级；
+         * 超过 60 秒基本可以确定源站/网络挂了，再等只是让用户干瞪眼。
+         */
+        private const val DEFAULT_LOAD_DEADLINE_MS = 60_000L
+
         // ⚠️ 端点不再写死在本类：单值常量扛不住源站换域名（review/02-data.md P1-9）。
         // JRS/JRKAN/播放域名全部收进 SourceEndpoints，一个失效按顺序试下一个。
 
@@ -612,38 +633,59 @@ class MatchRepository(
     internal suspend fun loadMatchesWithOutcome(
         fetch: suspend (String, String?) -> FetchResult,
     ): LoadOutcome = withContext(Dispatchers.IO) {
-        supervisorScope {
-            val jrsDeferred = async { fetchJrsOutcome(fetch) }
-            val jrkanDeferred = async { fetchJrkanOutcome(fetch) }
-            val jrs = jrsDeferred.await()
-            val jrkan = jrkanDeferred.await()
-
-            val failures = listOf(Provider.JRS to jrs, Provider.JRKAN to jrkan)
-                .filter { it.second.failed }
-            val reasons = failures.associate { (provider, outcome) ->
-                provider to when (outcome) {
-                    is SourceOutcome.Rejected -> "源站拒绝请求（HTTP ${outcome.code}）"
-                    is SourceOutcome.Unreachable ->
-                        "网络连接失败${outcome.reason?.let { "（$it）" } ?: ""}"
-                    SourceOutcome.ParsedEmpty -> "未解析到任何场次（源站可能已改版）"
-                    is SourceOutcome.Ok -> ""
-                }
+        // ⚠️ 整体 deadline（review/02-data.md P2-3）：
+        // 单源 3 次重试 × 35s callTimeout 已约 105s，再叠加状态校正的
+        // 4 批 × 35s，最坏接近 3 分钟无出口。用户宁可看到
+        // "部分场次 + 可重试"，也不要盯着转圈。
+        //
+        // 超时后**不抛异常**：如实报成"两个源都没在时限内返回"，
+        // 由调用方按 partialError 呈现 —— 抛异常会让 UI 只剩一个错误页，
+        // 连已经拿到的部分数据也丢掉。
+        val finished = withTimeoutOrNull(loadDeadlineMs) {
+            supervisorScope {
+                val jrsDeferred = async { fetchJrsOutcome(fetch) }
+                val jrkanDeferred = async { fetchJrkanOutcome(fetch) }
+                jrsDeferred.await() to jrkanDeferred.await()
             }
-
-            val merged = merge(jrs.orEmpty(), jrkan.orEmpty())
-            // 校正与排序只在有数据时有意义；空列表直接返回，省掉一整轮详情页请求
-            val corrected = if (merged.matches.isEmpty()) {
-                merged.matches
-            } else {
-                sort(correctLiveStatuses(merged.matches, fetch))
-            }
-            LoadOutcome(
-                matches = corrected,
-                failedProviders = failures.map { it.first },
-                filteredOutCount = merged.filteredOutCount,
-                reasons = reasons,
+        }
+        if (finished == null) {
+            Log.w("MatchRepo", "列表加载超过 ${loadDeadlineMs}ms 未完成，按超时返回")
+            return@withContext LoadOutcome(
+                matches = emptyList(),
+                failedProviders = listOf(Provider.JRS, Provider.JRKAN),
+                reasons = mapOf(
+                    Provider.JRS to "网络超时（超过 ${loadDeadlineMs / 1000} 秒未响应）",
+                    Provider.JRKAN to "网络超时（超过 ${loadDeadlineMs / 1000} 秒未响应）",
+                ),
             )
         }
+        val (jrs, jrkan) = finished
+
+        val failures = listOf(Provider.JRS to jrs, Provider.JRKAN to jrkan)
+            .filter { it.second.failed }
+        val reasons = failures.associate { (provider, outcome) ->
+            provider to when (outcome) {
+                is SourceOutcome.Rejected -> "源站拒绝请求（HTTP ${outcome.code}）"
+                is SourceOutcome.Unreachable ->
+                    "网络连接失败${outcome.reason?.let { "（$it）" } ?: ""}"
+                SourceOutcome.ParsedEmpty -> "未解析到任何场次（源站可能已改版）"
+                is SourceOutcome.Ok -> ""
+            }
+        }
+
+        val merged = merge(jrs.orEmpty(), jrkan.orEmpty())
+        // 校正与排序只在有数据时有意义；空列表直接返回，省掉一整轮详情页请求
+        val corrected = if (merged.matches.isEmpty()) {
+            merged.matches
+        } else {
+            sort(correctLiveStatuses(merged.matches, fetch))
+        }
+        LoadOutcome(
+            matches = corrected,
+            failedProviders = failures.map { it.first },
+            filteredOutCount = merged.filteredOutCount,
+            reasons = reasons,
+        )
     }
 
     /** 单源成功时给场次，失败时给空表。 */
