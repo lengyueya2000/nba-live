@@ -276,11 +276,21 @@ class JrkanParser {
      * 结构：
      *   <a class="item ..." data-play="/play/sm.html?id=439&id2="><strong>主播解说①</strong></a>
      *
+     * @param playHost 拼线路地址用的播放主机（形如 `http://play.sportsteam356.com`）。
+     *   ⚠️ 不能固定用 [PLAY_HOST]：正文可能是从**候选里的另一个域名**取到的
+     *   （见 `MatchRepository.expandJrkanPlayPage` / `SourceEndpoints.PLAY_HOSTS`），
+     *   拼回写死域名的话线路地址指向已经下线的 host，点开就是错误页 ——
+     *   换了域名却等于没换。默认值保持 [PLAY_HOST] 只为兼容原调用形态。
+     *
      * 处理策略（按用户要求）：
      *  1. **删除**线路名含"主播/解说"等字样的线路（主播个人推流，界面不呈现）
      *  2. 其余线路保留；能直连 m3u8 的排前面，默认选中即可播
      */
-    fun parseChannels(html: String, matchId: String): List<StreamSource> {
+    fun parseChannels(
+        html: String,
+        matchId: String,
+        playHost: String = PLAY_HOST,
+    ): List<StreamSource> {
         val seen = linkedSetOf<String>()
         val raw = mutableListOf<Pair<String, String>>()  // path to rawLabel
 
@@ -307,7 +317,7 @@ class JrkanParser {
                     id = "$matchId-c$index",
                     label = displayLabel(rawLabel, index),
                     provider = Provider.JRKAN,
-                    pageUrl = PLAY_HOST + path,
+                    pageUrl = playHost.trimEnd('/') + path,
                 )
             }
     }

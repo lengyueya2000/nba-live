@@ -268,13 +268,26 @@ class MatchRepository(
      *
      * TTL 取 5 分钟：足够覆盖"打开 App → 点直播 → 刷新线路"这一串操作，
      * 又短到不会让用户手动刷新时看到过期数据（状态校正本身会重新拉）。
+     *
+     * ## 域名候选（review/02-data.md P1-9 / P2-6）
+     *
+     * 详情页挂在**同一个站点的不同域名**下，所以走 [SourceEndpoints.jrsDetailUrls]
+     * 的候选列表：主域名不可达时改试镜像。
+     * 旧实现把 `https://jrszbt.com/live/$id.html` 写死在这里**和**
+     * `invalidateDetailCache` 两处 —— 主域名一死，列表靠镜像活了下来，
+     * 但每一场的详情页仍去敲死域名，状态校正与线路展开全部静默失效；
+     * 而且两处副本改一处漏一处时，"刷新线路"会清 A 的缓存、读 B 的缓存，
+     * 按钮变摆设且不报错。
+     *
+     * ⚠️ 缓存 key 用 **detailId**（而不是 URL）：
+     * 命中哪个域名都不影响同一场次的缓存身份，
+     * 用户清缓存时也不用知道上次是从哪个域名拿到的。
      */
     private suspend fun fetchJrsDetail(
         detailId: String,
         fetch: suspend (String, String?) -> FetchResult,
         forceRefresh: Boolean = false,
     ): String? {
-        val url = "https://jrszbt.com/live/$detailId.html"
         // ⚠️ 用**单调时钟**（nanoTime）而不是 currentTimeMillis：
         // 用户把系统时间往前拨，"now - cachedAt" 会变成负数，
         // 负数 < TTL 恒成立 → 缓存永不过期（源站改版了也看不到新内容）。
@@ -284,20 +297,43 @@ class MatchRepository(
         val now = System.nanoTime() / 1_000_000L
         if (!forceRefresh) {
             synchronized(detailCache) {
-                val hit = detailCache[url]
+                val hit = detailCache[detailId]
                 if (hit != null) {
                     if (now - hit.first < DETAIL_CACHE_TTL_MS) return hit.second
-                    detailCache.remove(url)
+                    detailCache.remove(detailId)
                 }
             }
         }
-        val body = when (val r = fetch(url, SourceEndpoints.JRS_LIST.first())) {
-            is FetchResult.Ok -> r.body
-            else -> null
+
+        val candidates = SourceEndpoints.attemptOrder(
+            SourceEndpoints.jrsDetailUrls(detailId),
+            synchronized(listFailedHosts) { listFailedHosts.toSet() },
+        )
+        var body: String? = null
+        for (url in candidates) {
+            when (val r = fetch(url, http.refererOf(url))) {
+                is FetchResult.Ok -> {
+                    synchronized(listFailedHosts) { listFailedHosts -= hostOf(url) }
+                    body = r.body
+                }
+                is FetchResult.Rejected -> {
+                    // ⚠️ 403/429 是限流信号：**立即停整个源，不试镜像**。
+                    // 镜像与主域名同属一个站点家族，大概率共享限流窗口，
+                    // 继续打只会把窗口越拖越长（review 的"限流放大器"）。
+                    synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                    Log.w("MatchRepo", "详情页被拒绝(HTTP ${r.code})，放弃重试: ${redactUrl(url)}")
+                    return null
+                }
+                is FetchResult.Unreachable -> {
+                    synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                }
+            }
+            if (body != null) break
         }
+
         if (!body.isNullOrBlank()) {
             synchronized(detailCache) {
-                detailCache[url] = now to body
+                detailCache[detailId] = now to body
             }
         }
         return body
@@ -366,7 +402,12 @@ class MatchRepository(
     }
 
     /**
-     * 详情页短缓存：URL -> (缓存时刻, 正文)。
+     * 详情页短缓存：**detailId** -> (缓存时刻, 正文)。
+     *
+     * ⚠️ key 用 detailId 而不是 URL：详情页有多个候选域名
+     * （[SourceEndpoints.jrsDetailUrls]），按 URL 存会让同一场次
+     * 在主域名与镜像域名下各存一份，且"刷新线路"只能清掉其中一个 ——
+     * 用户点了刷新却拿到旧正文，还不报错（review/02-data.md P2-6）。
      *
      * ⚠️ 会被多个协程并发访问（状态校正并发 4 路 + loadSignals），
      * 所以用 synchronized 保护，不能用普通 LinkedHashMap。
@@ -851,7 +892,11 @@ class MatchRepository(
      */
     fun invalidateDetailCache(detailId: String) {
         synchronized(detailCache) {
-            detailCache.remove("https://jrszbt.com/live/$detailId.html")
+            // key 是 detailId 而不是 URL：详情页现在有多个候选域名
+            // （[SourceEndpoints.jrsDetailUrls]），按写死的某个域名去 remove
+            // 会清不掉上次从镜像域名缓存的那一份 —— 按钮变摆设且不报错
+            // （review/02-data.md P2-6）。
+            detailCache.remove(detailId)
         }
     }
 
@@ -881,11 +926,7 @@ class MatchRepository(
         // 两个页面共用前缀会产出重复 id —— 播放器把 id 当 LazyColumn 的 key，
         // 重复 key 会直接抛 IllegalArgumentException 崩掉（这个仓库已经崩过两次）。
         val jrkanSignals = jrkanSources.flatMapIndexed { index, source ->
-            val html = when (val r = fetch(source.pageUrl, http.refererOf(source.pageUrl))) {
-                is FetchResult.Ok -> r.body
-                else -> null
-            } ?: return@flatMapIndexed emptyList()
-            jrkanParser.parseChannels(html, "${match.id}-jr$index")
+            expandJrkanPlayPage(source, "${match.id}-jr$index", fetch)
         }
         // 展开失败时退回列表页给的播放页，至少还能用 WebView 打开
         val jrkanFinal = jrkanSignals.ifEmpty { jrkanSources }
@@ -901,6 +942,65 @@ class MatchRepository(
             .mapIndexed { index, s -> s.copy(id = "${s.id}#$index") }
 
         Detail(deduped, correction)
+    }
+
+    /**
+     * 展开一个 JRKAN 播放页，拿到里面的线路列表。
+     *
+     * ## 为什么要试多个 host（review/02-data.md P1-9）
+     *
+     * 播放域名写死在 `JrkanParser.PLAY_HOST`（历史已换过两次）。源站一换域名，
+     * 所有 JRKAN 线路会**静默失效**，然后由下面的 `ifEmpty` 兜回列表页播放页
+     * （还能开 WebView），用户看到的是"线路变少了"，完全不知道发生了什么。
+     *
+     * 所以这里按 [SourceEndpoints.playPageCandidates] 的顺序试候选主机：
+     * 列表页给的原始地址在前，候选主机随后。
+     *
+     * ## 请求预算
+     *
+     * ⚠️ 每个候选**只试一次**（不像列表页首候选跑满 3 次重试）：
+     * 换域名针对的是"这个域名死了"（DNS/主机故障），
+     * 那种情况下在死域名上重试三次纯属浪费几秒超时；
+     * 而瞬时抖动由列表页那一层负责兜（那边的重试预算更值）。
+     * 上界 = 候选数量（见 `SourceEndpointsWiringTest`），不会随重试次数放大。
+     *
+     * @param source 列表页给出的播放页（host 可能是历史域名）
+     * @param matchId 线路 id 前缀（同一场的多个播放页必须各自唯一）
+     */
+    private suspend fun expandJrkanPlayPage(
+        source: StreamSource,
+        matchId: String,
+        fetch: suspend (String, String?) -> FetchResult,
+    ): List<StreamSource> {
+        val candidates = SourceEndpoints.playPageCandidates(
+            source.pageUrl,
+            synchronized(listFailedHosts) { listFailedHosts.toSet() },
+        )
+        for (url in candidates) {
+            val html = when (val r = fetch(url, http.refererOf(url))) {
+                is FetchResult.Ok -> r.body
+                is FetchResult.Rejected -> {
+                    // 403/429 是限流信号：立即停整个源，不试镜像。
+                    // 镜像与主域名同属一个站点家族，大概率共享限流窗口。
+                    Log.w("MatchRepo", "播放页被拒绝(HTTP ${r.code})，放弃重试: ${redactUrl(url)}")
+                    synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                    return emptyList()
+                }
+                is FetchResult.Unreachable -> {
+                    synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                    continue
+                }
+            }
+            synchronized(listFailedHosts) { listFailedHosts -= hostOf(url) }
+            // ⚠️ 用**取到正文那个 host** 拼线路地址，而不是固定用 PLAY_HOST：
+            // 否则主域名死了、线路是从镜像展开出来的，地址却仍指向死域名，
+            // 播放器点开就是错误页 —— 换了域名等于没换。
+            val channels = jrkanParser.parseChannels(html, matchId, SourceEndpoints.originOf(url))
+            if (channels.isNotEmpty()) return channels
+            // 拿得到正文但一条线路都解析不出来：这个页面本身可能已经改版，
+            // 换下一个候选域名试（镜像有时还留着一份旧结构）。
+        }
+        return emptyList()
     }
 
     /** loadSignals 的结果：信号列表 + 可选校正（源站列表"直播中"滞后时用） */
