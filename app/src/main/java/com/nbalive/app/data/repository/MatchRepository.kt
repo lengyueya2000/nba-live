@@ -466,6 +466,14 @@ class MatchRepository(
          * 而 normalizeKey 每场比赛要调两次 —— 几十场还好，上百场就是无谓的分配。
          */
         private val WHITESPACE = Regex("\\s+")
+
+        /**
+         * 从 `timeLabel` 里抠 `MM-dd`（JRKAN 形态：`"10-25 07:30"`）。
+         *
+         * 用于 [fallbackDayKey]：拿不到 startAtMillis 时，至少还能从文案里
+         * 拿到真实日期，而不是退化成 `"直播中"` 这种字面量（review/02-data.md P2-12）。
+         */
+        private val MMDD = Regex("""(\d{1,2})-(\d{1,2})""")
     }
 
     /**
@@ -968,9 +976,45 @@ class MatchRepository(
                 .atZone(MatchStatusClock.SOURCE_ZONE)
                 .toLocalDate()
                 .toString()
-        } ?: m.timeLabel.substringBefore(' ').ifBlank { "?" }
+        } ?: fallbackDayKey(m)
         val (t1, t2) = listOf(m.homeTeam, m.awayTeam).map { it.replace(WHITESPACE, "") }.sorted()
         return "$day|$t1|$t2"
+    }
+
+    /**
+     * 拿不到开赛时间戳时的合并键日期部分（review/02-data.md P2-12）。
+     *
+     * ## 旧实现的问题
+     *
+     * 旧兜底是 `m.timeLabel.substringBefore(' ')`。JRS 的"直播中"行
+     * `timeLabel` 就是 `"直播中"`，于是 key 变成 `"直播中|A|B"`，
+     * 而 JRKAN 同一场是 `"10-25|A|B"` —— 两者永不相等，
+     * 同一场被拆成两张卡、各只有半边信号（用户看到"场次重复"且线路不全）。
+     *
+     * ## 现在的兜底
+     *
+     * 先看 `timeLabel` 里有没有 `MM-dd`（JRKAN 形态），有就用它；
+     * 否则退到**当天**（北京时间）—— "直播中"的比赛必然发生在今天，
+     * 这个推断比字面量强得多，且两源都会落到同一个日期上。
+     *
+     * 仍然可能误合并（同一天同一对队打两场），但那种情况极少，
+     * 而"同一场拆成两张卡"是每次都会发生 —— 取舍明确。
+     */
+    private fun fallbackDayKey(m: Match): String {
+        val md = MMDD.find(m.timeLabel)
+        if (md != null) {
+            // "10-25" 形态：补上当前年份，保持与正常路径同样的 key 形状
+            val year = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE).year
+            return runCatching {
+                java.time.LocalDate.of(
+                    year,
+                    md.groupValues[1].toInt(),
+                    md.groupValues[2].toInt(),
+                ).toString()
+            }.getOrDefault(m.timeLabel)
+        }
+        // 连 MM-dd 都没有（"直播中"/"未开始"）：用当天
+        return java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE).toString()
     }
 
     /**

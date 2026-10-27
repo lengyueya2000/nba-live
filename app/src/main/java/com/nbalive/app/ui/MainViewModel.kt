@@ -56,6 +56,12 @@ data class MatchListUiState(
         League.ALL -> matches
         League.NBA -> matches.filter { it.league == League.NBA }
         League.CBA -> matches.filter { it.league == League.CBA }
+        // ⚠️ 这个分支实际走不到（review/02-data.md P2-13）：
+        // merge 里已经 `filter { it.league in League.supported }`，
+        // supported = {NBA, CBA}，所以 OTHER 场次根本进不了 matches。
+        // 保留它是**防御性兜底**：哪天 merge 的过滤放宽（比如产品要展示
+        // "其他联赛"），这里不会静默漏掉；League.filters 目前也不含 OTHER，
+        // 所以 UI 上暴露不到这个筛选。删掉它反而会在那天变成编译错误之外的空列表。
         League.OTHER -> matches.filter { it.league == League.OTHER }
     }
 
@@ -64,6 +70,7 @@ data class MatchListUiState(
         League.ALL to matches.size,
         League.NBA to matches.count { it.league == League.NBA },
         League.CBA to matches.count { it.league == League.CBA },
+        // 同上：merge 已过滤 OTHER，这里恒为 0；保留以与 visibleMatches 对齐
         League.OTHER to matches.count { it.league == League.OTHER },
     )
 }
