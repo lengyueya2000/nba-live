@@ -3,93 +3,118 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **448 通过 / 0 失败 / 0 跳过**）
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **464 通过 / 0 失败 / 0 跳过**）
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
-- 公网无关；测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在锁内拷走再计数**）
+- 测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在 Gradle 锁内拷走再计数**；XML 带 BOM，用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 读）
 
 ## 总任务
 按 95 条审查清单（review/00~04）逐条落地修复。
 纪律：先 TDD 写纯判据 RED 测试 → 生产代码 → 编译 → 全量测试 → 提交。
-**最核心的风险形态是「假安全感」**：写了/测了但生产代码零调用的东西、以及永远不会变红的守卫。
+**最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
-## 本轮已完成并提交（2026-10-28，`7cdf50e` → `29c43b3`，共 5 个提交）
-- `29c43b3` **03-P2-21/22/10**：`findActivity()` 抽到 `ui/ContextExt.kt`（原来 NbaLiveApp 递归
-  vs Theme.kt 强转两套并存，强转遇包装静默失败）；三份"方形图标按钮"统一到
-  `components/SquareIconButton`（视觉 40dp / 触摸 48dp，5 个调用点）；LiveNowScreen
-  入参改成**已过滤的** `liveMatches`，删掉内部重复过滤。
-  新增 ContextExtTest(4) + TopBarAndLiveFilterTest(6)
-- `7828a6b` **03-P2-4/9/16/17/31/35**：删死代码 `onNewIntent`；去掉两个冗余 `remember`；
-  「null 怎么解释」收敛到 `AppPrefs.resolveDarkMode`（注释原来宣称"null=跟随系统"，
-  与实现相反 —— 已改成真实语义）；UI 层不再持有 Context/写 SharedPreferences
-  （改为 `onDarkModeChange`/`onAspectChange` 回调，平台层落盘）；去掉 `AppPrefs.loaded`
-  短路并拆出 `darkModeFromStorage`；顶栏占位改 `SubPageBarSideSlot`。
-  新增 NavHostGuardTest(11) + DarkModeResolveTest(3)
-- `532a7b0` **03-P2-11/12/27/28/29**：回退 lambda 提成 `LogoFallback`；`StatusChip` 的
-  remember 移出 `when`；`logoFallbackFontSize` 抵消 fontScale；两套 colorScheme 补齐
-  surfaceContainer 系列 9 槽；色板对象收 internal。
-  新增 ComponentPerfTest(6) + ThemeSlotTest(10)
-- `7fe2ead` **03-P2-8/26/30/32/34 + P2-33(部分)**：日期分组逻辑移到 `MatchFormat.kt`
-  纯函数区（dayLabel/groupByDay，可单测）＋ `today` 改 `produceState`+60s ticker
-  （原来注释承诺"跨零点自动变新"但实现做不到 —— 注释在撒谎）；hero 卡补
-  `onClickLabel`+`Role.Button`；HeroPill 颜色字面量改用 `AccentContrast`；
-  三个页面时间口径统一到 `hhmm()`（含播放页 3 处，审查未点名）；
-  详情页 96dp 底部留白删除。新增 DayLabelTest(7) + ScreenConsistencyGuardTest(5)
-- `7cdf50e` **03-P2-19/20**：`InfoRow` 两份、错误横幅两组、全屏错误态两份收敛到
-  `ui/components`；`PartialBanner`/`SignalErrorState` **有意**保持私有（注释写明差异）。
-  新增 DuplicateComponentTest(6)
+## 最近两个回合的提交
+### 2026-10-28 第三回合（goal round 1）
+- `3ef8a3a` **03-P2-3 + 03-P2-2**：`ui/NavState.kt`（tab+route 合成**一个**状态机，
+  纯迁移函数 selectTab/openDetail/openPlayer/back；NavTab 不带图标所以可单测）；
+  route/tab/matchId/beforePlayer 存进 `SavedStateHandle`，重建后回到 **DETAIL**
+  （播放页地址带时效签名，回去只有黑屏）；详情层**等列表加载落地**再跳，找不到就留在列表；
+  `MainActivity` 用 `viewModelFactory { initializer { createSavedStateHandle() } }` 注入
+  真正可持久化的 handle（默认值只为不动既有测试 —— 守卫钉住注入点）。
+  新增 `NavStateTest`(10) + `NavRestoreTest`(5，用"两个 VM 共用一个 SavedStateHandle"
+  忠实模拟进程重建)。**回退验证：4 处生产改动一次回退 → 19 tests / 8 failed**。
+### 2026-10-28 第二回合（上一轮）
+- `29c43b3` 03-P2-21/22/10（`ContextExt.kt` 唯一 findActivity + `SquareIconButton` + liveMatches 单源）
+- `7828a6b` 03-P2-4/9/16/17/31/35（删死代码 onNewIntent、去冗余 remember、
+  `resolveDarkMode` 唯一判据、UI 不再持 Context、去 `loaded` 短路、`SubPageBarSideSlot`）
+- `532a7b0` 03-P2-11/12/27/28/29（LogoFallback 提层、remember 移出 when、
+  `logoFallbackFontSize` 抵消 fontScale、surfaceContainer 9 槽、色板 internal）
+- `7fe2ead` 03-P2-8/26/30/32/34 + P2-33(部分)（跨零点 ticker、hero 动作词、
+  颜色字面量、时间口径统一 hhmm()、删 96dp）
+- `7cdf50e` 03-P2-19/20（InfoRow/错误态收敛 + 结构化重复守卫）
 
 ## 已验证落地（不必重做）
-P0-1 判死分级、P0-2 m3u8 正则、01-P1-2/3/4/6、01-P2-1/2/3/4/5/6/7/8/10/11/12、
-02-P1-1~9、02-P2-1~13、03-P1-1~4、**03-P2-1/4/5/8/9/10/11/12/13/16/17(见缺口)/19/20/21/22/
-23/24/25/26/27/28/29/30/31/32/34/35**、04-P1-1~5、04-P2-3/4/6/7(部分)/8/9
+P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~13、
+03-P1-1~4、**03-P2-1/2/3/4/5/8/9/10/11/12/13/16/18(未)/19/20/21/22/23/24/25/26/27/28/29/30/31/32/34/35**、
+04-P1-1~5、04-P2-3/4/6/7(部分)/8/9
+（03 组未做的只有 P2-6/14(取舍)/15/17(剩余)/18/33(剩余) —— 见下）
 
 ## 仍存在的主要缺口
-1. **03-P2-2/3/6/15/18**：结构性大改（SavedStateHandle、tab/route 两状态机、
-   DisposableEffect 顺序、根节点 collect 6 个 flow、681/820 行上帝组件拆分）。
-   要单独一轮做，动 `NbaLiveApp.kt` 为主。
-2. **03-P2-17 剩余部分**：UI 仍直接读偏好 `StateFlow`（读没有问题、写已挪到平台层），
-   setter 仍带 Context 形参。要走完整"经过 ViewModel"需把偏好读进 `MainViewModel`，
-   而它是纯 `ViewModel` → 得改成 `AndroidViewModel`（会牵动 `MainViewModelTest`），
-   属结构性改动。
-3. **03-P2-14**：**已做有据的取舍**——信号列表保持 `forEachIndexed`，注释写明
-   "线路数假设 < 20"与重估条件（本工程无 instrumentation 测试，改 LazyColumn 的
-   布局回归没有任何自动化信号）。不是漏做，重估条件写在 `MatchDetailScreen.kt`。
-4. **03-P2-7** 判定为**不成立/无效修复**：新 `showSnackbar` 本就会取消上一条，
-   显式 `dismiss()` 只是多写一行（已回退）。**别再做这条**。
-5. **03-P2-33 剩余**：全量文案硬编码。审查自己判定"按现状不是缺陷"，
-   只要求 `dayLabel` 可测（已做）。要本地化才需要动。
-6. **04-P2-5** release mapping 归档（仓库外流程，需 CI/发布脚本）。
-7. **04-P2-7 彻底版**需升级 AGP；当前已把 `as?` 静默失败改成显式报错。
+### A. 结构性大改（03 组残余）
+1. **03-P2-18** 820 行上帝组件拆分（路由/系统栏/画中画/返回键/搜索覆盖层各自独立）；
+   做完它会顺带消掉 **03-P2-6**（`syncAutoEnterEnabled` 靠 DisposableEffect 先于
+   LaunchedEffect 执行的隐式顺序）与 **03-P2-15**（根节点 collect 6 个 flow）。
+2. **03-P2-17 剩余**：UI 仍直接读偏好 `StateFlow`；setter 仍带 Context 形参。
+   彻底做要把偏好读进 `MainViewModel`，它是纯 `ViewModel` → 得改成 `AndroidViewModel`
+   （牵动 `MainViewModelTest`），属结构性改动。
+3. **03-P2-14**：**已做有据的取舍**（信号列表保持 `forEachIndexed`，注释写明
+   "线路数假设 < 20"与重估条件）。不是漏做。
+4. **03-P2-7** 判定为**不成立/无效修复**（显式 `dismiss()` 是多写一行，已回退）。**别再做**。
+5. **03-P2-33 剩余**：全量文案硬编码（审查自己判定现状可接受）。
+6. **04-P2-5** release mapping 归档（仓库外流程）；**04-P2-7 彻底版**需升级 AGP。
+
+### B. 只读审计的产物（`review/audit-guards.md`，498 行，**必读**）
+审计覆盖 68/68 测试类 + ui/ 全目录，发现两类"假安全感"：
+
+**B-1 永远不红的守卫（已修 A1/A2/A3，其余待做）**
+- ✅ A1 `DeadCodeWiringGuardTest` 4 条 raw-contains 断言（命中注释/声明）→ 已重写
+- ✅ A2 `AndroidConfigVersionTest` 基础 themes.xml 未剔注释 → 已修
+- ✅ A3 该类 22 处 `assumeTrue` + 无非空性锚点 → 已重写；**A10** 另 7 个文件 18 处 assumeTrue
+  → 正在做（task-5，含 `GuardHygieneTest` 元守卫）
+- ⬜ **A4** `PlayerLockTest`「切场锁定」= 局部变量自证；**A5** `MergeStatusTest`「id 唯一」
+  在 `size==1` 时恒真；**A6** `AccessibilitySemanticsTest`「红点不靠颜色」只断言 `LiveDot`
+  函数名；**A7** 直播页 LIVE 过滤负向守卫正则过窄；**A8** `alpha` 参数"声明即满足"；
+  **A9** `SourceZoneDisciplineTest` 自检是 String.contains 永真；**A12** `WebMediaPauseScript`
+  全子串断言；**A13** `StreamSniffOwnershipTest` 负向用例缺前置；**A15** `DayLabelTest`
+  的旧"文件级谓词"
+- ⬜ 未验证怀疑 7 条（时区耦合、Kotlin `assert()` 依赖 Gradle 默认 enableAssertions、
+  `LiveStatusCorrectionTest` 依赖机器时钟晚于夹具日、`MainViewModelTest.liveIds` 测试侧重实现）
+
+**B-2 零消费点的声明（全部待办）**
+- ⬜ **B1【高】** `PipState.shouldKeepPip` 生产零调用 → **整个 `PipExitOnErrorTest`(3 条)
+  测的是没人调的函数**（`PlaybackHealthTest:17` 自己承认旧路径传常量"从来没生效过"）
+- ⬜ **B2【高】** `PlaybackHealth.showsSuspectHint` 零调用 → 文档承诺的"疑似无信号**提示**"
+  从未接线（与 `partialError` 同款形态）；**要接就得改 UI 行为 = 产品决策**
+- ⬜ **B3【高】** `PipAspectReset.ratioFor` 零调用 → `MainActivity.pipAspectRatio()`
+  又写了一份"比例 + 16:9 兜底"，规则两份实现（应二选一 + 守卫）
+- ⬜ B4 `MissingMatchPolicy.forPlayer` 零调用；B5 `StalledPlayback.evaluate`+`Verdict`
+  零调用（生产只用 Tracker，阈值判据两份）；
+- ⬜ **B6** `CardSemantics.shouldMergeIntoParent` 生产唯一调用**传常量 true**、
+  `actionLabel` 的参数被实现忽略 → 测试断的是生产永不走的路径
+- ⬜ B7-B11 低：`WEB_ERROR_ABORTED`、`STATE_IDLE/ENDED`、`PlayerLock.gesturesEnabled`/
+  `tapShowsUnlockUi`、`WebNavigationPolicy` 2 参重载、**`AccentContrast.HeroGradientStops`
+  是红橙三档的第三份副本**（hero 卡 AA 断言测的是副本，改 Theme.kt 不会红）
+
+### C. 产品缺口（需要决策，不是纯技术问题）
+**`Route.DETAIL` 当前没有任何入口**：所有入口都直接 `playMatch()` 进播放页
+（`NbaLiveApp.kt` 注释："点比赛直接全屏自动播放，不再先跳详情页选线路"）。
+于是 `MatchDetailScreen`(395 行)、`MissingMatchPlaceholder`、`openPlayer`、`refreshSignals`
+只能靠本回合新增的"**进程重建恢复**"到达。
+两种走法：① 加一个明确的"选择线路"入口（产品决策）；② 认定详情页不再是产品的一部分，
+把 DETAIL 路由/屏幕/VM 函数删掉（会连带删掉一批测试）。**别在没决策前顺手删。**
 
 ## 教训（务必遵守）
-- **本轮 3 条守卫第一版是「瞎的」**（回退验证只红了 3/7，才发现的）。写正则时别只匹配
-  "当前的写法"：
-  - 全限定名 `fun android.content.Context.findActivity(` **不**匹配 `fun Context\.findActivity(`
-    → 用 `fun\s+[A-Za-z0-9_.]*Context\.findActivity\(`
-  - "私有方形按钮"若只匹配 `minimumInteractiveComponentSize() + size()`，就抓不到
-    搜索页那份**没有** minimumInteractive 的裸 `.size(48.dp)` —— 而它正是分叉的形态
-    → 用"`.size(40|48).dp` 与 `RoundedCornerShape(Radius.btn)` 相邻"这种形状判据
-  - `全文件 contains("liveMatches = liveMatches")` 被播放页同样合法的调用点蒙混过关
-    → 必须**只看目标调用块**（正则抓 `LiveNowScreen(...)` 的参数区）
-  - 结论：**守卫写完必须回退验证**，红了才算数；"看起来会红"不算
-- **`git stash push -- <paths>` + 跑测试**是对"重构前的 HEAD"做端到端回退验证的省事办法
-  （比手工改一处更可信）；`stash pop` 后核对 diffstat/字节一致。
-- 源码一律只用 `read/edit/write` 改。PowerShell 的 `Set-Content` / `-replace`
-  会把 UTF-8 中文写坏（本仓库踩过三次）。
-- **`--rerun-tasks` 不能省**：Gradle UP-TO-DATE 会让"验证守卫会红"变成假验证。
-- 守卫三铁律：① 断言前**剔除注释**；② 匹配**调用**而非字符串出现；③ 路径失败 **error()**，
-  **绝不用 `assumeTrue`**（会静默跳过变全绿）。
-- 多人并行（本轮用 Agent Teams）：
-  - 写范围互斥、每个 task 记 write scope；**只有 Lead 提交**（`git add <明确的路径>` +
-    `commit -F 文件`，避免中文引号被 shell 吃掉）
-  - Gradle 用文件锁串行化（`$env:TEMP\nba-dsh-gradle.lock` + 20 分钟陈旧判定）
-  - 并行写者的 WIP 会让工作区中途变红（先写 RED/放 `TODO()` 桩是正常状态）——
-    **最终验收窗口必须放在所有写者停工之后**
-  - `app/build/test-results/` 是共享目录，会被别人的 `--rerun-tasks` 覆盖 →
-    在锁内拷 XML 再计数
+- **守卫写"存在性"时，声明行也算存在**：`contains("FIRST_FRAME_WATCHDOG_MS")` 会被
+  `const val FIRST_FRAME_WATCHDOG_MS` 满足，`contains("isSourceFailed(")` 会被
+  `private fun isSourceFailed(` 满足 → **排除声明行再计数**，或换到别的文件查调用点。
+- **断言前必须剔注释**（本轮审计里 4 条盲守卫全是"命中了注释"）。XML 同理（`<!-- -->`，
+  含跨行）。
+- **绝不用 `assumeTrue` 静默跳过**：路径一变整片变绿，而"448 全绿"看不出区别。
+  现在有元守卫 `GuardHygieneTest` 钉住这条。
+- **回退验证必须"编译得过"**：故意删掉被守卫保护的调用（保留注释/声明）才是有效验证；
+  把仓库改到编译不过只是"炸了"，不是"守卫红了"。
+- **有些测试编码了"生产走不到的时序"**：`PlayerBackStackTest` 原来在 PLAYER 上再调
+  `openPlayer()` 来模拟详情页（而 `openPlayer` 当时写死来源=DETAIL）。收紧规则后它红了 ——
+  这时要判断是"测试错了"还是"代码错了"：本例是测试错了（生产点不到详情页的线路行），
+  已改成走真实路径且**断言不变**。
+- 源码一律只用 `read/edit/write` 改；PowerShell 的 `Set-Content`/`-replace` 会写坏中文。
+- `--rerun-tasks` 不能省；Gradle 用文件锁串行化；计数在锁内拷 XML。
+- 守卫三铁律：① 剔注释；② 匹配调用而非字符串出现；③ 路径失败 `error()`，禁止 `assumeTrue`。
+- 并行协议（Agent Teams，本会话已跑两轮）：写范围互斥并记在 task 上；**只有 Lead 提交**；
+  只读审计可与写作并行；**最终验收窗口放在所有写者停工之后**。
 
 ## 下一次接手的建议顺序
 1. `git status` 确认没有未提交的并行工作 / 没有 `TEMP-REVERT` 之类临时标记
 2. 跑全量 + `assembleDebug` 建立基线
-3. 从「仍存在的主要缺口」第 1 条开始（结构性大改），每组照旧：纯判据 RED →
-   生产 → 编译 → 全量 → 回退验证 → 提交
+3. 先做 **B-2 的 B1/B3**（死代码/重复实现，机械且价值高），再做 **A 组残余守卫**，
+   最后才碰 **A. 结构性大改**（上帝组件拆分）
+4. **C 的产品缺口**需要问用户，不要自行删页面
