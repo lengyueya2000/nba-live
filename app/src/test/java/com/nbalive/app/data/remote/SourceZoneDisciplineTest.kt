@@ -2,7 +2,6 @@ package com.nbalive.app.data.remote
 
 import java.io.File
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -22,7 +21,13 @@ class SourceZoneDisciplineTest {
     @Test
     fun `解析与判定层不得使用设备时区`() {
         val root = sourceRoot()
-        assumeTrue("找不到 app/src/main/java，跳过源码扫描", root != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10）：源码根是这条时区纪律**唯一**的扫描范围，
+        // 解析不到时"零违规"判断会静默全绿 —— 纪律整个消失却报告全绿，所以直接失败。
+        assertTrue(
+            "找不到 app/src/main/java（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时时区纪律守卫会静默全绿，所以直接失败而不是跳过",
+            root != null,
+        )
 
         // 允许使用设备时区的文件：只做**展示**（时间戳 -> 人类可读文案）
         val displayOnly = setOf("MatchFormat.kt", "MatchListScreen.kt", "MatchStatusClock.kt")

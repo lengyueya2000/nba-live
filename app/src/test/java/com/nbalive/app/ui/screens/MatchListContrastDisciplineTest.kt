@@ -2,7 +2,6 @@ package com.nbalive.app.ui.screens
 
 import java.io.File
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -52,8 +51,13 @@ class MatchListContrastDisciplineTest {
     @Test
     fun `列表页没有直接使用半透明白色`() {
         val file = target()
-        // 找不到源码时跳过（而不是失败）：守卫不能在打包环境里误报
-        assumeTrue("找不到 MatchListScreen.kt，跳过源码扫描", file != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10）：MatchListScreen.kt 是这条对比度纪律**唯一**的
+        // 扫描目标，找不到时"零违规"判断会静默全绿 —— 对比度守卫整个消失，所以直接失败。
+        assertTrue(
+            "找不到 MatchListScreen.kt（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时对比度守卫会静默全绿，所以直接失败而不是跳过",
+            file != null,
+        )
         val violations = codeLines(file!!)
             .filter { (_, text) -> ALPHA_WHITE.containsMatchIn(text) }
             .map { (line, text) -> "MatchListScreen.kt:$line  $text" }

@@ -2,7 +2,6 @@ package com.nbalive.app.data.remote
 
 import java.io.File
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -57,8 +56,14 @@ class LoggingDisciplineTest {
     @Test
     fun `没有把 Throwable 透传给 Log 的调用点`() {
         val files = ktFiles()
-        // 源码根不可用时跳过（而不是失败）：守卫不能在打包环境里误报
-        assumeTrue("找不到 app/src/main/java，跳过源码扫描", files.isNotEmpty())
+        // ⚠️ 硬失败而不是跳过（审计 A10）：源码根/扫描结果为空时下面这条"零违规"判断
+        // 会静默全绿 —— 脱敏纪律会整个消失，而报告里看不出来，所以直接失败。
+        assertTrue(
+            "扫描不到 app/src/main/java 的 Kotlin 源码（实际 ${files.size} 个文件，cwd=" +
+                "${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时脱敏纪律守卫会静默全绿，所以直接失败而不是跳过",
+            files.size >= 20,
+        )
         val violations = files.flatMap { file ->
             codeLines(file).filter { (_, text) -> LOG_WITH_THROWABLE.containsMatchIn(text) }
                 .map { (line, text) -> "${file.name}:$line  $text" }
@@ -74,7 +79,13 @@ class LoggingDisciplineTest {
     @Test
     fun `日志里的 URL 与 href 都经过脱敏`() {
         val files = ktFiles()
-        assumeTrue("找不到 app/src/main/java，跳过源码扫描", files.isNotEmpty())
+        // ⚠️ 硬失败而不是跳过（审计 A10）：见上一条用例的说明。
+        assertTrue(
+            "扫描不到 app/src/main/java 的 Kotlin 源码（实际 ${files.size} 个文件，cwd=" +
+                "${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时脱敏纪律守卫会静默全绿，所以直接失败而不是跳过",
+            files.size >= 20,
+        )
         val violations = files.flatMap { file ->
             codeLines(file)
                 .filter { (_, text) -> text.startsWith("Log.") }

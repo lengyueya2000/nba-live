@@ -3,7 +3,6 @@ package com.nbalive.app.ui
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -65,11 +64,21 @@ class ListNoticePolicyTest {
     @Test
     fun `partialError 必须有 UI 读取点`() {
         val root = sourceRoot()
-        assumeTrue("找不到 app/src/main/java，跳过源码扫描", root != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10）：源码根是"partialError 有没有人读"**唯一**的证据来源，
+        // 解析不到时这条守卫会"零读取点"地静默全绿（而它正是为了防止"算好了没人用"）。
+        assertTrue(
+            "找不到 app/src/main/java（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时这条接线守卫会静默全绿，所以直接失败而不是跳过",
+            root != null,
+        )
         val uiFiles = root!!.walkTopDown()
             .filter { it.isFile && it.extension == "kt" && it.path.contains("${File.separator}ui${File.separator}") }
             .toList()
-        assumeTrue("找不到 ui 源码，跳过源码扫描", uiFiles.isNotEmpty())
+        assertTrue(
+            "ui 源码只扫到 ${uiFiles.size} 个文件 —— 范围走偏时这条守卫会静默全绿，" +
+                "所以直接失败而不是跳过",
+            uiFiles.size >= 20,
+        )
 
         val readers = uiFiles.filter { f ->
             f.readText().contains("partialError") && !f.name.startsWith("ListNotice")

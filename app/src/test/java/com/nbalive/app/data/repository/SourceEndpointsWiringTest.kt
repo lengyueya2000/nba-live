@@ -10,7 +10,6 @@ import com.nbalive.app.data.remote.JrkanParser
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
 
@@ -157,11 +156,21 @@ class SourceEndpointsWiringTest {
     @Test
     fun `候选常量在生产代码里真的有消费点`() {
         val root = sourceRoot()
-        assumeTrue("找不到 app/src/main/java，跳过源码扫描", root != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10，这正是上一轮 PLAY_HOSTS 零消费点漏网的那条守卫）：
+        // 源码根解析不到时它会"零违规"地静默全绿，而它的全部价值就是"证明有人真的在用"。
+        assertTrue(
+            "找不到 app/src/main/java（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时候选常量的接线守卫会静默全绿，所以直接失败而不是跳过",
+            root != null,
+        )
         val productionFiles = root!!.walkTopDown()
             .filter { it.isFile && it.extension == "kt" && it.name != "SourceEndpoints.kt" }
             .toList()
-        assumeTrue("找不到生产源码，跳过源码扫描", productionFiles.isNotEmpty())
+        assertTrue(
+            "生产源码只扫到 ${productionFiles.size} 个文件 —— 范围走偏时这条守卫会静默全绿，" +
+                "所以直接失败而不是跳过",
+            productionFiles.size >= 20,
+        )
 
         // ⚠️ 检查的是**访问入口**而不是 PLAY_HOSTS 这个字段名本身：
         // 候选列表按设计由本对象自己的访问函数消费

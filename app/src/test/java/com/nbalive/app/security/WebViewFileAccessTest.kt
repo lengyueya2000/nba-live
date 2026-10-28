@@ -2,7 +2,6 @@ package com.nbalive.app.security
 
 import java.io.File
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -27,7 +26,13 @@ class WebViewFileAccessTest {
     @Test
     fun `播放页 WebView 必须显式关闭本地文件访问`() {
         val text = playerScreenText()
-        assumeTrue("找不到 PlayerScreen.kt，跳过", text != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10）：PlayerScreen.kt 是这条守卫**唯一**的锚点，
+        // 锚点缺失时它本来会"零违规"地静默全绿 —— 那种绿和"真的守住了"看不出区别。
+        assertTrue(
+            "找不到 PlayerScreen.kt（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时这条守卫会静默全绿，所以直接失败而不是跳过",
+            text != null,
+        )
         // ⚠️ 必须先剔除注释再断言：注释里也会出现 "allowContentAccess = false"
         // 这个字面量（说明"为什么这么写"），不剔除的话守卫会永远全绿。
         val code = stripComments(text!!)
@@ -58,7 +63,13 @@ class WebViewFileAccessTest {
         // 恶意 JS 拿不到原生桥，注入面被限制在 WebView 沙箱内。
         // 这条守住"以后别为了某个功能顺手加上去"。
         val text = playerScreenText()
-        assumeTrue("找不到 PlayerScreen.kt，跳过", text != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10）：PlayerScreen.kt 是这条守卫**唯一**的锚点，
+        // 锚点缺失时它本来会"零违规"地静默全绿 —— 那种绿和"真的守住了"看不出区别。
+        assertTrue(
+            "找不到 PlayerScreen.kt（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时这条守卫会静默全绿，所以直接失败而不是跳过",
+            text != null,
+        )
         assertTrue(
             "WebView 绝不能挂 addJavascriptInterface：源站页面是第三方、明文 http，" +
                 "挂上桥等于把原生能力交给它",

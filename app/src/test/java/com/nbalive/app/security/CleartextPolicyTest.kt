@@ -3,7 +3,6 @@ package com.nbalive.app.security
 import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -35,7 +34,13 @@ class CleartextPolicyTest {
     @Test
     fun `App 自己只走 https 的主机必须禁止明文`() {
         val xml = configText()
-        assumeTrue("找不到 network_security_config.xml，跳过", xml != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10）：这份 xml 是明文策略纪律**唯一**的输入，
+        // 解析不到时下面几条断言本来会"零违规"地一起变绿 —— 那是假安全感。
+        assertTrue(
+            "找不到 network_security_config.xml（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时明文策略守卫会静默全绿，所以直接失败而不是跳过",
+            xml != null,
+        )
 
         val mustRejectCleartext = listOf(
             "jrszbt.com",
@@ -54,7 +59,13 @@ class CleartextPolicyTest {
     @Test
     fun `确实以明文提供服务的主机不能被误伤`() {
         val xml = configText()
-        assumeTrue("找不到 network_security_config.xml，跳过", xml != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10）：这份 xml 是明文策略纪律**唯一**的输入，
+        // 解析不到时下面几条断言本来会"零违规"地一起变绿 —— 那是假安全感。
+        assertTrue(
+            "找不到 network_security_config.xml（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时明文策略守卫会静默全绿，所以直接失败而不是跳过",
+            xml != null,
+        )
 
         // 实测证据：detail 页里播放页地址是 http://play.sportsteam368.com/...
         // JRS 页面自身 28 处引用 http://www.jrszb444.com
@@ -75,7 +86,13 @@ class CleartextPolicyTest {
     @Test
     fun `全局明文许可仍在 因为 CDN 主机名无法预先枚举`() {
         val xml = configText()
-        assumeTrue("找不到 network_security_config.xml，跳过", xml != null)
+        // ⚠️ 硬失败而不是跳过（审计 A10）：这份 xml 是明文策略纪律**唯一**的输入，
+        // 解析不到时下面几条断言本来会"零违规"地一起变绿 —— 那是假安全感。
+        assertTrue(
+            "找不到 network_security_config.xml（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "锚点缺失时明文策略守卫会静默全绿，所以直接失败而不是跳过",
+            xml != null,
+        )
         assertTrue(
             "base-config 的明文许可不能删：m3u8 清单主机名是源站运行时混淆生成的，\n" +
                 "写死白名单就等于播放器拿不到清单（这是产品硬需求，不是疏忽）。",

@@ -54,7 +54,11 @@ class AndroidConfigVersionTest {
     fun `基础主题必须保留系统栏颜色 否则旧系统视觉回归`() {
         // 反面保护：v35 不写，但 API 24~34 仍需要它 ——
         // 删掉会让旧系统状态栏变成不透明黑条，与页面背景割裂
-        val base = repoFileOrFail("app/src/main/res/values/themes.xml").readText()
+        //
+        // ⚠️ 必须**同样剔除 XML 注释**（审计 A2）：基础 themes.xml 顶部的注释里
+        // 就写着这两个属性名，不剔除的话"删掉两个 <item>"照样绿 ——
+        // 本类对 values-v35 用了 stripXmlComments，却漏了基础文件这一侧。
+        val base = stripXmlComments(repoFileOrFail("app/src/main/res/values/themes.xml").readText())
         assertTrue(
             "基础主题必须保留 statusBarColor（API 24~34 仍然生效）",
             base.contains("statusBarColor"),
