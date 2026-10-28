@@ -34,11 +34,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -53,50 +56,27 @@ import com.nbalive.app.ui.components.LeagueStrip
 import com.nbalive.app.ui.components.SignalBadge
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
+import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.ui.ListNotice
 import com.nbalive.app.ui.ListNoticePolicy
+import com.nbalive.app.ui.DAY_LABEL_TICK_MS
+import com.nbalive.app.ui.dayLabel
+import com.nbalive.app.ui.groupByDay
 import com.nbalive.app.ui.hhmm
 import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.mmdd
+import com.nbalive.app.ui.systemZone
 import com.nbalive.app.ui.theme.AccentContrast
 import com.nbalive.app.ui.theme.GradLiveOnWhite
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.Space
-import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
+import kotlinx.coroutines.delay
 
-/**
- * 日期分组。
- *
- * ⚠️ 分组按**绝对日期**，标签在渲染时现算：
- *  - 只存 label 的话，标签里的"今天/明天"是生成那一刻的 today 算出来的，
- *    App 跨零点后还停在列表页，标签就永远停在旧值（今天被继续标成"明天"）。
- *  - 只存 label 还会在**跨年**时退化：两个不同日期可能都是 "1月1日"，
- *    而列表的 key 用的是 label → 重复 key → LazyVerticalGrid 直接崩
- *    （这个仓库已经崩过两次）。
- * 所以这里存 date，label 由 [dayLabel] 在渲染时算。
- */
-private data class DayGroup(val date: LocalDate, val matches: List<Match>)
-
-/** 日期分组标签：渲染时按当前日期现算，跨零点自动正确 */
-private fun dayLabel(date: LocalDate, today: LocalDate): String = when (date) {
-    today -> "今天 · ${date.monthValue}月${date.dayOfMonth}日"
-    today.plusDays(1) -> "明天 · ${date.monthValue}月${date.dayOfMonth}日"
-    today.minusDays(1) -> "昨天 · ${date.monthValue}月${date.dayOfMonth}日"
-    else -> "${date.monthValue}月${date.dayOfMonth}日"
-}
-
-private fun groupByDay(matches: List<Match>, today: LocalDate): List<DayGroup> {
-    val zone = ZoneId.systemDefault()
-    return matches
-        .groupBy { m ->
-            m.startAtMillis?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalDate() } ?: today
-        }
-        .toSortedMap()
-        .map { (date, list) -> DayGroup(date, list) }
-}
+// 日期分组逻辑（DayGroup / dayLabel / groupByDay）已移到 ui/MatchFormat.kt 的纯函数区
+// （review/03-ui.md P2-33）：那是"展示格式化"的收敛点，且移出去才能被单测覆盖。
+// 这里原来有一份与它等价的私有实现。
 
 @Composable
 fun MatchListScreen(
@@ -225,10 +205,19 @@ private fun MatchGrid(matches: List<Match>, onMatchClick: (Match) -> Unit) {
     // 用它当 LazyVerticalGrid 的 key 就会重复 key 崩溃（这个仓库崩过两次）。
     // 用绝对日期做 key，跨零点 key 不变，网格也不会整体重建。
     //
-    // ⚠️ today 只取一次（别调两次 systemDefault）：
-    // 标签在渲染时现算，App 跨零点后不用切走页面标签也会自动变成新的"今天"；
-    // 但分组结果要 remember 住，用的是同一个 today 快照。
-    val today = LocalDate.now(ZoneId.systemDefault())
+    // ⚠️ today 必须是**会变的**（review/03-ui.md P2-8）：
+    // 原来这里是 `LocalDate.now(...)` 的组合期快照，注释却承诺"跨零点后不用切走
+    // 页面标签也会自动变新"—— 那个承诺做不到：跨零点本身不触发重组，
+    // 列表静止时标签会一直停在旧值（今天被继续标成"明天"）。
+    // 现在用 60 秒一跳的 ticker 驱动，跨零点后最多 1 分钟自动修正，
+    // 不依赖滚动/刷新这类外部事件；日期没变时值相等，不会引起多余重组。
+    // 时区复用 MatchFormat 里缓存的 systemZone，不再每次重组查系统设置。
+    val today by produceState(initialValue = LocalDate.now(systemZone)) {
+        while (true) {
+            delay(DAY_LABEL_TICK_MS)
+            value = LocalDate.now(systemZone)
+        }
+    }
     val groups = remember(gridMatches, today) { groupByDay(gridMatches, today) }
 
     LazyVerticalGrid(
@@ -303,7 +292,16 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
             // 整张卡上全是白字（队名、时间、"立即观看"），必须用压暗过的白字安全版：
             // 原始红橙渐变只有 2.3~2.7:1，远达不到 AA 4.5:1
             .background(GradLiveOnWhite)
-            .clickable(onClick = onClick)
+            // ⚠️ 整卡可点却没有动作词：TalkBack 会先读一长串队名/时间/线路数，
+            // 最后只说"双击激活"，用户不知道点了会发生什么（review/03-ui.md P2-26）。
+            // 详情页的 SignalRow 早就写了 onClickLabel，这里漏了 —— 统一用
+            // CardSemantics 的动作词（有单测）。卡内没有内嵌可点按钮
+            // （"立即观看"是纯装饰 Surface），所以不需要合并语义。
+            .clickable(
+                onClickLabel = CardSemantics.actionLabel(hasInnerButton = false),
+                role = Role.Button,
+                onClick = onClick,
+            )
             .padding(Space.lg),
     ) {
         Column {
@@ -418,7 +416,10 @@ private fun HeroPill(
         modifier = Modifier
             .height(26.dp)
             .clip(RoundedCornerShape(Radius.pill))
-            .background(Color(0x33000000))
+            // ⚠️ 与"立即观看"用同一个配方（AccentContrast.HeroPillBackground）：
+            // 原来这里是字面量 Color(0x33000000)，与上面那个 Surface 是同一配方
+            // 却各写一份 —— 改配色时必然只改到一半（review/03-ui.md P2-30）。
+            .background(AccentContrast.HeroPillBackground)
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),

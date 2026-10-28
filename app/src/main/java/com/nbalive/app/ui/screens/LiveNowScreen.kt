@@ -32,7 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import com.nbalive.app.ui.theme.AccentContrast
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.CardSemantics
+import com.nbalive.app.ui.hhmm
 import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.FullScreenErrorState
 import com.nbalive.app.ui.components.LeagueChip
@@ -227,7 +228,7 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
             )
             Spacer(Modifier.weight(1f))
             Text(
-                text = match.timeLabel,
+                text = match.hhmm(),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -292,11 +293,11 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
                         Icons.Filled.PlayArrow,
                         contentDescription = null,
                         modifier = Modifier.size(14.dp),
-                        tint = Color.White,
+                        tint = AccentContrast.OnAccent,
                     )
                     Text(
                         text = "立即观看",
-                        color = Color.White,
+                        color = AccentContrast.OnAccent,
                         fontSize = 12.sp,
                         style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,

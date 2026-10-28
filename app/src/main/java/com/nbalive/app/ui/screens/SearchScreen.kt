@@ -60,6 +60,7 @@ import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
+import com.nbalive.app.ui.hhmm
 import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
@@ -264,7 +265,7 @@ private fun SearchResultRow(match: Match, onClick: () -> Unit) {
                 StatusChip(status = match.status, isPostponed = match.isPostponed)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    text = match.timeLabel,
+                    text = match.hhmm(),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

@@ -65,8 +65,11 @@ fun MatchDetailScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 96.dp),
+            .verticalScroll(rememberScrollState()),
+        // ⚠️ 这里原来还有 `.padding(bottom = 96.dp)`（review/03-ui.md P2-34）：
+        // 详情页是 Scaffold 的 content，外层已经应用了 `Modifier.padding(padding)`，
+        // 其中**已经包含 bottomBar 的高度**；再补 96dp 等于底部留白 = 底栏高度 + 96dp，
+        // 滚到底会看到一大块空白。那个常数没有出处，像是防御性补偿。
     ) {
         // 头部信息行
         Row(
@@ -180,6 +183,15 @@ fun MatchDetailScreen(
                 }
             }
         } else {
+            // ⚠️ 这里用 forEachIndexed 一次性全量组合，**不是** LazyColumn ——
+            // 这是有意取舍，不是漏了（review/03-ui.md P2-14）：
+            //   - 本 App 的线路数假设 < 20（只列双源的可用线路，个位数是常态）；
+            //   - 换 LazyColumn 要把整页（头部信息/左右对阵/两个 SectionHeader）
+            //     重构成单一 LazyColumn，而本工程**没有 instrumentation 测试**，
+            //     布局回归不会有任何自动化信号 —— 风险大于收益。
+            // 触发重估的条件：源站补线路后 signals.size 常态超过 20 条
+            // （`refreshSignals` 的存在说明线路数确实会变）。
+            // 届时改成 LazyColumn，信号行用 itemsIndexed(key = { _, s -> s.id })。
             Column(
                 modifier = Modifier.padding(horizontal = Space.lg),
                 verticalArrangement = Arrangement.spacedBy(Space.md),

@@ -116,6 +116,7 @@ import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlayerControls
 import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.StalledPlayback
+import com.nbalive.app.ui.hhmm
 import com.nbalive.app.ui.ManualPipDecision
 import com.nbalive.app.ui.ManualPipPolicy
 import com.nbalive.app.ui.SystemBarsPolicy
@@ -753,7 +754,7 @@ fun PlayerScreen(
                         text = buildString {
                             append(match.leagueLabel())
                             append(" · ")
-                            append(match.timeLabel)
+                            append(match.hhmm())
                             if (signals.isNotEmpty()) {
                                 append(" · 共 ${signals.size} 条信号")
                             }
@@ -1249,7 +1250,7 @@ private fun LiveNowRow(match: Match, onClick: () -> Unit) {
             )
             Spacer(Modifier.weight(1f))
             Text(
-                text = match.timeLabel,
+                text = match.hhmm(),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -1456,7 +1457,7 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
         )
         Spacer(Modifier.width(Space.sm))
         Text(
-            text = match.timeLabel,
+            text = match.hhmm(),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
