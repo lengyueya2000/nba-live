@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -86,11 +87,57 @@ class TopBarAndLiveFilterTest {
 
     @Test
     fun `直播页不得自己再过滤一遍 LIVE`() {
-        val code = stripped("LiveNowScreen.kt")
+        // ⚠️ 只读审计 review/audit-guards.md A7：原来这里只有一条**负向**正则
+        //   `filter\s*\{\s*it\.status\s*==\s*[A-Za-z0-9_.]*MatchStatus\.LIVE`
+        // 它只匹配"lambda 参数恰好叫 it、右边以 MatchStatus.LIVE 结尾"这一种写法，
+        // 等价但漏判的形态全放过去了（`m ->`、`import LIVE` 简写、
+        // `filterNot { it.status != LIVE }`、`filter { it.status.name == "LIVE" }`）。
+        // 负向守卫漏判**不会变红** —— 等价于"没有守卫"。
+        // 现在判据放宽到结构形状，并配套自检（见下一条测试）证明它真的会红。
+        val violations = liveRefilterViolations(stripped("LiveNowScreen.kt"))
         assertTrue(
-            "LiveNowScreen 里又出现了自己过滤 LIVE 的代码：NbaLiveApp 已经算过一份，\n" +
-                "同一语义两处实现会各自漂移，且白做一次 O(n) 扫描（review/03-ui.md P2-10）",
-            !Regex("""filter\s*\{\s*it\.status\s*==\s*[A-Za-z0-9_.]*MatchStatus\.LIVE""").containsMatchIn(code),
+            "LiveNowScreen 里又出现了自己筛选 LIVE 的代码（review/03-ui.md P2-10）：\n" +
+                violations.joinToString("\n").prependIndent("  ") +
+                "\n\nNbaLiveApp 已经算好一份 liveMatches 传进来了：同一语义两处实现会各自漂移，" +
+                "列表几百场时还白做一次 O(n) 扫描 + 一份 List 分配。",
+            violations.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `直播页 LIVE 过滤判据自检 各种等价写法都要能抓到`() {
+        // 防"负向守卫漏判 = 没有守卫"：把真实违规形态喂给**参与生产判定**的那个函数。
+        val violations = listOf(
+            "val live = matches.filter { it.status == MatchStatus.LIVE }",
+            "val live = matches.filter { m -> m.status == MatchStatus.LIVE }",
+            "val live = matches.filter { it.status == LIVE }",
+            "val live = matches.filterNot { it.status != MatchStatus.LIVE }",
+            "val live = matches.filter { it.status.name == \"LIVE\" }",
+            "val live = matches.filter { LIVE == it.status }",
+            "val live = matches.filter { MatchStatus.LIVE == it.status }",
+        )
+        val missed = violations.filter { liveRefilterViolations(sampleScreen(it)).isEmpty() }
+        assertTrue(
+            "以下真实违规写法**没有被抓到**（负向守卫漏判 = 没有守卫）：\n" +
+                missed.joinToString("\n").prependIndent("  "),
+            missed.isEmpty(),
+        )
+
+        // 反向锚点 1：合规写法不能被误报
+        val ok = sampleScreen("val live = liveMatches")
+        assertTrue(
+            "合规写法（直接渲染调用方传进来的列表）被误报了：\n" +
+                liveRefilterViolations(ok).joinToString("\n"),
+            liveRefilterViolations(ok).isEmpty(),
+        )
+
+        // 反向锚点 2：注释里的过滤不算违规（判别器若用 raw contains/正则不剔注释，
+        // 这里会被误报成违规 —— 那正是审计 A6 记录的"命中注释"形态）
+        val commented = sampleScreen("// val live = matches.filter { it.status == MatchStatus.LIVE }")
+        assertTrue(
+            "注释里的过滤被误报成违规了（没剔注释）：\n" +
+                liveRefilterViolations(commented).joinToString("\n"),
+            liveRefilterViolations(commented).isEmpty(),
         )
     }
 
@@ -120,6 +167,81 @@ class TopBarAndLiveFilterTest {
 
     // ---------------------------------------------------------------
 
+    /**
+     * 判据：`LiveNowScreen` 不得自己筛选 LIVE（返回违规说明，空 = 达标）。
+     *
+     * 输入是**原始源码文本**；内部先 [GuardSourceScan.stripNonCode] 剔注释与字符串字面量，
+     * 判据锚在 `fun LiveNowScreen(` 的**函数体**里（别处的 filter 不算）。
+     */
+    private fun liveRefilterViolations(rawScreen: String): List<String> {
+        val code = GuardSourceScan.stripNonCode(rawScreen)
+        // ⚠️ 函数体缺失或不是花括号体时，[functionBody] 内部直接 error()（铁律③）。
+        // 注意：**全注释的函数体**剔注释后只剩空白 —— 那是"没有违规"，不是"找不到锚点"。
+        // （写这段时踩到过：用 isBlank() 当"没找到"的信号，会把合规样本误报成违规。）
+        val body = functionBody(code, "fun LiveNowScreen(")
+        val out = mutableListOf<String>()
+        // 形状 1：filter / filterNot 的 lambda 里出现 status
+        // （`it` / 命名参数 `m ->` / `import LIVE` 简写全覆盖；不需要 "LIVE" 字面量）
+        Regex("""filter(?:Not)?\s*\{[^}]*\bstatus\b""").findAll(body).forEach {
+            out += "filter 里又拿 status 做筛选：${it.value.trim()}"
+        }
+        // 形状 2：不经过 filter 的 status 与 LIVE 重复比较（含交换左右操作数）
+        Regex("""\bstatus\s*==\s*(?:MatchStatus\.)?LIVE\b|\b(?:MatchStatus\.)?LIVE\s*==\s*\w+\.status\b""")
+            .findAll(body).forEach {
+                out += "函数体里又出现 status 与 LIVE 的比较：${it.value.trim()}"
+            }
+        return out
+    }
+
+    /** 把一段实现套进 LiveNowScreen 的壳里，供判据自检使用。 */
+    private fun sampleScreen(implementation: String): String = """
+        @Composable
+        fun LiveNowScreen(liveMatches: List<Match>, loading: Boolean) {
+            $implementation
+        }
+    """.trimIndent()
+
+    private fun functionSpan(code: String, marker: String): Pair<Int, Int>? {
+        val start = code.indexOf(marker)
+        if (start < 0) return null
+        var i = start + marker.length - 1
+        var paren = 0
+        while (i < code.length) {
+            when (code[i]) {
+                '(' -> paren++
+                ')' -> paren--
+                // 参数表之外出现 `=` 说明是表达式体函数，没有花括号体
+                '=' -> if (paren == 0) return null
+                '{' -> if (paren == 0) return start to i
+            }
+            i++
+        }
+        return null
+    }
+
+    /** marker 的花括号函数体；找不到/非花括号体直接 [error]（铁律③，绝不静默全绿）。 */
+    private fun functionBody(code: String, marker: String): String {
+        val open = functionSpan(code, marker)?.second
+            ?: error("源码里找不到 $marker 的花括号函数体 —— 守卫会静默全绿")
+        return balanced(code, open)
+    }
+
+    private fun balanced(code: String, open: Int): String {
+        var depth = 0
+        var i = open
+        while (i < code.length) {
+            when (code[i]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return code.substring(open + 1, i)
+                }
+            }
+            i++
+        }
+        error("花括号不配对 —— 守卫会静默全绿")
+    }
+
     private fun stripped(name: String): String {
         val f = uiSources().firstOrNull { it.name == name }
             ?: error("找不到 $name，守卫会静默全绿")
@@ -137,11 +259,12 @@ class TopBarAndLiveFilterTest {
         return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
     }
 
-    private fun stripComments(text: String): String =
-        text.lineSequence()
-            .map { line ->
-                val t = line.trimStart()
-                if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) "" else line
-            }
-            .joinToString("\n")
+    /**
+     * 剔注释（连字符串字面量一起剔），走共享的词法实现 [GuardSourceScan.stripNonCode]。
+     *
+     * ⚠️ 早期这里是"整行注释才置空"的宽松版：行尾 `// …` 原样保留 ——
+     * 于是"删掉真正的调用、在同一行留一句提到它的注释"就能让断言继续全绿
+     * （审计「未验证的怀疑 #6」）。
+     */
+    private fun stripComments(text: String): String = GuardSourceScan.stripNonCode(text)
 }

@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -27,19 +28,90 @@ class NavHostGuardTest {
 
     @Test
     fun `onNewIntent 不能是只调 setIntent 的死代码`() {
-        val code = stripComments(mainActivity().readText())
+        val raw = mainActivity().readText()
+        val code = stripComments(raw)
+        // 非空性锚点：读不到正文时下面的判据会"零违规"地全绿
         assertTrue("没读到 MainActivity 的正文，守卫会静默全绿", code.contains("class MainActivity"))
 
-        // 已删除 = 达标；将来真加深链时，这里要求它**真的读** intent
-        if (!code.contains("override fun onNewIntent")) return
-
+        val violation = onNewIntentViolation(raw)
         assertTrue(
             "MainActivity 声明了 onNewIntent，却没有任何读取 intent 的代码" +
-                "（Manifest 的 intent-filter 只有 MAIN/LAUNCHER，没有 VIEW/BROWSABLE 深链）：" +
+                "（Manifest 的 intent-filter 只有 MAIN/LAUNCHER，没有 VIEW/BROWSABLE 深链）：\n" +
+                "  ${violation}\n" +
                 "只调 setIntent(intent) 是纯死代码，而注释把它写成了深链准备，" +
                 "后来者会以为深链已经支持（review/03-ui.md P2-4）。" +
                 "要么删掉这个空实现，要么真的消费 intent。",
-            INTENT_READ.containsMatchIn(code),
+            violation == null,
+        )
+    }
+
+    @Test
+    fun `onNewIntent 判据自检 换行写法与死代码都要能抓到`() {
+        // ⚠️ 审计 A14：旧实现是 `if (!code.contains("override fun onNewIntent")) return`，
+        //   a) `override` 与 `fun` 之间换行（Kotlin 合法写法）会**漏判**；
+        //   b) 方法不存在时整条测试直接 return —— 当前这条测试是"永远绿"的。
+        // 这里把内存样本喂给**参与生产判定**的 [onNewIntentViolation]，
+        // 证明"以后有人把死代码加回来"一定会红。
+        val dead = """
+            class MainActivity : ComponentActivity() {
+                override fun onNewIntent(intent: Intent?) {
+                    super.onNewIntent(intent)
+                    setIntent(intent)
+                }
+            }
+        """.trimIndent()
+        assertTrue("只调 setIntent 的死代码必须能抓到", onNewIntentViolation(dead) != null)
+
+        // Kotlin 合法、但旧 `contains("override fun onNewIntent")` 会漏的写法
+        val multiline = """
+            class MainActivity : ComponentActivity() {
+                override
+                fun onNewIntent(intent: Intent?) {
+                    super.onNewIntent(intent)
+                    setIntent(intent)
+                }
+            }
+        """.trimIndent()
+        assertTrue(
+            "override 与 fun 换行时必须能抓到（旧判据的 contains 在这里漏判）",
+            onNewIntentViolation(multiline) != null,
+        )
+
+        val withAnnotation = """
+            class MainActivity : ComponentActivity() {
+                @Suppress("DEPRECATION")
+                override fun onNewIntent(intent: Intent?) {
+                    super.onNewIntent(intent)
+                    setIntent(intent)
+                }
+            }
+        """.trimIndent()
+        assertTrue("声明前带注解时也必须能抓到", onNewIntentViolation(withAnnotation) != null)
+
+        // 合规：真的消费 intent（将来加深链时不该被误报）
+        val compliant = """
+            class MainActivity : ComponentActivity() {
+                override fun onNewIntent(intent: Intent?) {
+                    super.onNewIntent(intent)
+                    setIntent(intent)
+                    intent?.data?.let { handleDeepLink(it) }
+                }
+            }
+        """.trimIndent()
+        assertTrue(
+            "真的消费 intent 的写法被误报了：${onNewIntentViolation(compliant)}",
+            onNewIntentViolation(compliant) == null,
+        )
+
+        // 反向锚点：注释里提到 onNewIntent 不算"声明了方法"（剔注释）
+        val commentOnly = """
+            class MainActivity : ComponentActivity() {
+                // override fun onNewIntent(intent: Intent?) { setIntent(intent) }
+            }
+        """.trimIndent()
+        assertTrue(
+            "注释里的 onNewIntent 不该被当成实现（否则删掉实现、留一句注释照旧）",
+            onNewIntentViolation(commentOnly) == null,
         )
     }
 
@@ -246,6 +318,27 @@ class NavHostGuardTest {
     private fun mainViewModel() = source("MainViewModel.kt")
 
     /**
+     * `onNewIntent` 死代码判据：返回违规说明；`null` = 达标（方法不存在，或存在且真的读了 intent）。
+     *
+     * ⚠️ 审计 A14：旧实现是 `if (!code.contains("override fun onNewIntent")) return` ——
+     *  a) `override` 与 `fun` 之间换行（Kotlin 合法写法）会**漏判**；
+     *  b) 方法不存在时整条测试直接 return（当前是"永远绿"的）。
+     * 这里用允许换行的正则识别**声明**，再对**函数体**做结构判断。
+     */
+    private fun onNewIntentViolation(rawCode: String): String? {
+        val code = stripComments(rawCode)
+        val declaration = Regex("""\boverride\s+fun\s+onNewIntent\s*\(""").find(code)
+            ?: return null // 已删除 = 达标
+        val open = code.indexOf('{', declaration.range.last)
+        if (open < 0) {
+            return "onNewIntent 声明之后找不到函数体 —— 判据没法确认它是否读了 intent"
+        }
+        val body = balanced(code, open)
+        if (INTENT_READ.containsMatchIn(body)) return null
+        return "函数体只做了：${body.trim().replace(Regex("""\s+"""), " ")}"
+    }
+
+    /**
      * 提取以 [marker] 起始的函数花括号体。
      *
      * ⚠️ marker 必须带左括号（`fun SubPageTopBar(`），否则会命中同前缀函数
@@ -286,14 +379,13 @@ class NavHostGuardTest {
         error("花括号不配对 —— 守卫会静默全绿")
     }
 
-    /** 去掉行注释与块注释（注释里写同样的字面量会让守卫永远全绿）。 */
-    private fun stripComments(text: String): String =
-        text.lineSequence()
-            .map { line ->
-                val t = line.trimStart()
-                if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) "" else line
-            }
-            .joinToString("\n")
+    /**
+     * 去掉行注释与块注释**以及字符串字面量**（注释里写同样的字面量会让守卫永远全绿）。
+     *
+     * 走共享的词法实现 [GuardSourceScan.stripNonCode]：早期的"整行注释才置空"版本
+     * 会漏掉行尾 `// …`，于是"删掉调用、在同一行留一句提到它的注释"照样绿。
+     */
+    private fun stripComments(text: String): String = GuardSourceScan.stripNonCode(text)
 
     private companion object {
         /** 真的读了 activity 的 intent（不是只 setIntent）。 */

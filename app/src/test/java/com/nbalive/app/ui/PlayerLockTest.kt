@@ -1,5 +1,7 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -248,11 +250,160 @@ class PlayerLockTest {
         )
     }
 
+    // ---------- A4：锁必须绑在「当前这场」上，而不是一个裸布尔 ----------
+    //
+    // 只读审计 review/audit-guards.md A4：这里原来写的是
+    //     var lockedMatchId: String? = "match-A"
+    //     lockedMatchId = "match-B"
+    //     assertTrue(PlayerLock.isLocked(lockedMatchId, "match-B"))
+    //     assertFalse(PlayerLock.isLocked(lockedMatchId, "match-A"))
+    // 输入是测试自己刚赋值的局部变量，两条断言只是上面「切到另一场比赛时锁定自动失效」
+    // 那段 isLocked 语义的**复述** —— 没有任何生产切换逻辑参与，
+    // 生产改回裸布尔锁照样绿（这正是它守不住的 bug）。
+    //
+    // ⚠️ 审计建议的「用 MainViewModel 夹具驱动（vm.playMatch(m1/m2)）」在本仓库**不成立**：
+    // 锁定状态住在 NbaLiveApp 的 composable 里
+    // （`var lockedMatchId by remember { mutableStateOf<String?>(null) }`，NbaLiveApp.kt:187），
+    // MainViewModel 里根本没有锁定状态 —— 照建议写只能变成「测试自己造一台状态机」，
+    // 又是一次自证。能真正变红的判据是**扫生产源码的接线**：
+    // 判定必须传当前比赛 id、状态必须存 id、切/解锁必须作用于当前这场。
+
     @Test
-    fun `切场后新的一场可以被正常锁定`() {
-        var lockedMatchId: String? = "match-A"
-        lockedMatchId = "match-B"
-        assertTrue(PlayerLock.isLocked(lockedMatchId, "match-B"))
-        assertFalse(PlayerLock.isLocked(lockedMatchId, "match-A"))
+    fun `切场锁定必须由生产接线保证 而不是测试自己改局部变量`() {
+        val files = productionFiles()
+        // 非空性锚点：下面那条是「零违规」断言，扫不到源码时会静默全绿
+        assertTrue(
+            "只扫到 ${files.size} 个生产 kt 文件（应 ≥30，cwd=${System.getProperty("user.dir")}）—— " +
+                "锁定接线守卫会静默全绿",
+            files.size >= 30,
+        )
+        val raw = files.firstOrNull { it.name == "NbaLiveApp.kt" }
+            ?: error("找不到 NbaLiveApp.kt —— 锁定接线的唯一锚点，守卫会静默全绿")
+
+        val violations = lockWiringViolations(raw.readText())
+        assertTrue(
+            "锁定接线不合格（review/audit-guards.md A4）：\n" +
+                violations.joinToString("\n").prependIndent("  ") +
+                "\n\n锁必须绑定「锁住哪一场」并按**当前比赛 id** 判定。退回裸布尔锁或常量比赛 id 时，" +
+                "「同时在播」面板切场后新的一场会继续处于锁定态 —— " +
+                "用户看着新比赛、画面却全没了且点不动。",
+            violations.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `锁定接线判据自检 裸布尔与常量比赛 id 必须能抓到`() {
+        // 防「永远全绿的摆设」（同 GuardHygieneTest 的做法）：把内存样本喂给
+        // **真正参与生产判定**的那个函数，而不是把判据在测试里复述一遍。
+        val compliant = """
+            var lockedMatchId by remember { mutableStateOf<String?>(null) }
+            val playerLocked = PlayerLock.isLocked(lockedMatchId, playerState.match?.id)
+            onToggleLock = {
+                val id = playerState.match?.id
+                lockedMatchId = if (playerLocked) null else id
+            }
+        """.trimIndent()
+        assertTrue(
+            "判据误报了正确的接线：\n" + lockWiringViolations(compliant).joinToString("\n"),
+            lockWiringViolations(compliant).isEmpty(),
+        )
+
+        // 违规样本 1：裸布尔锁（历史 bug 的形态）
+        val boolLock = """
+            var locked by remember { mutableStateOf(false) }
+            val playerLocked = locked
+        """.trimIndent()
+        assertTrue(
+            "裸布尔锁必须能抓到（否则「切场后新的一场可以被正常锁定」依旧没人守）",
+            lockWiringViolations(boolLock).isNotEmpty(),
+        )
+
+        // 违规样本 2：判定绑定常量比赛 id
+        val constantMatch = """
+            var lockedMatchId by remember { mutableStateOf<String?>(null) }
+            val playerLocked = PlayerLock.isLocked(lockedMatchId, "match-A")
+        """.trimIndent()
+        assertTrue(
+            "判定绑定常量比赛 id（切场就漏判）必须能抓到",
+            lockWiringViolations(constantMatch).isNotEmpty(),
+        )
+
+        // 违规样本 3：切/解锁写死场次
+        val wrongToggle = """
+            var lockedMatchId by remember { mutableStateOf<String?>(null) }
+            val playerLocked = PlayerLock.isLocked(lockedMatchId, playerState.match?.id)
+            onToggleLock = { lockedMatchId = if (playerLocked) null else "match-B" }
+        """.trimIndent()
+        assertTrue(
+            "切/解锁写死场次必须能抓到",
+            lockWiringViolations(wrongToggle).isNotEmpty(),
+        )
+
+        // 反向锚点：注释里的正确接线不算命中（剔注释）
+        val commentOnly = """
+            // var lockedMatchId by remember { mutableStateOf<String?>(null) }
+            // val playerLocked = PlayerLock.isLocked(lockedMatchId, playerState.match?.id)
+            // lockedMatchId = if (playerLocked) null else id
+        """.trimIndent()
+        assertTrue(
+            "只留注释不算命中（否则删掉实现、留一句说明就照样绿）",
+            lockWiringViolations(commentOnly).isNotEmpty(),
+        )
+    }
+
+    // ---------------------------------------------------------------
+
+    /**
+     * 锁定接线判据：生产源码**原始文本** → 违规清单（空 = 达标）。
+     *
+     * 内部先 [GuardSourceScan.stripNonCode] 剔注释与字符串字面量（铁律①）；
+     * 判据全部匹配**调用形状**（铁律②）；找不到锚点直接 [error]（铁律③）。
+     */
+    private fun lockWiringViolations(rawCode: String): List<String> {
+        val code = GuardSourceScan.stripNonCode(rawCode)
+        val out = mutableListOf<String>()
+
+        // ① 判定必须把**当前播放的比赛 id** 传进去
+        if (!Regex("""PlayerLock\.isLocked\(\s*lockedMatchId\s*,\s*playerState\.match\?\.id\s*\)""")
+                .containsMatchIn(code)
+        ) {
+            out += "① 没有 `PlayerLock.isLocked(lockedMatchId, playerState.match?.id)`：" +
+                "锁定判定没有绑定当前播放的比赛（裸布尔或常量 id 都会让切场后继续锁着）"
+        }
+        // ② 状态本身必须声明成「比赛 id」（String?），不能是布尔
+        if (!Regex(
+                """\bvar\s+lockedMatchId\s+by\s+remember\s*\{\s*mutableStateOf\s*<\s*String\s*\?\s*>\s*\(\s*null\s*\)""",
+            ).containsMatchIn(code)
+        ) {
+            out += "② 锁定状态不是 `var lockedMatchId by remember { mutableStateOf<String?>(null) }`：" +
+                "「锁绑定到比赛而非裸布尔」的核心形态就是存 match id（可空 = 没锁）"
+        }
+        if (Regex("""\bvar\s+locked\w*\s+by\s+remember\s*\{\s*mutableStateOf\s*(?:<[^>]*>)?\s*\(\s*false\s*\)""")
+                .containsMatchIn(code)
+        ) {
+            out += "②' 锁定状态退回成了裸布尔（`mutableStateOf(false)`）：" +
+                "布尔锁会跟着 route 漏到新的一场"
+        }
+        // ③ 切/解锁作用于**当前这场**：先取 id，再按当前锁定态写回
+        if (!Regex("""val\s+id\s*=\s*playerState\.match\?\.id""").containsMatchIn(code)) {
+            out += "③ 切/解锁没有先取当前比赛 id（`val id = playerState.match?.id`）"
+        }
+        if (!Regex("""lockedMatchId\s*=\s*if\s*\(\s*playerLocked\s*\)\s*null\s+else\s+id\b""")
+                .containsMatchIn(code)
+        ) {
+            out += "④ 切/解锁没有写成 `lockedMatchId = if (playerLocked) null else id`"
+        }
+        return out
+    }
+
+    private fun productionFiles(): List<File> {
+        val cwd = System.getProperty("user.dir") ?: "."
+        val roots = listOf(
+            File(cwd, "src/main/java/com/nbalive/app"),
+            File(cwd, "app/src/main/java/com/nbalive/app"),
+        )
+        val root = roots.firstOrNull { it.isDirectory }
+            ?: error("找不到生产源码目录，cwd=$cwd，候选=${roots.map { it.path }} —— 守卫会静默全绿")
+        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
     }
 }

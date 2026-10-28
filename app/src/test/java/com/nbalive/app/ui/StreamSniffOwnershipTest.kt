@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -79,6 +80,19 @@ class StreamSniffOwnershipTest {
             runCurrent()
             Thread.yield()
         }
+        // ⚠️ 只读审计 review/audit-guards.md A13：这个循环到上界后**静默退出**。
+        // 夹具坏掉（根本没进网页兜底）时 `webFallbackUrl` 本来就是 null，
+        // 负向用例的 `assertNull(streamUrl)` 会以"通过"掩盖夹具故障 —— 假安全感。
+        // 所以这里硬失败（check，不是 assume），并顺带钉住兜底的**是这一条**线路。
+        checkNotNull(vm.playerState.value.webFallbackUrl) {
+            "夹具没把 ViewModel 带进网页兜底（spins=$spins，playerState=${vm.playerState.value}）—— " +
+                "后续断言会以「通过」掩盖夹具故障（审计 A13）"
+        }
+        assertEquals(
+            "网页兜底必须停在**这条**线路的页面上，否则后续断言测的是别的页面",
+            pageUrl,
+            vm.playerState.value.webFallbackUrl,
+        )
     }
 
     @Test
@@ -113,7 +127,18 @@ class StreamSniffOwnershipTest {
         enterWebFallback(vm, page)
 
         // 旧页面（另一个播放主机）在途的请求晚到了
-        vm.onStreamSniffed("http://cdn.example.com/live/old.m3u8", "http://play.sportsteam356.com/")
+        val oldPageReferer = "http://play.sportsteam356.com/"
+        // ⚠️ 前置条件（审计 A13）：负向用例必须先证明"夹具真的在兜底、而且旧页面确实不同源"。
+        // 否则夹具失效时 streamUrl 本来就是 null，这条 assertNull 会以"通过"掩盖故障。
+        assertNull(
+            "进兜底时不该已经有流（否则下面断言的是别的东西）",
+            vm.playerState.value.streamUrl,
+        )
+        assertFalse(
+            "夹具里的「旧页面」必须与当前播放页不同源，否则这条负向用例其实测的是正向",
+            page.startsWith(oldPageReferer) || oldPageReferer.startsWith(page),
+        )
+        vm.onStreamSniffed("http://cdn.example.com/live/old.m3u8", oldPageReferer)
         advanceTimeBy(1)
         runCurrent()
 

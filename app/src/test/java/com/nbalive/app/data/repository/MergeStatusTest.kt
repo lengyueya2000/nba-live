@@ -76,13 +76,57 @@ class MergeStatusTest {
     @Test
     fun `合并后 id 必须唯一`() {
         val repo = MatchRepository()
-        // 两个源用了同一个 id
-        val merged = repo.mergeForTest(
-            jrs = listOf(match(id = "same")),
-            jrkan = listOf(match(id = "same")),
+        // ⚠️ 只读审计 review/audit-guards.md A5：原来两个源用的是**同一批 fixture**
+        // （同队名 + 同日期 + 同 id），merge 后 size == 1，
+        // 于是 `ids.size == ids.distinct().size` 在单元素时**恒真** ——
+        // 把 merge 里的 id 唯一化整段删掉也照样绿（审计实测）。
+        //
+        // 真正会触发唯一化的是「**同 id、不同对阵**」：normalizeKey 不同 ⇒ 两场都必须保留，
+        // 但 id 撞车 ⇒ 必须加后缀。只有这种夹具才测得到"合并后 id 不能重复"。
+        val jrs = listOf(match(id = "same", home = "A队", away = "B队"))
+        val jrkan = listOf(match(id = "same", home = "C队", away = "D队"))
+        val inputs = jrs + jrkan
+        // 前置（非空性锚点）：夹具里确实有重复 id —— 否则这条又会退化成"测不到东西"
+        assertTrue(
+            "夹具必须真的含重复 id（这是「合并后 id 唯一」的前提），实际 id=${inputs.map { it.id }}",
+            inputs.map { it.id }.size > inputs.map { it.id }.distinct().size,
+        )
+
+        val merged = repo.mergeForTest(jrs = jrs, jrkan = jrkan)
+
+        // 把"旧断言"原样跑一遍：单元素时 `size == distinct.size` 是 1 == 1，**恒真** ——
+        // 它给不出任何信息（这一步不是守卫，只是把"为什么它永远不会红"钉成可执行的对照）。
+        val legacyMerged = repo.mergeForTest(
+            jrs = listOf(match(id = "legacy")),
+            jrkan = listOf(match(id = "legacy")),
+        )
+        assertEquals(
+            "旧夹具 merge 后只有一场 —— 这就是审计 A5 说的「单元素恒真」，本条测试不能再用它",
+            1,
+            legacyMerged.size,
+        )
+        val legacyIds = legacyMerged.map { it.id }
+        assertEquals(
+            "旧写法在单元素夹具上恒真（1 == 1）—— 审计 A5 的原始形态",
+            legacyIds.size,
+            legacyIds.distinct().size,
+        )
+
+        // ① 两场不同对阵都必须活下来：删掉 id 唯一化后，末尾 `distinctBy { it.id }`
+        //    会把其中一场**静默吞掉**（用户看不到那一场）
+        assertEquals(
+            "同 id、不同对阵的两场必须都保留（id 撞车不能丢比赛）",
+            2,
+            merged.size,
         )
         val ids = merged.map { it.id }
+        // ② 这才是"合并后 id 必须唯一"：size ≥ 2 时才不可能恒真
         assertEquals("合并后 id 不能重复", ids.size, ids.distinct().size)
+        assertEquals(
+            "被唯一化的那场应当带 # 后缀留下来，而不是整场消失",
+            listOf("same", "same#1"),
+            ids.sorted(),
+        )
     }
 
     @Test

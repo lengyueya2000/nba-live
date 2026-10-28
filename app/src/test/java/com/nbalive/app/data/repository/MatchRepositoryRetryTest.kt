@@ -97,21 +97,55 @@ class MatchRepositoryRetryTest {
 
     @Test
     fun `重试次数有上限 不会无限打源站`() = runBlocking {
-        var attempts = 0
-        repo.loadMatchesWithOutcome { _, _ ->
-            attempts++
+        // ⚠️ 只读审计 review/audit-guards.md A11：原来的上界是**用同一份候选列表算出来的**
+        //     bound = JRS_LIST.size.let { 3 + it - 1 } + JRKAN_LIST_JS.size.let { 3 + it - 1 }
+        // 注释里担心的恰恰是"每个镜像都重试 3 次"被镜像数量放大 ——
+        // 但断言跟着候选数量一起放大，所以永远追得上：镜像加 10 个，上界也加 10。
+        // `attempts >= 1` 也近乎恒真（夹具一跑就 ≥1）。
+        // 现在改成**与候选列表长度无关的硬上界**，并按 host 分组钉住"每个 host 的重试 ≤3 次"。
+        // ⚠️ 必须用**线程安全**容器：两个源在 MatchRepository.loadMatchesWithOutcome 里
+// 是 `async` 并发跑的（Dispatchers.IO），普通 MutableList 会丢更新 ——
+// 2026-10-28 实测：并发下真实 8 次只记到 ≤7 次，于是"上界"断言看起来永远成立。
+        val attemptedUrls = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        repo.loadMatchesWithOutcome { url, _ ->
+            attemptedUrls.add(url)
             FetchResult.Unreachable("timeout")
         }
-        // 上界按结构算，不硬编码：每源 = 首候选拉满 3 次重试 + 每个镜像域名 1 次。
-        // （候选列表见 SourceEndpoints：域名候选让镜像也参与，但绝不能每个都重试 3 次，
-        //  否则"重试有上限"就被镜像数量偷偷放大了。）
-        val bound = SourceEndpoints.JRS_LIST.size.let { 3 + it - 1 } +
-            SourceEndpoints.JRKAN_LIST_JS.size.let { 3 + it - 1 }
+
+        // 非空性锚点：夹具必须真的打到了两个源，否则下面两条上界断言都测不到东西
+        val hosts = attemptedUrls.map { hostOf(it) }.distinct()
         assertTrue(
-            "失败重试次数必须有上限（≤$bound），实际请求了 $attempts 次",
-            attempts <= bound,
+            "夹具必须真的尝试过两个源的 host（实际 ${attemptedUrls.size} 次：$attemptedUrls）—— " +
+                "否则重试上限守卫会静默全绿",
+            hosts.size >= 2,
         )
-        assertTrue("至少要尝试过一次", attempts >= 1)
+        assertTrue(
+            "至少要尝试过 3 次（一个候选被重试满）才是有效夹具，实际 ${attemptedUrls.size} 次",
+            attemptedUrls.size >= 3,
+        )
+
+        val perHost = attemptedUrls.groupingBy { hostOf(it) }.eachCount()
+        val overRetried = perHost.filterValues { it > MAX_ATTEMPTS_PER_HOST }
+        assertTrue(
+            "同一 host 的尝试次数超过 $MAX_ATTEMPTS_PER_HOST 次（$overRetried）：\n" +
+                "镜像域名存在的意义是「这个域名死了」——在死域名上反复重试纯属浪费几秒超时；\n" +
+                "镜像数量增加更不能把「重试有上限」偷偷放大。",
+            overRetried.isEmpty(),
+        )
+        assertTrue(
+            "失败重试总次数超过硬上界 $MAX_TOTAL_ATTEMPTS（实际 ${attemptedUrls.size} 次：$attemptedUrls）。\n" +
+                "这个上界**与候选列表长度无关**：一旦每个镜像都重试 3 次，它必须变红（审计 A11）。",
+            attemptedUrls.size <= MAX_TOTAL_ATTEMPTS,
+        )
+
+        // 对照（审计 A11）：旧判据把上界写成「候选列表派生」—— 候选一变上界跟着变，没有约束力。
+        // 用同一份公式演示它挡不住"每个镜像都重试 3 次"：
+        val legacyDerivedBound = { jrs: Int, jrkan: Int -> (3 + jrs - 1) + (3 + jrkan - 1) }
+        assertTrue(
+            "旧的派生上界会随镜像数量自动放大（JRS 10 个镜像时上界=${legacyDerivedBound(10, 1)} > " +
+                "$MAX_TOTAL_ATTEMPTS）—— 所以它守不住「重试有上限」；本条改用与候选数量无关的常量。",
+            legacyDerivedBound(10, 1) > MAX_TOTAL_ATTEMPTS,
+        )
     }
 
     @Test
@@ -242,5 +276,26 @@ class MatchRepositoryRetryTest {
         val f = MatchRepository::class.java.getDeclaredField("detailCache")
         f.isAccessible = true
         return (f.get(repo) as Map<*, *>).size
+    }
+
+    private fun hostOf(url: String): String =
+        runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("").lowercase()
+
+    private companion object {
+        /**
+         * 单个候选 host 的尝试次数上限（含首次）。
+         *
+         * 与 `SourceEndpoints.*.size` **无关**：镜像再多，每个 host 也只能试这么多次 ——
+         * 审计 A11 记录的原始缺陷就是上界跟着候选列表一起放大。
+         */
+        const val MAX_ATTEMPTS_PER_HOST = 3
+
+        /**
+         * 全部失败时的总尝试次数硬上界（JRS 3 候选：3+1+1 = 5；JRKAN 1 候选：3 —— 共 8）。
+         *
+         * ⚠️ 这是**写死的常量**，不是从候选列表算出来的：候选数变化时应当由人重新审阅这个数字，
+         * 而不是让断言跟着自动放宽（否则"重试有上限"永远追得上）。
+         */
+        const val MAX_TOTAL_ATTEMPTS = 8
     }
 }
