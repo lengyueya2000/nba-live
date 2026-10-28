@@ -298,7 +298,7 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
             // CardSemantics 的动作词（有单测）。卡内没有内嵌可点按钮
             // （"立即观看"是纯装饰 Surface），所以不需要合并语义。
             .clickable(
-                onClickLabel = CardSemantics.actionLabel(hasInnerButton = false),
+                onClickLabel = CardSemantics.ACTION_LABEL,
                 role = Role.Button,
                 onClick = onClick,
             )

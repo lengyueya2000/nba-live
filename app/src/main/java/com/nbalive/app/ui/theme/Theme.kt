@@ -102,15 +102,33 @@ internal object SportLight {
 private fun safeOnWhite(colors: List<Color>): Brush =
     Brush.linearGradient(colors = colors.map { it.whiteTextSafe() })
 
-/** 渐变：直播 / 主 CTA（135deg 红→橙）——**原始亮度**，不要在上面压白字 */
-val GradLive = Brush.linearGradient(
-    colors = listOf(Color(0xFFFF2E4D), Color(0xFFFF6B2C), Color(0xFFFF8A3D)),
+/**
+ * 红橙三档渐变色值的**唯一来源**（review/audit-guards.md B11）。
+ *
+ * 这三档原来在生产里各写了一份：这里 [GradLive]、这里 [GradLiveOnWhite]、
+ * 以及 `AccentContrast.HeroGradientStops` —— 三份平行副本。后果是
+ * `AccentContrastTest` 的 3 条 "hero 卡 AA 4.5:1" 遍历的是**副本**：
+ * 改这里的界面底色，hero 卡可能掉出 AA，而断言照样绿。
+ *
+ * 现在三处都从这一份派生（改这里三处一起变）：
+ *  - [GradLive]：原始亮度，只用于装饰/主 CTA 底；
+ *  - [GradLiveOnWhite]：白字安全版（hero 卡、直播状态标签真正用的那条）；
+ *  - `AccentContrast.HeroGradientStops`：同一份来源压暗后的裸颜色，给单测算对比度。
+ *
+ * ⚠️ 别在别处再抄这三个字面量：`ZeroConsumerGuardTest` 会扫生产源码，
+ * 同一档色值出现在第二个生产文件里就红。
+ */
+val LiveGradientSource: List<Color> = listOf(
+    Color(0xFFFF2E4D),
+    Color(0xFFFF6B2C),
+    Color(0xFFFF8A3D),
 )
 
+/** 渐变：直播 / 主 CTA（135deg 红→橙）——**原始亮度**，不要在上面压白字 */
+val GradLive = Brush.linearGradient(colors = LiveGradientSource)
+
 /** 渐变：直播 / 主 CTA 的**白字安全版**（状态标签、hero 卡用这条） */
-val GradLiveOnWhite = safeOnWhite(
-    listOf(Color(0xFFFF2E4D), Color(0xFFFF6B2C), Color(0xFFFF8A3D)),
-)
+val GradLiveOnWhite = safeOnWhite(LiveGradientSource)
 
 /**
  * 强调渐变（白字底色）：按主题主色生成，并逐档压暗到"白字可读"。

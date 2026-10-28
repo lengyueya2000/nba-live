@@ -215,12 +215,17 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
             // 听到两遍相同动作（review/03-ui.md P2-25）。
             // mergeDescendants 把它并成一个节点，onClickLabel 给出动作词
             // —— 读屏用户听到的是一句话、一个动作。
-            // 判据见 CardSemantics（有单测）。
-            .semantics(mergeDescendants = CardSemantics.shouldMergeIntoParent(hasInnerButton = true)) {
+            //
+            // ⚠️ 这里**原地写 true**，不抽成函数、也不做成参数：事实就是
+            // "这张卡里确实有内嵌可点按钮"。原来的
+            // `CardSemantics.shouldMergeIntoParent(hasInnerButton = true)` 是恒等函数
+            // + 唯一实参是字面量 true，那只是在签名里制造"已区分"的假象
+            // （review/audit-guards.md B6）。
+            .semantics(mergeDescendants = true) {
                 // 语义合并后由父节点统一承载点击动作
             }
             .clickable(
-                onClickLabel = CardSemantics.actionLabel(hasInnerButton = true),
+                onClickLabel = CardSemantics.ACTION_LABEL,
                 onClick = onClick,
             )
             .padding(Space.md),

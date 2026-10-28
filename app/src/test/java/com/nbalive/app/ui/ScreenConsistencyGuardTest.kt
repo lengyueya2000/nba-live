@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -35,12 +36,32 @@ class ScreenConsistencyGuardTest {
             "hero 卡整卡可点却没有 onClickLabel：TalkBack 会先读一长串队名/时间/线路数，\n" +
                 "最后只说'双击激活'，用户不知道会发生什么（review/03-ui.md P2-26）。\n" +
                 "按按钮类节点应写 role = Role.Button。实际函数体：\n$body",
-            body.contains("onClickLabel = CardSemantics.actionLabel(") ||
-                body.contains("onClickLabel = \"播放"),
+            // 动作词只能来自 `CardSemantics.ACTION_LABEL` 这一个常量（review/audit-guards.md B6：
+            // 原来这里是 `CardSemantics.actionLabel(hasInnerButton = …)`，形参被实现忽略）。
+            // 也不再接受就地写字符串字面量 —— 那等于把"统一动作词"又拆成两份。
+            body.contains("onClickLabel = CardSemantics.ACTION_LABEL"),
         )
         assertTrue(
             "hero 卡应声明 role = Role.Button（卡片整体是播放入口，不是普通文字）：\n$body",
             body.contains("role = Role.Button"),
+        )
+    }
+
+    @Test
+    fun `hero 卡背景必须用主题的白字安全渐变 GradLiveOnWhite`() {
+        // B11（review/audit-guards.md）：hero 卡的 AA 4.5:1 断言（AccentContrastTest）
+        // 遍历的是 HeroGradientStops，而生产真正画在屏幕上的底是 GradLiveOnWhite。
+        // 两者现在都派生自 Theme.kt 的 LiveGradientSource，但**派生链**只保证数值同源；
+        // 这条守的是"生产确实消费了它" —— 否则对比度守卫测的还是一份没人用的副本。
+        val code = stripComments(screenFile("MatchListScreen.kt").readText())
+        val body = functionBody(code, "LiveHeroCard")
+            ?: error("找不到 LiveHeroCard，守卫会静默全绿")
+        assertTrue(
+            "hero 卡的背景没有用 GradLiveOnWhite（主题里唯一来源派生的白字安全版）：\n" +
+                "一旦这里换回原始亮度渐变或自带字面量，AccentContrastTest 的 3 条\n" +
+                "“hero 卡 AA 4.5:1”就又只是测一份平行副本了（review/audit-guards.md B11）。\n" +
+                "实际函数体：\n$body",
+            HERO_BACKGROUND.containsMatchIn(body),
         )
     }
 
@@ -153,11 +174,15 @@ class ScreenConsistencyGuardTest {
         return code.substring(open + 1)
     }
 
-    private fun stripComments(text: String): String =
-        text.lineSequence()
-            .map { line ->
-                val t = line.trimStart()
-                if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) "" else line
-            }
-            .joinToString("\n")
+    /** 剔注释与字符串字面量：词法级实现（[GuardSourceScan]），保留行号；铁律①。 */
+    private fun stripComments(text: String): String = GuardSourceScan.stripNonCode(text)
+
+    private companion object {
+        /**
+         * hero 卡的背景调用：`.background(GradLiveOnWhite)`，
+         * 允许 `brush = ` 具名实参与尾部逗号（等价写法不放行才合理 ——
+         * 放行的应该是同一个来源，不是同一个字符串）。
+         */
+        val HERO_BACKGROUND = Regex("""\.background\(\s*(?:brush\s*=\s*)?GradLiveOnWhite\s*[,)]""")
+    }
 }

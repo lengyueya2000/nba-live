@@ -48,13 +48,15 @@ object AccentContrast {
     /**
      * hero 卡渐变的每一档（**白字安全版**）。
      *
-     * 与 [GradLiveOnWhite] 同源，只是这里给的是裸颜色，方便单测直接算对比度。
+     * **派生自** `Theme.kt` 的唯一色值来源 [LiveGradientSource]（review/audit-guards.md B11），
+     * 与 `GradLiveOnWhite` 同源 —— 只是这里给裸颜色，方便单测直接算对比度。
+     * 派生关系由 `AccentContrastTest` 的相等断言钉住。
+     *
+     * ⚠️ 千万别在这里再抄一遍字面量：那样 `AccentContrastTest` 的 3 条
+     * "hero 卡 AA 4.5:1" 测的又变成一份**平行副本**，
+     * 改 Theme.kt 的界面底色时对比度可能掉出 AA 而断言照样绿。
      */
-    val HeroGradientStops: List<Color> = listOf(
-        Color(0xFFFF2E4D),
-        Color(0xFFFF6B2C),
-        Color(0xFFFF8A3D),
-    ).map { it.whiteTextSafe() }
+    val HeroGradientStops: List<Color> = LiveGradientSource.map { it.whiteTextSafe() }
 
     /**
      * 强调渐变（主 CTA / 筛选胶囊选中态）的每一档。
