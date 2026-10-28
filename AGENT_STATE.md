@@ -3,7 +3,7 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **464 通过 / 0 失败 / 0 跳过**）
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **467 通过 / 0 失败 / 0 跳过**）
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
 - 测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在 Gradle 锁内拷走再计数**；XML 带 BOM，用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 读）
 
@@ -22,6 +22,13 @@
   真正可持久化的 handle（默认值只为不动既有测试 —— 守卫钉住注入点）。
   新增 `NavStateTest`(10) + `NavRestoreTest`(5，用"两个 VM 共用一个 SavedStateHandle"
   忠实模拟进程重建)。**回退验证：4 处生产改动一次回退 → 19 tests / 8 failed**。
+- `579cb45` **守卫硬化（审计 A1/A2/A3/A10）**：`DeadCodeWiringGuardTest` 重写
+  （剔注释、**声明不算使用**、加非空性锚点）、`AndroidConfigVersionTest` 基础主题
+  也剔 XML 注释、7 个文件 **20 处 `assumeTrue` 清零**成硬失败；新增元守卫
+  `GuardHygieneTest` + 词法级 `GuardSourceScan.stripNonCode`。
+  验证方式：**4 次单变量回退实验**（每次 `tests=16 failures=1`，只有目标断言红），
+  生产文件 `git checkout --` 逐字恢复、`git diff app/src/main` 为空。
+- `282d034` docs：本轮状态 + 只读审计报告 `review/audit-guards.md`（498 行）入库
 ### 2026-10-28 第二回合（上一轮）
 - `29c43b3` 03-P2-21/22/10（`ContextExt.kt` 唯一 findActivity + `SquareIconButton` + liveMatches 单源）
 - `7828a6b` 03-P2-4/9/16/17/31/35（删死代码 onNewIntent、去冗余 remember、
@@ -55,17 +62,22 @@ P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~13、
 ### B. 只读审计的产物（`review/audit-guards.md`，498 行，**必读**）
 审计覆盖 68/68 测试类 + ui/ 全目录，发现两类"假安全感"：
 
-**B-1 永远不红的守卫（已修 A1/A2/A3，其余待做）**
+**B-1 永远不红的守卫（A1/A2/A3/A10 已修，其余待做）**
 - ✅ A1 `DeadCodeWiringGuardTest` 4 条 raw-contains 断言（命中注释/声明）→ 已重写
 - ✅ A2 `AndroidConfigVersionTest` 基础 themes.xml 未剔注释 → 已修
-- ✅ A3 该类 22 处 `assumeTrue` + 无非空性锚点 → 已重写；**A10** 另 7 个文件 18 处 assumeTrue
-  → 正在做（task-5，含 `GuardHygieneTest` 元守卫）
+- ✅ A3 该类 22 处 `assumeTrue` + 无非空性锚点 → 已重写
+- ✅ **A10** 另 7 个文件 18 处（实测 20 处含 import）assumeTrue → 已清零；
+  新增元守卫 `GuardHygieneTest`（剔注释+剔字符串、≥60 文件锚点、9 个文件锚点、
+  "自己必须在扫描范围内"反向锚点、自检直接喂真函数）
+- ⬜ **残留（已如实标注）**：`DeadCodeWiringGuardTest` 另有 9 条仍是"文件级 contains"
+  （`WebMediaPauseScript.PAUSE_ALL`、`BackPolicy.shouldIntercept`、`MissingMatchPlaceholder`、
+  `SystemBarsPolicy.*` …）——严格剔注释/字符串已消掉"命中注释"那类，但"**声明即满足**"
+  与"换个等价写法就漏"仍可能存在，应逐条升级成调用点计数
 - ⬜ **A4** `PlayerLockTest`「切场锁定」= 局部变量自证；**A5** `MergeStatusTest`「id 唯一」
   在 `size==1` 时恒真；**A6** `AccessibilitySemanticsTest`「红点不靠颜色」只断言 `LiveDot`
   函数名；**A7** 直播页 LIVE 过滤负向守卫正则过窄；**A8** `alpha` 参数"声明即满足"；
   **A9** `SourceZoneDisciplineTest` 自检是 String.contains 永真；**A12** `WebMediaPauseScript`
-  全子串断言；**A13** `StreamSniffOwnershipTest` 负向用例缺前置；**A15** `DayLabelTest`
-  的旧"文件级谓词"
+  全子串断言；**A13** `StreamSniffOwnershipTest` 负向用例缺前置；**A14/A15** 同类
 - ⬜ 未验证怀疑 7 条（时区耦合、Kotlin `assert()` 依赖 Gradle 默认 enableAssertions、
   `LiveStatusCorrectionTest` 依赖机器时钟晚于夹具日、`MainViewModelTest.liveIds` 测试侧重实现）
 
