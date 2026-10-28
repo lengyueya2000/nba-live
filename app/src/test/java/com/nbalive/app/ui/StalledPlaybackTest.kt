@@ -1,5 +1,7 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -139,5 +141,65 @@ class StalledPlaybackTest {
             "同一段卡死不该反复上报，否则会连续触发多次故障切换",
             tracker.onTick(true, StalledPlayback.STATE_BUFFERING, nowMs = threshold + 1_000),
         )
+    }
+
+    // ---------- B5：判据唯一来源 ----------
+
+    @Test
+    fun `卡死判据只有一个来源 Tracker 必须委托 evaluate`() {
+        // 审计 B5：阈值/就绪判据在 evaluate 与 Tracker.onTick 里**各写一份**，
+        // 改一处不影响另一处，而两边都有测试覆盖 → 看起来"都测了"。
+        // 上面那几条纯判据永远绿，因为它们测的是 evaluate —— 生产只走 Tracker。
+        // 所以这里查的是**委托关系**：onTick 函数体内必须出现 evaluate( 调用。
+        val raw = productionSource("StalledPlayback.kt")
+        assertTrue(
+            "StalledPlayback.kt 只有 ${raw.lines().size} 行（应 >100）—— " +
+                "扫描范围走偏时这条守卫会静默全绿",
+            raw.lines().size > 100,
+        )
+        val body = functionBody(raw, "fun onTick(")
+        assertTrue(
+            "Tracker.onTick 体内必须出现 `evaluate(` 调用（审计 B5）：\n" +
+                "把委托删掉、退回内联的 `nowMs - since < thresholdMs` 判据时，这条必须变红 ——\n" +
+                "否则阈值判据又变成两份实现，改一处不影响另一处。\n" +
+                "实际 onTick 函数体：\n$body",
+            body.contains("evaluate("),
+        )
+    }
+
+    // ---------------------------------------------------------------
+
+    /** 生产源码原文（找不到就硬失败，绝不用 assume 家族静默跳过）。 */
+    private fun productionSource(name: String): String {
+        val root = listOf(
+            File("src/main/java/com/nbalive/app"),
+            File("app/src/main/java/com/nbalive/app"),
+            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
+        ).firstOrNull { it.isDirectory }
+            ?: error("找不到生产源码根（cwd=${System.getProperty("user.dir")}）")
+        return root.walkTopDown()
+            .firstOrNull { it.isFile && it.name == name }
+            ?.readText()
+            ?: error("找不到生产文件 $name —— 这条守卫会静默全绿，所以直接失败")
+    }
+
+    /** 从 `declaration`（如 `fun onTick(`）开始、用花括号配对截出的函数体（已剔注释/字符串）。 */
+    private fun functionBody(rawText: String, declaration: String): String {
+        val code = GuardSourceScan.stripNonCode(rawText)
+        val start = code.indexOf(declaration)
+        if (start < 0) error("找不到声明 `$declaration`（守卫会静默失效，所以直接失败）")
+        val open = code.indexOf('{', start)
+        if (open < 0) error("`$declaration` 后面找不到函数体起始 `{`")
+        var depth = 0
+        for (i in open until code.length) {
+            when (code[i]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return code.substring(open, i + 1)
+                }
+            }
+        }
+        error("`$declaration` 的函数体花括号没有配对")
     }
 }

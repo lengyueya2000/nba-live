@@ -31,7 +31,13 @@ package com.nbalive.app.ui
  */
 object StalledPlayback {
 
-    /** 与 `androidx.media3.common.Player.STATE_*` 对齐的本地副本（JVM 单测跑不到 Android stub）。 */
+    /**
+     * 与 `androidx.media3.common.Player.STATE_*` 对齐的本地副本（JVM 单测跑不到 Android stub）。
+     *
+     * ⚠️ 这四个常量**生产零消费点**（审计 B8）：线上只把真实的 `player.playbackState`
+     * 原样传进来，常量本身只服务于测试的可读性与"和 Player.STATE_* 对齐"这件事。
+     * 有意保留 —— 数值与本文件的使用方一眼可核对，比散落 `2`/`3` 字面量好。
+     */
     const val STATE_IDLE = 1
     const val STATE_BUFFERING = 2
     const val STATE_READY = 3
@@ -58,15 +64,26 @@ object StalledPlayback {
     }
 
     /**
-     * 单次采样判定。
+     * 单次采样判定 —— **阈值判据的唯一来源**。
+     *
+     * ⚠️ 审计 B5：原来 [Tracker.onTick] 自己又写了一份
+     * `if (nowMs - since < thresholdMs) return false`，于是"多久算卡死"有两份实现，
+     * 改一处不影响另一处，而测试对两处都有覆盖、看起来"都测了"。
+     * 现在 `onTick` 只负责计时/去重状态，判定一律委托到这里。
      *
      * @param reachedReady 本次播放是否曾经进入过 READY
      * @param playbackState `Player.STATE_*`
      * @param bufferingForMs 当前这一段连续缓冲已经持续多久
+     * @param thresholdMs 卡死阈值，默认 [STALL_THRESHOLD_MS]（[Tracker] 注入自己的阈值）
      */
-    fun evaluate(reachedReady: Boolean, playbackState: Int, bufferingForMs: Long): Verdict = when {
+    fun evaluate(
+        reachedReady: Boolean,
+        playbackState: Int,
+        bufferingForMs: Long,
+        thresholdMs: Long = STALL_THRESHOLD_MS,
+    ): Verdict = when {
         !reachedReady -> Verdict.NOT_APPLICABLE
-        playbackState == STATE_BUFFERING && bufferingForMs >= STALL_THRESHOLD_MS -> Verdict.STALLED
+        playbackState == STATE_BUFFERING && bufferingForMs >= thresholdMs -> Verdict.STALLED
         else -> Verdict.PLAYING
     }
 
@@ -93,6 +110,9 @@ object StalledPlayback {
         /**
          * 采样一次。
          *
+         * ⚠️ 阈值判定**不在这里**：委托 [evaluate]，避免"多久算卡死"出现第二份实现
+         * （审计 B5）。这里只负责"从什么时候开始缓冲"与"同一段卡死只报一次"。
+         *
          * @return true = 本段卡死**第一次**达到阈值，调用方应触发一次故障切换
          */
         fun onTick(reachedReady: Boolean, playbackState: Int, nowMs: Long): Boolean {
@@ -108,7 +128,9 @@ object StalledPlayback {
                 reportedThisStall = false
                 return false
             }
-            if (nowMs - since < thresholdMs) return false
+            if (evaluate(reachedReady, playbackState, nowMs - since, thresholdMs) != Verdict.STALLED) {
+                return false
+            }
             if (reportedThisStall) return false
             reportedThisStall = true
             return true

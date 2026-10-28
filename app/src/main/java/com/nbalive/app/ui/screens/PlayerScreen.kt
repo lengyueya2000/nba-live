@@ -198,6 +198,14 @@ fun PlayerScreen(
      */
     onPipBlocked: (String) -> Unit = {},
     /**
+     * 疑似无信号：嗅探超时这类**推断**结果给用户的一句提示（review/01-player.md:41）。
+     *
+     * ⚠️ 判据由调用方用 `PlaybackHealth.showsSuspectHint(level)` 算好传进来，
+     * 本文件**不许**再自己判一次等级 —— 判据两份实现是 P0-1 那轮踩过的坑。
+     * 与 [onPlaybackDead] 的区别：这只是提示，**绝不**收窗、绝不关任务。
+     */
+    suspectHint: Boolean = false,
+    /**
      * 锁定（防误触）：浮层全隐藏、手势停用。
      * 解锁入口唯一 —— 右侧中间的锁按钮（见 [onToggleLock]）。
      */
@@ -876,6 +884,44 @@ fun PlayerScreen(
                     text = errorMessage,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        // ---------- 疑似无信号（推断）提示 ----------
+        // ⚠️ 有意与错误卡分开（P0-1）：嗅探超时只是**推断** —— 既不能收小窗、
+        // 也不能关任务，但**必须让用户看见**。否则现象是"页面加载完、25 秒过去，
+        // 界面毫无反应"，用户只能干等（review/01-player.md:41 明确要求"用于显示提示"；
+        // 旧代码只实现了后半"停自动进小窗"，提示从未接线 = 审计 B2 的假安全感）。
+        // 有确认错误（errorMessage）时错误卡优先，两张卡不叠加。
+        if (suspectHint && errorMessage == null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Space.lg)
+                    .padding(top = Space.md)
+                    .clip(RoundedCornerShape(Radius.card))
+                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f))
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f),
+                        RoundedCornerShape(Radius.card),
+                    )
+                    .padding(Space.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.secondary,
+                )
+                Spacer(Modifier.width(Space.sm))
+                Text(
+                    text = "疑似无信号，可换线路试试",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.weight(1f),
                 )
             }

@@ -432,47 +432,64 @@ fun NbaLiveApp(
                     )
                 }
 
-                Route.PLAYER -> PlayerScreen(
-                    match = playerState.match,
-                    signals = playerState.signals,
-                    selectedIndex = playerState.selectedIndex,
-                    resolving = playerState.resolving,
-                    streamUrl = playerState.streamUrl,
-                    streamReferer = playerState.streamReferer,
-                    webFallbackUrl = playerState.webFallbackUrl,
-                    // 非全屏时常驻提示卡（全屏下卡片不渲染，由 Snackbar 负责）
-                    errorMessage = playerState.errorMessage,
-                    onSignalSelected = viewModel::selectSignal,
-                    otherMatches = listState.matches,
-                    onOtherMatchClick = { m ->
-                        viewModel.playMatch(m)
-                    },
-                    onPlaybackError = viewModel::onPlaybackFailed,
-                    onPlaybackDead = viewModel::onPlaybackDead,
-                    onPlaybackSuspect = viewModel::onPlaybackSuspect,
-                    onStreamSniffed = viewModel::onStreamSniffed,
-                    sniffFailed = playerState.failedSniffUrl != null,
-                    aspectMode = aspectMode,
-                    onAspectChange = onAspectChange,
-                    onReconnect = viewModel::reconnect,
-                    liveMatches = liveMatches,
-                    onLiveMatchClick = viewModel::playMatch,
-                    refreshing = listState.busy,
-                    onRefreshLive = { viewModel.refresh() },
-                    fullscreen = fullscreen,
-                    inPip = inPip,
-                    onToggleFullscreen = { fullscreen = !fullscreen },
-                    onEnterPip = { activity?.enterPip() },
-                    // 点画中画但还没流可播：给一句提示（P2-6）。
-                    // 复用播放页已有的错误提示通道（snackbar 由 errorMessage 驱动）。
-                    onPipBlocked = { message -> viewModel.showPlayerNotice(message) },
-                    locked = playerLocked,
-                    onToggleLock = {
-                        val id = playerState.match?.id
-                        // 锁/解锁都作用于当前这场
-                        lockedMatchId = if (playerLocked) null else id
-                    },
-                )
+                Route.PLAYER -> when (
+                    // ⚠️ 与详情路由同款判据（审计 B4）：`MissingMatchPolicy.forPlayer`
+                    // 早就写好了却只有测试在调 —— 直接把可空 match 交给 PlayerScreen，
+                    // 数据丢失时用户看到的是一块空播放器（没有提示、没有返回入口）。
+                    // PLAYER 路由下 match 为 null 只可能是**数据丢失**：
+                    // `playMatch`/`openPlayer` 都是同步把 match 写进 state 的。
+                    val state = MissingMatchPolicy.forPlayer(playerState.match != null)
+                ) {
+                    is MissingMatchState.ShowPlaceholder -> MissingMatchPlaceholder(
+                        message = state.message,
+                        onBack = viewModel::back,
+                    )
+
+                    MissingMatchState.Render -> PlayerScreen(
+                        match = playerState.match!!,
+                        signals = playerState.signals,
+                        selectedIndex = playerState.selectedIndex,
+                        resolving = playerState.resolving,
+                        streamUrl = playerState.streamUrl,
+                        streamReferer = playerState.streamReferer,
+                        webFallbackUrl = playerState.webFallbackUrl,
+                        // 非全屏时常驻提示卡（全屏下卡片不渲染，由 Snackbar 负责）
+                        errorMessage = playerState.errorMessage,
+                        onSignalSelected = viewModel::selectSignal,
+                        otherMatches = listState.matches,
+                        onOtherMatchClick = { m ->
+                            viewModel.playMatch(m)
+                        },
+                        onPlaybackError = viewModel::onPlaybackFailed,
+                        onPlaybackDead = viewModel::onPlaybackDead,
+                        onPlaybackSuspect = viewModel::onPlaybackSuspect,
+                        onStreamSniffed = viewModel::onStreamSniffed,
+                        sniffFailed = playerState.failedSniffUrl != null,
+                        // 疑似无信号（推断）的提示：判据只在这里算一次（审计 B2），
+                        // 播放页不许再判一遍等级
+                        suspectHint = PlaybackHealth.showsSuspectHint(playbackLevel),
+                        aspectMode = aspectMode,
+                        onAspectChange = onAspectChange,
+                        onReconnect = viewModel::reconnect,
+                        liveMatches = liveMatches,
+                        onLiveMatchClick = viewModel::playMatch,
+                        refreshing = listState.busy,
+                        onRefreshLive = { viewModel.refresh() },
+                        fullscreen = fullscreen,
+                        inPip = inPip,
+                        onToggleFullscreen = { fullscreen = !fullscreen },
+                        onEnterPip = { activity?.enterPip() },
+                        // 点画中画但还没流可播：给一句提示（P2-6）。
+                        // 复用播放页已有的错误提示通道（snackbar 由 errorMessage 驱动）。
+                        onPipBlocked = { message -> viewModel.showPlayerNotice(message) },
+                        locked = playerLocked,
+                        onToggleLock = {
+                            val id = playerState.match?.id
+                            // 锁/解锁都作用于当前这场
+                            lockedMatchId = if (playerLocked) null else id
+                        },
+                    )
+                }
             }
         }
     }
