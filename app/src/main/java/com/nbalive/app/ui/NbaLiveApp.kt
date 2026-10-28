@@ -107,20 +107,32 @@ private enum class Tab(val label: String, val filled: ImageVector, val outlined:
 }
 
 @Composable
-fun NbaLiveApp(viewModel: MainViewModel) {
+fun NbaLiveApp(
+    viewModel: MainViewModel,
+    /**
+     * 深色模式**落盘**回调（review/03-ui.md P2-17）。
+     *
+     * 持久化需要 Context，而 Context 不该漏进 UI 层（也无法在纯 Compose 单测里验证），
+     * 所以由平台层 MainActivity 实现并在调用处注入；这里只传值。
+     */
+    onDarkModeChange: (Boolean) -> Unit,
+    /** 画面模式落盘回调，同 [onDarkModeChange] */
+    onAspectChange: (AspectMode) -> Unit,
+) {
     val route by viewModel.route.collectAsStateWithLifecycle()
     val listState by viewModel.listState.collectAsStateWithLifecycle()
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // ⚠️ 这些原来是 `listState.visibleMatches` / `listState.counts` 这类
-    // **getter**：每次重组都新建 List/Map 实例，下游的 remember(key) 永远命中不了，
-    // 等于每次重组都全量过滤 + groupByDay。提到这里按输入 remember 住。
-    val visibleMatches = remember(listState.matches, listState.selectedLeague) {
-        listState.visibleMatches
-    }
-    val leagueCounts = remember(listState.matches) { listState.counts }
+    // ⚠️ visibleMatches / counts **不需要**再包一层 remember（review/03-ui.md P2-9）：
+    // MainViewModel 里它们已经是 data class 的 `val`（构造时求值一次），
+    // 原来那段注释描述的"每次重组都新建 List/Map"是 getter 时代的旧问题，
+    // 已经在源头修掉 —— 在这里再 remember 只多持一份引用，
+    // 还会让后来者以为"这里必须 remember，否则会分配"。
+    val visibleMatches = listState.visibleMatches
+    val leagueCounts = listState.counts
+    // liveMatches 是真需要的：state 里没有预过滤过的 LIVE 列表
     val liveMatches = remember(listState.matches) {
         listState.matches.filter { it.status == MatchStatus.LIVE }
     }
@@ -143,9 +155,12 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     val aspectMode by PlayerPrefs.aspect.collectAsStateWithLifecycle()
 
     // ---------- 深色模式 ----------
-    // 与 MainActivity 保持一致：设计是深色优先，没手动设置过就按深色算
+    // 与 MainActivity 调用**同一个**判定函数（AppPrefs.resolveDarkMode）：
+    // 设计是深色优先，没手动设置过（null）就按深色算（review/03-ui.md P2-16）。
+    // 两边各写一遍 `?: true` 时，将来规则一变、漏改一处就会出现
+    // 「主题是浅色、状态栏图标按深色画」的错配。
     val darkPref by AppPrefs.darkMode.collectAsStateWithLifecycle()
-    val darkMode = darkPref ?: true
+    val darkMode = resolveDarkMode(darkPref)
 
     // ---------- 全屏 / 画中画 ----------
     // saveable：进程被杀后重建（不要在后台）再回来，全屏状态不该丢。
@@ -299,7 +314,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     Route.LIST -> BrandTopBar(
                         darkMode = darkMode,
                         onSearch = { searchOpen = true },
-                        onToggleTheme = { AppPrefs.setDarkMode(context, !darkMode) },
+                        onToggleTheme = { onDarkModeChange(!darkMode) },
                         onRefresh = viewModel::refresh,
                     )
                     Route.DETAIL -> SubPageTopBar(
@@ -377,8 +392,8 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                         aspectMode = aspectMode,
                         darkMode = darkMode,
                         versionName = versionName,
-                        onAspectChange = { PlayerPrefs.setAspect(context, it) },
-                        onDarkModeChange = { AppPrefs.setDarkMode(context, it) },
+                        onAspectChange = onAspectChange,
+                        onDarkModeChange = onDarkModeChange,
                     )
                     }
                 }
@@ -426,7 +441,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
                     onStreamSniffed = viewModel::onStreamSniffed,
                     sniffFailed = playerState.failedSniffUrl != null,
                     aspectMode = aspectMode,
-                    onAspectChange = { PlayerPrefs.setAspect(context, it) },
+                    onAspectChange = onAspectChange,
                     onReconnect = viewModel::reconnect,
                     liveMatches = liveMatches,
                     onLiveMatchClick = viewModel::playMatch,
@@ -589,6 +604,17 @@ private fun TopIconButton(icon: ImageVector, label: String, onClick: () -> Unit)
 }
 
 /**
+ * 二级页顶栏左右两侧的**布局**边长（review/03-ui.md P2-35）。
+ *
+ * 左侧返回键的**视觉**尺寸是 40dp，但 `minimumInteractiveComponentSize()`
+ * 会把它的布局尺寸撑到 48dp（Material 的最小触摸目标）。
+ * 右侧「更多」按钮/占位必须用同一个值：两侧的 `Spacer(weight = 1f)`
+ * 分的是剩余空间，一边 48 一边 40 时标题中心会相对屏幕中心左偏
+ * (48 - 40) / 2 = 4dp —— 而"标题居中"正是这个顶栏的显式意图。
+ */
+internal val SubPageBarSideSlot = 48.dp
+
+/**
  * 二级页顶栏。
  *
  * [moreItems] 为空时不渲染"更多"按钮（用等宽占位保持标题居中），
@@ -637,8 +663,9 @@ private fun SubPageTopBar(
         )
         Spacer(Modifier.weight(1f))
         if (moreItems.isEmpty()) {
-            // 等宽占位：没有更多操作时标题仍然居中
-            Spacer(Modifier.size(40.dp))
+            // 等宽占位：宽度必须与左侧按钮的**布局**尺寸一致（都是 48dp，
+            // 见 SubPageBarSideSlot），写 40dp 会让标题中心左偏 4dp（P2-35）
+            Spacer(Modifier.size(SubPageBarSideSlot))
         } else {
             Box {
                 Box(

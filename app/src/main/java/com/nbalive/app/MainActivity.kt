@@ -1,7 +1,6 @@
 package com.nbalive.app
 
 import android.app.PictureInPictureParams
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Rect
@@ -25,6 +24,8 @@ import com.nbalive.app.ui.MainViewModel
 import com.nbalive.app.ui.NbaLiveApp
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlaybackHealth
+import com.nbalive.app.ui.PlayerPrefs
+import com.nbalive.app.ui.resolveDarkMode
 import com.nbalive.app.ui.theme.NbaLiveTheme
 import kotlin.math.min
 
@@ -41,38 +42,40 @@ class MainActivity : ComponentActivity() {
         // 不保证回调 onPictureInPictureModeChanged(false)，进程还活着的话，
         // 下一次进播放页会直接渲染成"只有视频、无任何控件"的假死界面。
         PipState.inPip.value = false
-        com.nbalive.app.ui.PlayerPrefs.init(applicationContext)
+        PlayerPrefs.init(applicationContext)
         AppPrefs.init(applicationContext)
         enableEdgeToEdge()
         setContent {
-            // 深色模式：本应用设计是深色优先，没手动设置过就保持深色；
-            // 用户在「我的」或顶栏切换后按选择走
+            // 深色模式：本应用设计是深色优先 —— 没手动设置过（null）就是深色。
+            // ⚠️「null 到底怎么解释」只有**一处**实现：AppPrefs.resolveDarkMode（有单测）。
+            // 这里与 NbaLiveApp 必须调用同一个函数，否则将来规则一变、漏改一处，
+            // 就会出现「主题是浅色、状态栏图标按深色画」的错配（review/03-ui.md P2-16）。
             val darkPref by AppPrefs.darkMode.collectAsStateWithLifecycle()
-            val darkTheme = darkPref ?: true
-            NbaLiveTheme(darkTheme = darkTheme) {
+            NbaLiveTheme(darkTheme = resolveDarkMode(darkPref)) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val vm: MainViewModel = viewModel()
-                    NbaLiveApp(viewModel = vm)
+                    NbaLiveApp(
+                        viewModel = vm,
+                        // 偏好落盘是"平台层"的活：需要 Context 的事情留在 Activity，
+                        // Composable 只回调、不持有 Context（review/03-ui.md P2-17）
+                        onDarkModeChange = { AppPrefs.setDarkMode(applicationContext, it) },
+                        onAspectChange = { PlayerPrefs.setAspect(applicationContext, it) },
+                    )
                 }
             }
         }
     }
 
-    /**
-     * 复用已有实例（launchMode=singleTask）：从桌面图标再次点进来时，
-     * 系统不会再建一个 Activity，而是把已有实例调到前台。
-     *
-     * 不这样做的话：标准启动模式会在栈顶再叠一个 MainActivity，
-     * 两份 Compose 树、两份 ViewModel 同时存在，进程级单例 PipState
-     * 被新实例复位成 false（旧实例还在小窗里，状态就打架了）。
-     *
-     * 这里没有深链，但仍然要 setIntent：系统默认不会把新 Intent
-     * 写回 getIntent()，后续读取会拿到过期的那个。
-     */
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-    }
+    // ⚠️ 这里**故意不实现** `onNewIntent`（review/03-ui.md P2-4）。
+    //
+    // launchMode=singleTask 保证再次点图标时复用本实例、不叠第二份 Compose 树
+    // （这正是当初选 singleTask 的理由）。而 Manifest 的 intent-filter 只有
+    // MAIN/LAUNCHER，**没有任何深链**（无 VIEW/BROWSABLE），新 Intent 里没有
+    // 可读的数据 —— 原来那个只调 `setIntent(intent)` 的空实现是纯死代码，
+    // 而它的注释写得像"为深链准备"，会让后来者以为深链已经支持。
+    //
+    // 将来真加深链时再实现 onNewIntent，并且必须**真的消费** intent；
+    // NavHostGuardTest 会拦住"又加回一个只调 setIntent 的空实现"。
 
     /**
      * 把「系统按 Home 时自动进小窗」的开关同步到当前播放状态。
