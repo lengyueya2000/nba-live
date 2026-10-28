@@ -43,7 +43,10 @@ import androidx.core.view.WindowCompat
  */
 
 // ---------- 暗色（默认） ----------
-object SportDark {
+// internal：跨模块边界（review/03-ui.md P2-29）。⚠️ 本仓库是单模块，
+// internal 对 app 内的兄弟包**仍然可见**，编译器拦不住 `SportDark.Card`；
+// 模块内的约束由 ThemeSlotTest 的源码守卫兜（禁止 Theme.kt 之外引用色板）。
+internal object SportDark {
     val Bg = Color(0xFF0A0D18)
     val Card = Color(0xFF161C33)
     val Card2 = Color(0xFF1E2542)
@@ -62,7 +65,7 @@ object SportDark {
 }
 
 // ---------- 浅色 ----------
-object SportLight {
+internal object SportLight {
     val Bg = Color(0xFFEDF0F8)
     val Card = Color(0xFFFFFFFF)
     val Card2 = Color(0xFFF4F6FC)
@@ -182,7 +185,9 @@ object Radius {
     val logo = 999.dp
 }
 
-private val DarkColors = darkColorScheme(
+// internal 只为单测能读到槽位取值（ThemeSlotTest）——不是对外 API。
+// 生产代码一律从 MaterialTheme.colorScheme 取。
+internal val DarkColors = darkColorScheme(
     primary = SportDark.Red,
     onPrimary = Color.White,
     primaryContainer = Color(0xFF3A1220),
@@ -207,9 +212,24 @@ private val DarkColors = darkColorScheme(
     outlineVariant = SportDark.Line,
     error = SportDark.Red,
     onError = Color.White,
+    // tonal surface 槽位必须显式铺满（review/03-ui.md P2-28）。
+    // 不铺的话 DropdownMenu（容器色就是 surfaceContainer）、ModalBottomSheet、
+    // DatePicker 会走 M3 自带的**中性紫灰**（深色 #211F26），挂在上面 #161C33
+    // 的蓝调卡片上既不同族、也看不出层级 —— 项目「按语义槽位取色」的约定
+    // 只覆盖了一半组件。铺满后这些 M3 组件自动跟随本主题。
+    surfaceContainerLowest = SportDark.Bg,
+    surfaceContainerLow = SportDark.Card,
+    surfaceContainer = SportDark.Card2,
+    surfaceContainerHigh = SportDark.Card3,
+    surfaceContainerHighest = SportDark.Card3,
+    surfaceBright = SportDark.Card3,
+    surfaceDim = SportDark.Bg,
+    // 反转色（Snackbar）：反色面用主文字色，压在上面的用页面底色，实测对比度足够
+    inverseSurface = SportDark.Txt,
+    inverseOnSurface = SportDark.Bg,
 )
 
-private val LightColors = lightColorScheme(
+internal val LightColors = lightColorScheme(
     primary = SportLight.Red,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFFFE1E6),
@@ -232,6 +252,17 @@ private val LightColors = lightColorScheme(
     outlineVariant = SportLight.Line,
     error = SportLight.Red,
     onError = Color.White,
+    // 同深色：浅色主题的 tonal surface 槽位也必须铺满，否则 DropdownMenu 用
+    // M3 默认的 #F3EDF7，与本主题卡片 #FFFFFF 差不到 1.2:1，菜单像没上色的浮层（P2-28）。
+    surfaceContainerLowest = SportLight.Card,
+    surfaceContainerLow = SportLight.Card2,
+    surfaceContainer = SportLight.Card2,
+    surfaceContainerHigh = SportLight.Card3,
+    surfaceContainerHighest = SportLight.Card3,
+    surfaceBright = SportLight.Card,
+    surfaceDim = SportLight.Bg,
+    inverseSurface = SportLight.Txt,
+    inverseOnSurface = SportLight.Bg,
 )
 
 private val AppTypography = Typography(

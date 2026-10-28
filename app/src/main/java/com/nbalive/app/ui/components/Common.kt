@@ -40,11 +40,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.SubcomposeAsyncImage
@@ -63,6 +66,59 @@ import com.nbalive.app.ui.theme.Space
 import com.nbalive.app.ui.theme.accentBrush
 
 /**
+ * 队徽回退首字的字号（review/03-ui.md P2-27）。
+ *
+ * 圆形底是 [size]（dp，**不随**字体缩放），字号用裸 `.sp` 时会乘系统 fontScale：
+ * 用户把字体调到 1.5×~2.0× 时首字直接溢出圆形被裁掉
+ *（`AndroidManifest.xml` 的 configChanges 显式包含 `fontScale`，项目确实要考虑这个场景）。
+ *
+ * 做法：先按密度算出"容器里放得下"的 px，再用 Density 自己的逆换算
+ *（Density 作用域里的 `Float.toSp()`，px → sp）转回 sp。这样无论
+ * fontScale 是 1 还是 2，`toPx()` 都严格回到容器内的 px。
+ */
+internal fun logoFallbackFontSize(size: Dp, density: Density): TextUnit {
+    val containerPx = with(density) { (size / 2.4f).toPx() }
+    // ⚠️ 两个真踩到的坑（ComponentPerfTest 当场抓到）：
+    // 1. 不能自己写 `(containerPx / density.fontScale).sp`：fontScale≠1 时这套算术
+    //    反推回 px 并不精确（实测 fontScale=1.3、40dp 时字占 16.91px，容器只有 16.67px），
+    //    必须走库自己的逆换算。
+    // 2. 也不能抄成 `(containerPx / fontScale).toSp()`：Density 作用域里的 `.toSp()`
+    //    本身就是 px → sp 的换算，会把 fontScale 除**两遍**（实测 24dp/1.3 时只剩
+    //    7.69px，比不缩放还小）。
+    return with(density) { containerPx.toSp() }
+}
+
+/**
+ * 队徽的回退块（队名首字色块）。
+ *
+ * ⚠️ 必须是**独立**的私有 Composable，不能写成 [TeamLogo] 里的局部 lambda：
+ * 局部 lambda 每次重组都是新实例，`SubcomposeAsyncImage` 的 loading/error
+ * 子组合因此要重新执行（列表页里 MatchCard 两个、LiveHeroCard 两个、
+ * SearchResultRow 两个队徽都受影响，review/03-ui.md P2-11）。
+ *
+ * 首字是纯装饰（真正的队名就在旁边），清掉语义避免 TalkBack 重复朗读。
+ */
+@Composable
+private fun LogoFallback(size: Dp, teamName: String) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clearAndSetSemantics { }
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = teamName.take(1),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Black,
+            // 字号锁在容器内：系统字体放大时首字不能溢出圆形（P2-27）
+            fontSize = logoFallbackFontSize(size, LocalDensity.current),
+        )
+    }
+}
+
+/**
  * 队徽：白底圆形 + contain 适配（设计稿 .logo），加载失败回退队名首字色块。
  *
  * ⚠️ 默认可被无障碍忽略（[contentDescription] 为 null）：
@@ -77,27 +133,8 @@ fun TeamLogo(
     modifier: Modifier = Modifier,
     contentDescription: String? = null,
 ) {
-    // 回退块里的首字是纯装饰（真正的队名就在旁边），清掉语义避免重复朗读
-    val fallback: @Composable () -> Unit = {
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clearAndSetSemantics { }
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = teamName.take(1),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Black,
-                fontSize = (size.value / 2.4f).sp,
-            )
-        }
-    }
-
     if (url.isNullOrBlank()) {
-        Box(modifier = modifier) { fallback() }
+        Box(modifier = modifier) { LogoFallback(size, teamName) }
         return
     }
 
@@ -112,8 +149,9 @@ fun TeamLogo(
             .size(size)
             .clip(CircleShape)
             .background(Color.White),
-        loading = { fallback() },
-        error = { fallback() },
+        // 两个槽只做调用：回退块提到函数外，重组不再产生新的子组合内容（P2-11）
+        loading = { LogoFallback(size, teamName) },
+        error = { LogoFallback(size, teamName) },
     )
 }
 
@@ -389,32 +427,31 @@ fun StatusChip(
      */
     isPostponed: Boolean = false,
 ) {
+    // ⚠️ 两个 Brush 的 remember 必须在 `when` **之外**无条件调用（review/03-ui.md P2-12）：
+    // remember 出现在条件分支里意味着 status 变化时这个 Composable 的 slot 结构会变。
+    // 当前缓存的是纯派生值（Brush），即使错位也只是重算；但把更贵或带状态的东西
+    // 放进来就会变成真缺陷。缓存键也去掉 status：Brush 只由颜色决定，
+    // 带上 status 反而让状态切换时白丢缓存。
+    val secondary = MaterialTheme.colorScheme.secondary
+    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
+    // remember：Brush 每帧新建会让背景节点持续失效（列表里每行一个 chip）
+    val upcomingBg = remember(secondary) {
+        Brush.linearGradient(
+            listOf(secondary.copy(alpha = 0.16f), secondary.copy(alpha = 0.16f)),
+        )
+    }
+    val finishedBg = remember(surfaceVariant) {
+        Brush.linearGradient(listOf(surfaceVariant, surfaceVariant))
+    }
     val (bg, fg, border) = when (status) {
         // LIVE 用压暗版：这条渐变上压的是 10.5sp 白字，原始渐变只有 2.3~2.7:1
         MatchStatus.LIVE -> Triple<Brush, Color, Color>(GradLiveOnWhite, Color.White, Color.Transparent)
-        MatchStatus.UPCOMING -> {
-            // remember：Brush 每帧新建会让背景节点持续失效（列表里每行一个 chip）
-            val secondary = MaterialTheme.colorScheme.secondary
-            Triple(
-                remember(status, secondary) {
-                    Brush.linearGradient(
-                        listOf(secondary.copy(alpha = 0.16f), secondary.copy(alpha = 0.16f)),
-                    )
-                },
-                secondary,
-                secondary.copy(alpha = 0.30f),
-            )
-        }
-        MatchStatus.FINISHED -> {
-            val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
-            Triple(
-                remember(status, surfaceVariant) {
-                    Brush.linearGradient(listOf(surfaceVariant, surfaceVariant))
-                },
-                MaterialTheme.colorScheme.onSurfaceVariant,
-                MaterialTheme.colorScheme.outlineVariant,
-            )
-        }
+        MatchStatus.UPCOMING -> Triple(upcomingBg, secondary, secondary.copy(alpha = 0.30f))
+        MatchStatus.FINISHED -> Triple(
+            finishedBg,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            MaterialTheme.colorScheme.outlineVariant,
+        )
     }
     // ⚠️ 文案走 StatusLabel（review/02-data.md P2-10）：
     // 延期场次的状态是 UPCOMING，原来一律显示「未开赛」——
