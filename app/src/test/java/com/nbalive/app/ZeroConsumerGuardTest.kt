@@ -124,9 +124,10 @@ class ZeroConsumerGuardTest {
         ),
         Wiring(
             symbol = "PipState.shouldAutoEnterPip(",
-            file = "NbaLiveApp.kt",
+            file = "AppEffects.kt",
             minCalls = 1,
-            why = "自动进小窗的判据必须真的被根组合项消费",
+            why = "自动进小窗的判据必须真的被消费 —— 03-P2-18 拆分后由 AppEffects 的 " +
+                "AppPipEffects 负责（原来长在 NbaLiveApp 根节点里）",
         ),
     )
 
@@ -439,6 +440,8 @@ class ZeroConsumerGuardTest {
         val ANCHOR_FILES = listOf(
             "MainActivity.kt",
             "NbaLiveApp.kt",
+            "AppEffects.kt",
+            "AppChrome.kt",
             "PlayerScreen.kt",
             "StalledPlayback.kt",
             "PipState.kt",
