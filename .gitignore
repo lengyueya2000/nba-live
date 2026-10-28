@@ -12,6 +12,12 @@ local.properties
 captures/
 .cxx/
 
+# R8 混淆映射（发版必须与对应版本一起归档，用于还原线上崩溃堆栈）。
+# ⚠️ 绝不入库：mapping.txt 里是「混淆后类名 → 原始类名/方法名/行号」的全量对照表，
+# 公开仓库等于把混淆形同虚设（40MB 量级，且会随版本不断增长）。
+# 约定：仓库根留 `nba-live-<version>-mapping.txt` 本地归档，发布附件走 GitHub Release。
+*-mapping.txt
+
 # 签名凭据 —— 绝不入库
 keystore.properties
 *.jks

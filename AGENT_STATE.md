@@ -13,6 +13,20 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近两个回合的提交
+### 2026-10-28 发版：v1.2.13
+- `release: v1.2.13`：versionCode 16→17、versionName 1.2.12→1.2.13，tag `v1.2.13`
+- 发版前验证：`:app:testDebugUnitTest :app:testReleaseUnitTest` **467/0/0**（两个变体）；
+  `:app:assembleRelease` 产出 `app-release.apk` 2,733,925 bytes
+- **验签**：`apksigner verify --print-certs` → Signer #1 `CN=NBA Live, OU=App, O=lengyueya2000, L=Beijing, C=CN`，
+  证书 SHA-256 `62bd4ee4ebddb7c7789ee15573273afbf7550789b3bbc27ce87f3b0cc73552a8`；
+  `aapt2 dump badging` → `versionCode=17 versionName=1.2.13`；APK SHA-256 `DBD8B332…547F`
+- 归档（仓库根，均已被 `.gitignore` 排除）：`nba-live-1.2.13.apk` +
+  `nba-live-1.2.13-mapping.txt`（44 MB，R8 混淆映射 —— **必须与版本一一对应**，
+  丢了线上崩溃就只剩 `a.b.c`）
+- **04-P2-5（release mapping 归档）本轮落地为流程**：README 新增「发版清单」
+  （版本号 → 两变体测试 → assembleRelease → **apksigner 验签** → 归档 APK+mapping → tag），
+  `.gitignore` 增补 `*-mapping.txt`（对照表会暴露代码结构，绝不入库）。
+
 ### 2026-10-28 第三回合（goal round 1）
 - `3ef8a3a` **03-P2-3 + 03-P2-2**：`ui/NavState.kt`（tab+route 合成**一个**状态机，
   纯迁移函数 selectTab/openDetail/openPlayer/back；NavTab 不带图标所以可单测）；
@@ -57,7 +71,10 @@ P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~13、
    "线路数假设 < 20"与重估条件）。不是漏做。
 4. **03-P2-7** 判定为**不成立/无效修复**（显式 `dismiss()` 是多写一行，已回退）。**别再做**。
 5. **03-P2-33 剩余**：全量文案硬编码（审查自己判定现状可接受）。
-6. **04-P2-5** release mapping 归档（仓库外流程）；**04-P2-7 彻底版**需升级 AGP。
+6. **04-P2-5** release mapping 归档 → **已落地为流程**（README「发版清单」+ `.gitignore` 排除
+   `*-mapping.txt`，本次 v1.2.13 已按流程归档）；仍可做的是**自动化**（CI 在 tag 上
+   产出 APK+mapping 并挂到 Release，目前是手工按清单执行）。
+   **04-P2-7 彻底版**需升级 AGP。
 
 ### B. 只读审计的产物（`review/audit-guards.md`，498 行，**必读**）
 审计覆盖 68/68 测试类 + ui/ 全目录，发现两类"假安全感"：

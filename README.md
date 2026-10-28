@@ -53,6 +53,41 @@ release 构建开启 R8 代码压缩与资源压缩，保留规则见 `app/progu
 
 **安装包不入库**：APK 作为二进制附件发布在 [GitHub Releases](../../releases)。
 
+## 发版清单
+
+一次发版 = 一个只改 `app/build.gradle.kts` 的 `release: vX.Y.Z` 提交 + 同名 tag：
+
+```bash
+# 1) 版本号：versionCode 每次 +1（已发布过的号不能复用），versionName 同步改
+#    app/build.gradle.kts -> versionCode / versionName
+
+# 2) 先验证再打包。两个变体都跑：release 变体验证 BuildConfig / 压缩路径没被改坏
+./gradlew :app:testDebugUnitTest :app:testReleaseUnitTest
+
+# 3) 打包（缺签名凭据会直接失败，见上一节）
+./gradlew :app:assembleRelease
+
+# 4) ⚠️ 必须验签：产出 app-release.apk 本身不代表它被正确签名
+#    （这正是"未签名包与正式包同名同路径"那类发布事故的兜底检查）
+$ANDROID_HOME/build-tools/<ver>/apksigner verify --print-certs \
+  app/build/outputs/apk/release/app-release.apk
+# 再用 aapt2 核对版本号真的进了包：
+$ANDROID_HOME/build-tools/<ver>/aapt2 dump badging app/build/outputs/apk/release/app-release.apk | head -1
+
+# 5) 归档两个产物到仓库根（两者都已被 .gitignore 排除）
+cp app/build/outputs/apk/release/app-release.apk   nba-live-<version>.apk
+cp app/build/outputs/mapping/release/mapping.txt   nba-live-<version>-mapping.txt
+
+# 6) 提交版本号并打 tag（tag 指向被构建的那个提交）
+git commit -am "release: vX.Y.Z"
+git tag vX.Y.Z
+```
+
+> ⚠️ **`mapping.txt` 必须和 APK 一起归档**：R8 混淆后线上崩溃堆栈只剩 `a.b.c`，
+> 用它才能还原成真实类名与行号。丢了就等于这个版本永久失去可诊断性。
+> 它与 APK 一样**不入库**（`.gitignore` 已排除）：文件里是全量「混淆名 → 原名」对照表，
+> 公开仓库等于把混淆形同虚设。
+
 ## 安全与网络
 
 - 明文流量策略集中在 `app/src/main/res/xml/network_security_config.xml`：源站的播放页与 m3u8 切片走 HTTP，而清单所在的 CDN 主机名是**运行时由源站生成并混淆**的（`hdl2.<反转后的主域名>`），无法预先写进域名白名单，因此保留明文许可并把已知主机备案在文件里
