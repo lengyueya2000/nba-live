@@ -1,8 +1,5 @@
 package com.nbalive.app.ui
 
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
@@ -50,7 +47,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -79,6 +75,7 @@ import com.nbalive.app.BuildConfig
 import com.nbalive.app.MainActivity
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.components.LiveDotPhase
+import com.nbalive.app.ui.components.SquareIconButton
 import com.nbalive.app.ui.screens.LiveNowScreen
 import com.nbalive.app.ui.screens.MatchDetailScreen
 import com.nbalive.app.ui.screens.MatchListScreen
@@ -374,9 +371,11 @@ fun NbaLiveApp(
                         onRetry = viewModel::refresh,
                     )
 
-                    // 直播页：只列正在直播的，点一下直接看
+                    // 直播页：只列正在直播的，点一下直接看。
+                    // ⚠️ 传**已经算好的** liveMatches，别把完整列表丢进去让它再过滤一遍
+                    // （review/03-ui.md P2-10：同一份过滤原来两处各写一份）
                     Tab.LIVE -> LiveNowScreen(
-                        matches = listState.matches,
+                        liveMatches = liveMatches,
                         loading = listState.loading,
                         error = listState.error,
                         refreshing = listState.refreshing,
@@ -570,38 +569,32 @@ private fun BrandTopBar(
             )
         }
         Spacer(Modifier.weight(1f))
-        TopIconButton(icon = Icons.Filled.Refresh, label = "刷新", onClick = onRefresh)
+        // 顶栏按钮统一用共享的 SquareIconButton（review/03-ui.md P2-22）：
+        // 原来这里有一份私有 TopIconButton，与二级页/搜索页各写一份且已经分叉
+        SquareIconButton(
+            icon = Icons.Filled.Refresh,
+            contentDescription = "刷新",
+            onClick = onRefresh,
+        )
         Spacer(Modifier.width(Space.sm))
-        TopIconButton(icon = Icons.Filled.Search, label = "搜索", onClick = onSearch)
+        SquareIconButton(
+            icon = Icons.Filled.Search,
+            contentDescription = "搜索",
+            onClick = onSearch,
+        )
         Spacer(Modifier.width(Space.sm))
-        TopIconButton(
+        SquareIconButton(
             icon = if (darkMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
-            label = if (darkMode) "浅色模式" else "深色模式",
+            contentDescription = if (darkMode) "浅色模式" else "深色模式",
             onClick = onToggleTheme,
         )
     }
 }
 
-@Composable
-private fun TopIconButton(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            // 触摸目标不小于 48dp（图标视觉尺寸保持 19dp 不变）
-            .minimumInteractiveComponentSize()
-            .size(40.dp)
-            .clip(RoundedCornerShape(Radius.btn))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            modifier = Modifier.size(19.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
+// TopIconButton 已删：顶栏/二级页的方形图标按钮统一到
+// ui/components/Common.kt 的 SquareIconButton（review/03-ui.md P2-22）。
+// 这里原来那份与 SubPageTopBar、SearchScreen 的两份实现参数已经分叉
+// （40dp / 40dp / 48dp），同一个"顶栏按钮"在不同页面长得不一样。
 
 /**
  * 二级页顶栏左右两侧的**布局**边长（review/03-ui.md P2-35）。
@@ -635,23 +628,13 @@ private fun SubPageTopBar(
             .padding(top = Space.md, bottom = Space.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                // 触摸目标不小于 48dp
-                .minimumInteractiveComponentSize()
-                .size(40.dp)
-                .clip(RoundedCornerShape(Radius.btn))
-                .background(MaterialTheme.colorScheme.surface)
-                .clickable(onClick = onBack),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBackIos,
-                contentDescription = "返回",
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurface,
-            )
-        }
+        SquareIconButton(
+            icon = Icons.AutoMirrored.Filled.ArrowBackIos,
+            contentDescription = "返回",
+            onClick = onBack,
+            iconSize = 16.dp,
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
         Spacer(Modifier.weight(1f))
         Text(
             text = title,
@@ -668,23 +651,11 @@ private fun SubPageTopBar(
             Spacer(Modifier.size(SubPageBarSideSlot))
         } else {
             Box {
-                Box(
-                    modifier = Modifier
-                        // 触摸目标不小于 48dp
-                        .minimumInteractiveComponentSize()
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(Radius.btn))
-                        .background(MaterialTheme.colorScheme.surface)
-                        .clickable { menuOpen = true },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Filled.MoreHoriz,
-                        contentDescription = "更多",
-                        modifier = Modifier.size(19.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                SquareIconButton(
+                    icon = Icons.Filled.MoreHoriz,
+                    contentDescription = "更多",
+                    onClick = { menuOpen = true },
+                )
                 DropdownMenu(
                     expanded = menuOpen,
                     onDismissRequest = { menuOpen = false },
@@ -771,12 +742,8 @@ private fun SportBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
         }
     }
 }
-/** 从任意 Context 找到宿主 Activity */
-private tailrec fun Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
-    is ContextWrapper -> baseContext.findActivity()
-    else -> null
-}
+/** 从任意 Context 找到宿主 Activity：已抽到 ui/ContextExt.kt 共用（review/03-ui.md P2-21）。
+ *  这里原来有一份私有实现，与 theme/Theme.kt 的直接强转是两套不同的写法。 */
 
 /**
  * 全屏时切横屏并隐藏系统栏；退出时恢复。

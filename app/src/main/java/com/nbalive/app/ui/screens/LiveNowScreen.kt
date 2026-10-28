@@ -28,7 +28,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,7 +37,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.Match
-import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.ui.hhmm
 import com.nbalive.app.data.model.isPostponed
@@ -61,7 +59,15 @@ import com.nbalive.app.ui.theme.Space
  */
 @Composable
 fun LiveNowScreen(
-    matches: List<Match>,
+    /**
+     * **已经过滤好的**"正在直播"列表（review/03-ui.md P2-10）。
+     *
+     * ⚠️ 这里原来收的是完整列表、然后在内部 `remember(matches) { filter LIVE }`，
+     * 而 NbaLiveApp 已经为播放页的"同时在播"面板算过一份同样的过滤 ——
+     * 同一份过滤逻辑两处独立实现，列表几百场时是两次 O(n) 扫描 + 两份 List 分配，
+     * 且两边会各自漂移。现在由调用方传进来，这个页面只负责渲染。
+     */
+    liveMatches: List<Match>,
     loading: Boolean,
     onMatchClick: (Match) -> Unit,
     modifier: Modifier = Modifier,
@@ -69,7 +75,7 @@ fun LiveNowScreen(
     refreshing: Boolean = false,
     onRetry: () -> Unit = {},
 ) {
-    val live = remember(matches) { matches.filter { it.status == MatchStatus.LIVE } }
+    val live = liveMatches
 
     Column(modifier = modifier.fillMaxSize()) {
         Row(

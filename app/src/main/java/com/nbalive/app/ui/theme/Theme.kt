@@ -1,8 +1,5 @@
 package com.nbalive.app.ui.theme
 
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
@@ -23,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import com.nbalive.app.ui.findActivity
 
 /**
  * 方案 B「运动卡片 / Sport Card」设计 token。
@@ -326,7 +324,10 @@ fun NbaLiveTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            // ⚠️ 用共用的 findActivity()（递归 ContextWrapper 链），
+            // 不要写 `view.context as? Activity`：遇到 Context 包装会**静默失败**，
+            // 表现为"状态栏图标不跟随主题"（review/03-ui.md P2-21）。
+            val window = view.context.findActivity()?.window ?: return@SideEffect
             val controller = WindowCompat.getInsetsController(window, view)
             // ⚠️ 状态栏和导航栏要**一起**设（review/03-P1-3）：
             // 原来只设了 isAppearanceLightStatusBars，浅色主题下

@@ -58,6 +58,7 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.ui.components.LeagueChip
+import com.nbalive.app.ui.components.SquareIconButton
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
 import com.nbalive.app.ui.hhmm
@@ -125,22 +126,15 @@ fun SearchScreen(
                 .padding(top = Space.md, bottom = Space.sm),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    // 触摸目标补到 48dp
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(Radius.btn))
-                    .background(MaterialTheme.colorScheme.surface)
-                    .clickable(onClick = onClose),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBackIos,
-                    contentDescription = "返回",
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
+            // 返回键统一用共享的 SquareIconButton（review/03-ui.md P2-22）：
+            // 这里原来是直接 size(48.dp)，比列表页/二级页顶栏的 40dp 视觉大一圈
+            SquareIconButton(
+                icon = Icons.AutoMirrored.Filled.ArrowBackIos,
+                contentDescription = "返回",
+                onClick = onClose,
+                iconSize = 16.dp,
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
             Spacer(Modifier.width(Space.sm))
             TextField(
                 value = query,

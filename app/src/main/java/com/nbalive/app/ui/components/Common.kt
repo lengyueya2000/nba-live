@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -592,4 +593,63 @@ fun LiveDot(size: Dp = 6.dp, alpha: Float = LocalLiveDotAlpha.current) {
             .clip(CircleShape)
             .background(Color.White),
     )
+}
+
+/**
+ * 顶栏 / 二级页的方形图标按钮的**视觉**边长（review/03-ui.md P2-22）。
+ *
+ * 视觉 40dp，但布局与触摸目标由 `minimumInteractiveComponentSize()` 撑到 48dp ——
+ * 视觉尺寸与触摸目标分离是 Material 的推荐做法，也是本仓库原来的本意。
+ */
+val SquareIconButtonVisualSize: Dp = 40.dp
+
+/**
+ * 顶栏 / 二级页的方形图标按钮（review/03-ui.md P2-22）。
+ *
+ * ## 为什么要抽这一份
+ *
+ * 同一个 App 里"圆角方块 + surface 底色 + 居中 Icon"原来写了**三份**，
+ * 参数已经分叉：
+ *  - `NbaLiveApp.TopIconButton`：40dp 视觉 + `minimumInteractiveComponentSize`（图标 19dp）
+ *  - `SubPageTopBar` 的返回键 / 「更多」：同样是 40dp + 最小触摸目标，但图标 16dp / 19dp
+ *  - `SearchScreen` 的返回键：直接 `size(48.dp)` —— 视觉上比列表页顶栏按钮**大一圈**，
+ *    视觉走查一眼就能看出来
+ *
+ * 分叉的代价不是"多写几行"，而是**同一个语义在不同页面长得不一样**，
+ * 且改一次样式要改三处（这个仓库在 `AspectModeSelector` / `InfoRow` 上已经吃过两次亏）。
+ *
+ * ## 定案：视觉 40dp
+ *
+ * 统一到 40dp（三处里两处的取值），触摸目标仍是 48dp。
+ * 搜索页的返回键会视觉变小一圈 —— 这是**有意**的：它和二级页返回键是同一个东西。
+ *
+ * @param iconSize 图标（图形）尺寸；顶栏 19dp、二级页返回键 16dp
+ * @param tint 图标色；顶栏用 onSurfaceVariant，二级页返回键用 onSurface
+ */
+@Composable
+fun SquareIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    iconSize: Dp = 19.dp,
+    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+) {
+    Box(
+        modifier = modifier
+            // 触摸目标不小于 48dp（视觉尺寸保持 40dp 不变）
+            .minimumInteractiveComponentSize()
+            .size(SquareIconButtonVisualSize)
+            .clip(RoundedCornerShape(Radius.btn))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(iconSize),
+            tint = tint,
+        )
+    }
 }
