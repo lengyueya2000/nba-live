@@ -1,0 +1,45 @@
+package com.nbalive.app.ui
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
+/**
+ * 根节点消费的**一个**状态对象（review/03-ui.md P2-15）。
+ *
+ * 以前根节点自己 `collectAsStateWithLifecycle()` 6~8 个 flow，任何一条变化
+ * 都要在根节点的重组里重新走一遍 `Scaffold` / 顶栏 / 底栏。现在：
+ *  - 根节点只拿这一个对象 + 一条 `PipState.inPip`（进程级全局态，本来就独立）；
+ *  - 列表/详情/播放页的状态**下沉到各自的路由 composable**（见 `NbaLiveApp.kt`
+ *    的 `RouteHost`），那些高频抖动不再推动根节点重组。
+ *
+ * ⚠️ 这里只放**根节点真的要用**的东西：
+ *  - `route` 决定渲染哪条路由；
+ *  - `nav` 提供底栏要用的当前标签；
+ *  - `darkPref` 给顶栏的深浅色图标（`null` 的解释仍由 [resolveDarkMode] 在根节点一处完成）；
+ *  - `aspectMode` 透传给播放页/「我的」页（它们各自也只用这一个值）。
+ *
+ * 播放页的 `playerState` **不在这里**：它只在系统返回键的锁定判据、
+ * 画中画接线和播放路由里用得到，所以收集发生在 [RouteHost] 与 [AppTopBar] 内部。
+ */
+internal data class AppUiState(
+    val route: Route,
+    val nav: NavState,
+    val darkPref: Boolean?,
+    val aspectMode: AspectMode,
+)
+
+/** 收集根节点需要的状态；调用点在 `NbaLiveApp` 的第一行。 */
+@Composable
+internal fun rememberAppUiState(viewModel: MainViewModel): AppUiState {
+    val route by viewModel.route.collectAsStateWithLifecycle()
+    val nav by viewModel.nav.collectAsStateWithLifecycle()
+    val darkPref by AppPrefs.darkMode.collectAsStateWithLifecycle()
+    val aspectMode by PlayerPrefs.aspect.collectAsStateWithLifecycle()
+    return AppUiState(
+        route = route,
+        nav = nav,
+        darkPref = darkPref,
+        aspectMode = aspectMode,
+    )
+}
