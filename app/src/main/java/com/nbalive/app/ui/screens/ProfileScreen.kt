@@ -33,6 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.components.AspectModeSelector
+import com.nbalive.app.ui.components.InfoRow
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
 
@@ -210,22 +211,5 @@ private fun SwitchRow(
         )
     }
 }
-
-@Composable
-private fun InfoRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-        )
-    }
-}
+// InfoRow 已提到 ui/components/Common.kt（review/03-ui.md P2-19）：
+// 这里原来有一份与 MatchDetailScreen 逐字相同的私有副本。

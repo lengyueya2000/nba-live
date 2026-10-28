@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isPostponed
+import com.nbalive.app.ui.components.InfoRow
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
@@ -339,6 +340,13 @@ private fun SignalRow(
     }
 }
 
+/**
+ * 线路加载失败态（内联，不是全屏）。
+ *
+ * ⚠️ 与列表页/直播页的全屏错误态不同：这里嵌在详情页的滚动容器里，
+ * 上方还有比赛信息，所以不套 [FullScreenErrorState]（那个会 fillMaxSize
+ * 并把内容居中到整屏）。结构相似但布局约束不同，硬套会让详情页布局错乱。
+ */
 @Composable
 private fun SignalErrorState(message: String, onRetry: () -> Unit) {
     Column(
@@ -383,26 +391,5 @@ private fun SignalErrorState(message: String, onRetry: () -> Unit) {
         }
     }
 }
-
-@Composable
-private fun InfoRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
+// InfoRow 已提到 ui/components/Common.kt（review/03-ui.md P2-19）：
+// 这里原来有一份与 ProfileScreen 逐字相同的私有副本。

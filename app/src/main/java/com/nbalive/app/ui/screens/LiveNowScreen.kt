@@ -41,7 +41,9 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.data.model.isPostponed
+import com.nbalive.app.ui.components.FullScreenErrorState
 import com.nbalive.app.ui.components.LeagueChip
+import com.nbalive.app.ui.components.RetryErrorBanner
 import com.nbalive.app.ui.components.SignalBadge
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
@@ -142,93 +144,30 @@ fun LiveNowScreen(
 /**
  * 刷新失败横幅：列表还在时用它，别把正在看的场次全遮掉。
  * 点一下即重试。
+ *
+ * ⚠️ 布局已提到 [RetryErrorBanner]（review/03-ui.md P2-20）：
+ * 这里原来与 MatchListScreen.ErrorBanner 逐字相同。
  */
 @Composable
 private fun LiveErrorBanner(message: String, onRetry: () -> Unit) {
-    Surface(
-        onClick = onRetry,
-        color = MaterialTheme.colorScheme.errorContainer,
-        shape = RoundedCornerShape(Radius.chip),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Space.lg)
-            .padding(bottom = Space.sm),
-    ) {
-        Row(
-            modifier = Modifier
-                .heightIn(min = 48.dp)
-                .padding(horizontal = Space.md, vertical = Space.sm),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
-        ) {
-            Icon(
-                Icons.Filled.CloudOff,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onErrorContainer,
-            )
-            Text(
-                text = "刷新失败：$message",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "重试",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-            )
-        }
-    }
+    RetryErrorBanner(message = message, onRetry = onRetry)
 }
 
-/** 加载失败态：说明白是真出错了，并给一个重试入口 */
+/**
+ * 加载失败态：说明白是真出错了，并给一个重试入口。
+ *
+ * ⚠️ 布局已提到 [FullScreenErrorState]（review/03-ui.md P2-20）：
+ * 这里原来是一份私有实现，与列表页/详情页的错误态结构完全一样。
+ */
 @Composable
 private fun LiveErrorState(message: String, onRetry: () -> Unit) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(horizontal = Space.xl),
-        ) {
-            Icon(
-                Icons.Filled.CloudOff,
-                contentDescription = null,
-                modifier = Modifier.size(44.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(Space.md))
-            Text(
-                text = "加载失败",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(Modifier.height(Space.xs))
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(Space.lg))
-            Surface(
-                onClick = onRetry,
-                shape = RoundedCornerShape(Radius.chip),
-                color = MaterialTheme.colorScheme.primary,
-            ) {
-                Text(
-                    text = "重试",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .padding(horizontal = Space.xl, vertical = Space.md),
-                )
-            }
-        }
-    }
+    FullScreenErrorState(
+        title = "加载失败",
+        message = message,
+        onRetry = onRetry,
+        icon = Icons.Filled.CloudOff,
+        primaryAction = true,
+    )
 }
 
 @Composable

@@ -46,7 +46,9 @@ import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.isPostponed
+import com.nbalive.app.ui.components.FullScreenErrorState
 import com.nbalive.app.ui.components.LeagueChip
+import com.nbalive.app.ui.components.RetryErrorBanner
 import com.nbalive.app.ui.components.LeagueStrip
 import com.nbalive.app.ui.components.SignalBadge
 import com.nbalive.app.ui.components.StatusChip
@@ -549,46 +551,13 @@ private fun RefreshingBar() {
 /**
  * 刷新失败横幅：列表还有旧数据时用它（整屏错误态会把旧数据全遮掉）。
  * 点一下就能重试。
+ *
+ * ⚠️ 布局已提到 [RetryErrorBanner]（review/03-ui.md P2-20）：
+ * 这里原来与 LiveNowScreen.LiveErrorBanner 逐字相同。
  */
 @Composable
 private fun ErrorBanner(message: String, onRetry: () -> Unit) {
-    Surface(
-        onClick = onRetry,
-        color = MaterialTheme.colorScheme.errorContainer,
-        shape = RoundedCornerShape(Radius.chip),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Space.lg)
-            .padding(bottom = Space.sm),
-    ) {
-        Row(
-            modifier = Modifier
-                .heightIn(min = 48.dp)
-                .padding(horizontal = Space.md, vertical = Space.sm),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
-        ) {
-            Icon(
-                Icons.Filled.CloudOff,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onErrorContainer,
-            )
-            Text(
-                text = "刷新失败：$message",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "重试",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-            )
-        }
-    }
+    RetryErrorBanner(message = message, onRetry = onRetry)
 }
 
 /**
@@ -677,52 +646,20 @@ private fun EmptyState() {
     }
 }
 
+/**
+ * 加载失败态（review/03-ui.md P2-20）。
+ *
+ * ⚠️ 布局已提到 [FullScreenErrorState]：这里原来是一份私有实现，
+ * 与 LiveNowScreen.LiveErrorState / MatchDetailScreen.SignalErrorState
+ * 结构完全一样、只是图标与配色不同，三份副本的间距与触摸目标已经在分叉。
+ */
 @Composable
 private fun ErrorState(error: String, onRetry: () -> Unit) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(Space.xxl),
-        ) {
-            Icon(
-                Icons.Filled.SignalCellularAlt,
-                contentDescription = null,
-                modifier = Modifier.size(44.dp),
-                tint = MaterialTheme.colorScheme.error,
-            )
-            Spacer(Modifier.height(Space.lg))
-            Text(
-                text = "加载失败",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(Modifier.height(Space.sm))
-            Text(
-                text = error,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(Space.xxl))
-            Surface(
-                onClick = onRetry,
-                shape = RoundedCornerShape(Radius.btn),
-                color = Color.Transparent,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .background(accentBrush(), RoundedCornerShape(Radius.btn))
-                        // 触摸目标不小于 48dp：原来 12dp+12dp+17sp 文本 ≈ 41dp，偏小
-                        .heightIn(min = 48.dp)
-                        .padding(horizontal = 32.dp, vertical = 12.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = "重试",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-            }
-        }
-    }
+    FullScreenErrorState(
+        title = "加载失败",
+        message = error,
+        onRetry = onRetry,
+        icon = Icons.Filled.SignalCellularAlt,
+        iconTint = MaterialTheme.colorScheme.error,
+    )
 }

@@ -10,7 +10,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -19,9 +22,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -29,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -36,6 +42,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,6 +60,7 @@ import com.nbalive.app.ui.theme.GradNba
 import com.nbalive.app.ui.theme.GradNbaOnWhite
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
+import com.nbalive.app.ui.theme.accentBrush
 
 /**
  * 队徽：白底圆形 + contain 适配（设计稿 .logo），加载失败回退队名首字色块。
@@ -106,6 +115,182 @@ fun TeamLogo(
         loading = { fallback() },
         error = { fallback() },
     )
+}
+
+/**
+ * 左标签 + 右值的单行信息（review/03-ui.md P2-19）。
+ *
+ * ## 为什么抽到 components
+ *
+ * 原来 MatchDetailScreen 与 ProfileScreen 各有一份 `private fun InfoRow`，
+ * 逐字相同（只差一个 `overflow` 参数）。两份副本改样式时只会改到一半 ——
+ * 这个仓库已经因此踩过坑（`AspectModeSelector` 的两份副本，
+ * 浅色主题下描边漏改，见 `AspectModeSelector` 的注释）。
+ *
+ * @param value 右侧值；过长时省略（详情页的队名/时间可能很长）
+ */
+@Composable
+fun InfoRow(label: String, value: String, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            // 两份旧副本里只有详情页那份有 overflow —— 统一带上，
+            // 值过长时省略号比硬裁切好看
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * 刷新失败横幅：列表还有旧数据时用它（整屏错误态会把旧数据全遮掉）。
+ * 点一下就能重试（review/03-ui.md P2-20）。
+ *
+ * ## 为什么抽出来
+ *
+ * `MatchListScreen.ErrorBanner` 与 `LiveNowScreen.LiveErrorBanner`
+ * 原来逐字相同 —— 文案前缀、图标、配色、触摸目标全一样。
+ * 两份副本意味着改一次要改两处，漏一处就出现"列表页能重试、直播页不能"。
+ *
+ * @param message 具体错误说明（脱敏后的用户可读文案）
+ */
+@Composable
+fun RetryErrorBanner(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        onClick = onRetry,
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = RoundedCornerShape(Radius.chip),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.lg)
+            .padding(bottom = Space.sm),
+    ) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .padding(horizontal = Space.md, vertical = Space.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Text(
+                text = "刷新失败：$message",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "重试",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
+    }
+}
+
+/**
+ * 全屏错误态：图标 + 标题 + 说明 + 重试按钮（review/03-ui.md P2-20）。
+ *
+ * ## 为什么抽出来
+ *
+ * 原来三个页面各写一份：`MatchListScreen.ErrorState`、
+ * `LiveNowScreen.LiveErrorState`、`MatchDetailScreen.SignalErrorState` ——
+ * 结构完全一样（图标/标题/说明/重试），只是图标、配色、文案不同。
+ * 三份副本的触摸目标、间距、文案已经在慢慢分叉
+ * （有的 `Space.lg` 有的 `Space.sm`，有的带 overflow 有的不带）。
+ *
+ * ## 参数化而非复制
+ *
+ * 差异部分全部做成参数：图标、图标色、标题、说明、按钮样式。
+ * 调用方只需传自己的文案，布局与无障碍行为由这里统一保证。
+ *
+ * @param message 具体错误说明（脱敏后的用户可读文案）
+ * @param onRetry 重试回调；null 表示不给重试入口（如"该赛事暂无可用线路"）
+ * @param primaryAction 是否用主色实心按钮（详情页在滚动容器里用）
+ */
+@Composable
+fun FullScreenErrorState(
+    title: String,
+    message: String,
+    onRetry: (() -> Unit)? = null,
+    icon: ImageVector = Icons.Filled.CloudOff,
+    iconTint: Color? = null,
+    primaryAction: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = Space.xl, vertical = Space.xxl),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(44.dp),
+                tint = iconTint ?: MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(Space.lg))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(Space.sm))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (onRetry != null) {
+                Spacer(Modifier.height(Space.lg))
+                Surface(
+                    onClick = onRetry,
+                    shape = RoundedCornerShape(Radius.btn),
+                    color = if (primaryAction) MaterialTheme.colorScheme.primary else Color.Transparent,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            // 触摸目标不小于 48dp（三个旧副本里只有两个做到）
+                            .then(
+                                if (primaryAction) Modifier
+                                else Modifier.background(accentBrush(), RoundedCornerShape(Radius.btn)),
+                            )
+                            .heightIn(min = 48.dp)
+                            .padding(horizontal = Space.xl, vertical = 12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "重试",
+                            color = if (primaryAction) MaterialTheme.colorScheme.onPrimary else Color.White,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 /** 联赛渐变色条（设计稿 .strip，高 5dp，纯装饰不压字） */
