@@ -47,6 +47,46 @@ class GuardHygieneTest {
     }
 
     @Test
+    fun `测试源码里不许用 Kotlin 原生 assert（-ea 关掉就静默消失）`() {
+        // 审计「未验证的怀疑 #2」：`SourceEndpointsTest.候选列表不能为空` 用的是
+        // Kotlin 的 `assert(...)`，它只在 JVM `-ea` 打开时才求值。
+        // Gradle 的 Test 任务默认开 `-ea`，所以**现在**有效 —— 但这条依赖是隐式的：
+        // 一旦构建里出现 `enableAssertions = false`（或换执行器/IDE 配置不同），
+        // 那几行会**静默消失**，而"全绿"的报告看不出区别（本仓库踩过三次的形态）。
+        // 已把该处改成 JUnit 断言，并用这条元守卫钉住"以后别再写回去"。
+        val violations = testFiles().flatMap { file ->
+            scanForBareAssert(file.readText()).map { line -> "${file.name}:$line" }
+        }
+        assertTrue(
+            "以下测试文件用了 Kotlin 原生 `assert(...)`：它在 -ea 关闭时**不求值**，" +
+                "断言会静默消失而报告照样全绿。请改成 JUnit 的 assertTrue/assertEquals。\n" +
+                violations.joinToString("\n"),
+            violations.isEmpty(),
+        )
+        // 自检：喂给真正参与扫描的那个函数，证明它抓得到原生 assert、又不会误报
+        // JUnit 断言与注释/字符串（否则这条元守卫自己就是摆设）。
+        val sample = listOf(
+            "class Sample {",
+            "    fun t() { assert(x > 0) }",
+            "    fun u() { org.junit.Assert.assertTrue(x > 0) }",
+            "    val s = \"assert( 只在字符串里\"",
+            "}",
+        ).joinToString("\n")
+        assertTrue(
+            "扫描器抓不到 Kotlin 原生 assert（它已退化成摆设）",
+            scanForBareAssert(sample).isNotEmpty(),
+        )
+        assertTrue(
+            "扫描器误报了注释/字符串里的 assert（剔非代码那一步没生效）",
+            scanForBareAssert("// assert(x)\nval s = \"assert(y)\"\n/* assert(z) */").isEmpty(),
+        )
+        assertTrue(
+            "扫描器把 JUnit 的 assertEquals/assertTrue 也当成了原生 assert（会大面积误报）",
+            scanForBareAssert("assertEquals(a, b)\nassertTrue(c)\nassertFalse(d)").isEmpty(),
+        )
+    }
+
+    @Test
     fun `扫描必须真的扫到测试源码 且锚点文件都在`() {
         // 铁律④：非空性锚点。工作目录一变，"零违规"的空扫会让上面那条断言静默全绿。
         val files = testFiles()
@@ -112,6 +152,17 @@ class GuardHygieneTest {
             if (ASSUME_FAMILY.containsMatchIn(line)) index + 1 else null
         }
 
+    /**
+     * Kotlin **原生** `assert(...)` 的行号（1 起）。
+     *
+     * 正则要求 `assert` 后紧跟 `(`：`assertTrue(` / `assertEquals(` 不会被命中；
+     * `(?<![\w.])` 让 `test.assert(` 这类链式调用（kotlin.test 的断言）也不被误报。
+     */
+    private fun scanForBareAssert(text: String): List<Int> =
+        GuardSourceScan.stripNonCode(text).lines().mapIndexedNotNull { index, line ->
+            if (BARE_ASSERT.containsMatchIn(line)) index + 1 else null
+        }
+
     private fun testFiles(): List<File> =
         testRoot().walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
@@ -140,6 +191,13 @@ class GuardHygieneTest {
          * 注意：它只作用于**已剔除注释与字符串**的文本，所以写在说明文字里的同样字面量不会误报。
          */
         val ASSUME_FAMILY = Regex("""\bassumeTrue\b|\bassumeFalse\b|org\.junit\.Assume\b""")
+
+        /**
+         * Kotlin 原生 `assert(` 调用（**不是** JUnit 的 assertTrue/assertEquals…）。
+         *
+         * 原生 assert 依赖 JVM `-ea`：关掉就静默不求值，等于断言凭空消失。
+         */
+        val BARE_ASSERT = Regex("""(?<![\w.])assert\s*\(""")
 
         /** 扫描范围锚点：本轮硬化过的文件都必须被扫到。 */
         val ANCHOR_FILES = listOf(

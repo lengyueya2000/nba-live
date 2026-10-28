@@ -123,6 +123,17 @@ android {
         // 单元测试跑在 JVM 上，android.util.Log 等框架桩没有实现。
         // 返回默认值而不是抛异常，数据层里的日志调用才不会让测试无法运行。
         unitTests.isReturnDefaultValues = true
+        // ⚠️ 把单测 JVM 的时区**钉死**（review/audit-guards.md「未验证的怀疑 #1」）。
+        //
+        // 生产把源站时间串按 `MatchStatusClock.SOURCE_ZONE`（Asia/Shanghai）解释，
+        // 而测试夹具如果按**设备默认时区**造时间，就只在东八区机器上与生产一致 ——
+        // 实测钉成 UTC 后立刻有 3 条变红（`JrkanParserTest` 1 条、
+        // `LiveStatusCorrectionTest` 2 条），是**真缺陷**而非环境问题；
+        // 夹具已改为使用 `SOURCE_ZONE`。
+        //
+        // 钉死之后这条隐患变成**常驻守卫**：以后谁再写 `systemDefault()` 造时间，
+        // 在任何机器上都会红，而不是"换台机器才暴露"。
+        unitTests.all { it.systemProperty("user.timezone", "UTC") }
     }
 }
 

@@ -2,6 +2,7 @@ package com.nbalive.app.data.remote
 
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.MatchStatusClock
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -246,7 +247,7 @@ class JrkanParserTest {
 
     @Test
     fun `static active class does not mark a future match as live`() {
-        val tomorrow = java.time.LocalDate.now().plusDays(1)
+        val tomorrow = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE).plusDays(1)
         val label = "%02d-%02d 19:35".format(tomorrow.monthValue, tomorrow.dayOfMonth)
         val m = parser.parseList(statusBlock(label)).first()
         assertEquals(MatchStatus.UPCOMING, m.status)
@@ -255,7 +256,10 @@ class JrkanParserTest {
     @Test
     fun `static active class does not mark an old match as live`() {
         // 5 小时前开赛：超过篮球赛 3.5 小时上限 -> 已结束
-        val past = java.time.ZonedDateTime.now(java.time.ZoneId.systemDefault()).minusHours(5)
+        // ⚠️ 必须用**生产解释时间所用的时区**（`MatchStatusClock.SOURCE_ZONE`），
+        // 不能用 `systemDefault()`（审计「未验证的怀疑 #1」）：标签里的 HH:mm 是
+        // 源站按北京时间写的，用设备时区造标签会在非东八区机器上与生产差几小时。
+        val past = java.time.ZonedDateTime.now(MatchStatusClock.SOURCE_ZONE).minusHours(5)
         val label = "%02d-%02d %02d:%02d".format(past.monthValue, past.dayOfMonth, past.hour, past.minute)
         val m = parser.parseList(statusBlock(label)).first()
         assertEquals(MatchStatus.FINISHED, m.status)
@@ -264,7 +268,7 @@ class JrkanParserTest {
     @Test
     fun `match that tipped off within three and a half hours is live`() {
         // 特征测试：去掉静态类判据后，进行中的场次仍必须判成直播中
-        val started = java.time.ZonedDateTime.now(java.time.ZoneId.systemDefault()).minusHours(1)
+        val started = java.time.ZonedDateTime.now(MatchStatusClock.SOURCE_ZONE).minusHours(1)
         val label = "%02d-%02d %02d:%02d".format(started.monthValue, started.dayOfMonth, started.hour, started.minute)
         val m = parser.parseList(statusBlock(label)).first()
         assertEquals(MatchStatus.LIVE, m.status)
@@ -290,7 +294,7 @@ class JrkanParserTest {
 
     @Test
     fun `date without year resolves to the nearest occurrence within six months`() {
-        val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+        val today = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
         // 每个月都试一遍：无论今天落在几月，解析结果都必须离今天不超过 6 个月
         (0..11).forEach { monthOffset ->
             val target = today.plusMonths(monthOffset.toLong())
@@ -306,7 +310,7 @@ class JrkanParserTest {
 
     @Test
     fun `a date more than six months in the past rolls forward one year`() {
-        val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+        val today = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
         // 7 个月前的月日：按"今年"算会落到过去 7 个月，必须顺延一年
         val target = today.minusMonths(7)
         val label = "%02d-%02d 19:35".format(target.monthValue, target.dayOfMonth)
@@ -330,6 +334,6 @@ class JrkanParserTest {
         """.trimIndent()
         val m = parser.parseList(js).first()
         return java.time.Instant.ofEpochMilli(m.startAtMillis!!)
-            .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+            .atZone(MatchStatusClock.SOURCE_ZONE).toLocalDate()
     }
 }

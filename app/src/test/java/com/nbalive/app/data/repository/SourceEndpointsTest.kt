@@ -74,9 +74,14 @@ class SourceEndpointsTest {
     @Test
     fun `候选列表不能为空`() {
         // 主域名写死成单值常量时这里就会踩空：候选列表就是这道改版防线
-        assert(SourceEndpoints.JRS_LIST.isNotEmpty())
-        assert(SourceEndpoints.JRKAN_LIST_JS.isNotEmpty())
-        assert(SourceEndpoints.PLAY_HOSTS.isNotEmpty())
+        //
+        // ⚠️ 不能用 Kotlin 的 `assert(...)`（审计「未验证的怀疑 #2」）：
+        // 它只在 JVM `-ea` 打开时才生效，一旦构建里出现
+        // `enableAssertions = false`（或换执行器），这 3 行会**静默消失**，
+        // 而"全绿"的报告看不出区别。JUnit 断言才是硬失败。
+        assertTrue("JRS 候选列表不能为空", SourceEndpoints.JRS_LIST.isNotEmpty())
+        assertTrue("JRKAN 候选列表不能为空", SourceEndpoints.JRKAN_LIST_JS.isNotEmpty())
+        assertTrue("播放域名列表不能为空", SourceEndpoints.PLAY_HOSTS.isNotEmpty())
         assertEquals("主域名必须排第一", "jrszbt.com", hostOf(SourceEndpoints.JRS_LIST.first()))
     }
 

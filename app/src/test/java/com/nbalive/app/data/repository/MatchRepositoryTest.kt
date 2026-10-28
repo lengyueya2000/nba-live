@@ -3,6 +3,7 @@ package com.nbalive.app.data.repository
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.MatchStatusClock
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.FetchResult
@@ -48,8 +49,11 @@ class MatchRepositoryTest {
     )
 
     private fun dayMillis(month: Int, day: Int, hour: Int = 19, minute: Int = 35): Long =
+        // ⚠️ 生产按 SOURCE_ZONE 解释 startAtMillis（审计「未验证的怀疑 #1」）：
+        // 夹具若用设备默认时区造毫秒，在非东八区机器上会落到**前一天/后一天**，
+        // 于是"同一天该合并 / 不同天不该合并"这类断言就变成环境相关。
         java.time.LocalDate.of(2026, month, day).atTime(hour, minute)
-            .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            .atZone(MatchStatusClock.SOURCE_ZONE).toInstant().toEpochMilli()
 
     /**
      * 走 `mergeForTest` 而不是反射调 private merge：
@@ -196,8 +200,8 @@ class MatchRepositoryTest {
 
     @Test
     fun `future match without a detail page is corrected from live to upcoming`() = runBlocking {
-        val start = java.time.LocalDate.now().plusDays(1).atTime(19, 35)
-            .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val start = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE).plusDays(1).atTime(19, 35)
+            .atZone(MatchStatusClock.SOURCE_ZONE).toInstant().toEpochMilli()
         // 无 jrsDetailId（没有详情页可查）且 id 不带任何已知源前缀：
         // 判定必须基于"有没有详情页可查 + 计划开赛时间"，而不是猜 id 前缀
         val m = match(
