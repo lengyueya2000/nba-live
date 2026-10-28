@@ -97,10 +97,17 @@ import kotlinx.coroutines.delay
 private const val LIST_STATUS_AGE_INTERVAL_MS = 60_000L
 
 
-private enum class Tab(val label: String, val filled: ImageVector, val outlined: ImageVector) {
-    MATCHES("赛事", Icons.Filled.CalendarMonth, Icons.Outlined.CalendarMonth),
-    LIVE("直播", Icons.Filled.PlayCircle, Icons.Outlined.PlayCircle),
-    PROFILE("我的", Icons.Filled.Person, Icons.Outlined.Person),
+/**
+ * 底部标签的图标（review/03-ui.md P2-3）。
+ *
+ * ⚠️ 图标放在 UI 层按 [NavTab] 映射，而不是塞进标签枚举：
+ * 标签现在是**导航状态机**的一部分（在 ViewModel 的 `NavState` 里），
+ * 一旦枚举带上 `ImageVector`，那个状态机就没法在 JVM 单测里跑了。
+ */
+private fun bottomTabIcon(tab: NavTab, active: Boolean): ImageVector = when (tab) {
+    NavTab.MATCHES -> if (active) Icons.Filled.CalendarMonth else Icons.Outlined.CalendarMonth
+    NavTab.LIVE -> if (active) Icons.Filled.PlayCircle else Icons.Outlined.PlayCircle
+    NavTab.PROFILE -> if (active) Icons.Filled.Person else Icons.Outlined.Person
 }
 
 @Composable
@@ -117,6 +124,12 @@ fun NbaLiveApp(
     onAspectChange: (AspectMode) -> Unit,
 ) {
     val route by viewModel.route.collectAsStateWithLifecycle()
+    // ⚠️ 标签不再是这里的本地 `rememberSaveable`（review/03-ui.md P2-3）：
+    // 它与 route 是**同一个**导航状态的两个字段，原来分居两处、
+    // 靠"切标签时顺手调一次 back()"对齐；两处状态在进程重建时的语义也不一致
+    // （tab 被恢复、route 丢失 → 见 P2-2）。
+    val nav by viewModel.nav.collectAsStateWithLifecycle()
+    val tab = nav.tab
     val listState by viewModel.listState.collectAsStateWithLifecycle()
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
@@ -134,8 +147,8 @@ fun NbaLiveApp(
         listState.matches.filter { it.status == MatchStatus.LIVE }
     }
 
-    var tab by rememberSaveable { mutableStateOf(Tab.MATCHES) }
     // 搜索页：全屏覆盖层，不占用路由，返回键先关它
+    // （纯 UI 态，放本地 rememberSaveable 即可：它不参与导航一致性判断）
     var searchOpen by rememberSaveable { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -240,7 +253,7 @@ fun NbaLiveApp(
     // ⚠️ 这是**纯内存**重算，零网络请求 —— 不违反"不轮询源站"的取舍。
     // ⚠️ 只在列表可见时跑：进详情页/播放页就停，切后台时组合被移出也会停。
     LaunchedEffect(route, tab) {
-        if (route != Route.LIST || tab == Tab.PROFILE) return@LaunchedEffect
+        if (route != Route.LIST || tab == NavTab.PROFILE) return@LaunchedEffect
         while (true) {
             viewModel.ageListStatuses()
             delay(LIST_STATUS_AGE_INTERVAL_MS)
@@ -260,7 +273,7 @@ fun NbaLiveApp(
     // ⚠️ 判据抽在 BackPolicy（有单测）。原来的 enabled 条件不含**标签页**：
     // 用户切到「直播」/「我的」后按返回，条件全为假 → 不接管 →
     // 系统默认行为 = 退出 Activity（用户只是想回「赛事」标签）。
-    val onDefaultTab = tab == Tab.MATCHES
+    val onDefaultTab = tab == NavTab.MATCHES
     BackHandler(
         enabled = !inPip && BackPolicy.shouldIntercept(
             searchOpen = searchOpen,
@@ -285,7 +298,8 @@ fun NbaLiveApp(
             BackAction.ExitFullscreen -> fullscreen = false
             BackAction.LeaveRoute -> viewModel.back()
             // 非默认标签：回赛事标签，而不是退出 App
-            BackAction.ResetTab -> tab = Tab.MATCHES
+            // （走的也是**同一次**导航迁移，不再手改本地 tab）
+            BackAction.ResetTab -> viewModel.selectTab(NavTab.MATCHES)
             // 理论上不该走到（enabled 已经挡住了），保留穷尽分支
             BackAction.None -> Unit
         }
@@ -330,11 +344,10 @@ fun NbaLiveApp(
             if (route != Route.PLAYER && !videoOnly) {
                 SportBottomBar(
                     selected = tab,
-                    onSelect = {
-                        tab = it
-                        // 在详情页点底部标签 -> 先回列表，否则标签切了却没反应
-                        if (route != Route.LIST) viewModel.back()
-                    },
+                    // ⚠️ 切标签是**一次**导航迁移（标签 + 路由一起变）：
+                    // 原来这里写的是 `tab = it` 再"顺手调一次 viewModel.back()"，
+                    // 于是"标签切了却没反应"要靠补救动作兜（review/03-ui.md P2-3）
+                    onSelect = viewModel::selectTab,
                 )
             }
         },
@@ -351,7 +364,7 @@ fun NbaLiveApp(
                 // 包在这一层后整屏只有一份动画，且所有红点相位一致。
                 Route.LIST -> LiveDotPhase {
                     when (tab) {
-                    Tab.MATCHES -> MatchListScreen(
+                    NavTab.MATCHES -> MatchListScreen(
                         matches = visibleMatches,
                         loading = listState.loading,
                         refreshing = listState.refreshing,
@@ -374,7 +387,7 @@ fun NbaLiveApp(
                     // 直播页：只列正在直播的，点一下直接看。
                     // ⚠️ 传**已经算好的** liveMatches，别把完整列表丢进去让它再过滤一遍
                     // （review/03-ui.md P2-10：同一份过滤原来两处各写一份）
-                    Tab.LIVE -> LiveNowScreen(
+                    NavTab.LIVE -> LiveNowScreen(
                         liveMatches = liveMatches,
                         loading = listState.loading,
                         error = listState.error,
@@ -387,7 +400,7 @@ fun NbaLiveApp(
                     )
 
                     // 我的：真实生效的播放/外观设置
-                    Tab.PROFILE -> ProfileScreen(
+                    NavTab.PROFILE -> ProfileScreen(
                         aspectMode = aspectMode,
                         darkMode = darkMode,
                         versionName = versionName,
@@ -677,7 +690,7 @@ private fun SubPageTopBar(
 
 /** 底部导航 */
 @Composable
-private fun SportBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
+private fun SportBottomBar(selected: NavTab, onSelect: (NavTab) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -691,7 +704,7 @@ private fun SportBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
             .padding(horizontal = Space.sm, vertical = Space.sm),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
-        Tab.entries.forEach { item ->
+        NavTab.entries.forEach { item ->
             val active = item == selected
             Column(
                 modifier = Modifier
@@ -722,7 +735,7 @@ private fun SportBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = if (active) item.filled else item.outlined,
+                        imageVector = bottomTabIcon(item, active),
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
                         tint = if (active) MaterialTheme.colorScheme.primary

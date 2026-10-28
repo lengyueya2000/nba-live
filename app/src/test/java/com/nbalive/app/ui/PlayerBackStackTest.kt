@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import androidx.lifecycle.SavedStateHandle
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
@@ -68,6 +69,33 @@ class PlayerBackStackTest {
             loadSignals = { MatchRepository.Detail(signals = emptyList()) },
         )
 
+    /**
+     * 造一个"正停在详情页"的 ViewModel。
+     *
+     * ⚠️ 这条路是**生产上唯一能到详情页的方式**（review/03-ui.md P2-2 的进程重建恢复）：
+     * 底部标签与列表卡片都直接进播放页 —— NbaLiveApp 里那句注释写得很直白
+     * "点比赛直接全屏自动播放，不再先跳详情页选线路"。
+     *
+     * 原来下面两条用例是直接 `playMatch()` 之后再调 `openPlayer()` 来"模拟详情页"，
+     * 而 `openPlayer()` 当时把来源**写死**成 DETAIL。那个时序生产上走不到
+     * （播放页不会渲染详情页的线路行，点不到"进入详情页的播放"），
+     * 所以一旦把"来源取当前路由"这条正确规则落到 NavState，用例就红了。
+     * 现在改成走真实路径：播放 → 被回收 → 重建回详情页。
+     */
+    private fun TestScope.vmOnDetail(matches: List<Match>): MainViewModel {
+        val handle = SavedStateHandle()
+        fun create() = MainViewModel(
+            savedStateHandle = handle,
+            loadMatches = { Result.success(matches) },
+            loadSignals = { MatchRepository.Detail(signals = emptyList()) },
+        )
+        // 播放中（存档里是 PLAYER + matchId）
+        create().also { it.playMatch(matches.first()) }
+        settle()
+        // 进程被杀后重建：回到详情页（P2-2）
+        return create().also { settle() }
+    }
+
     private fun TestScope.settle() {
         runCurrent()
     }
@@ -108,14 +136,11 @@ class PlayerBackStackTest {
 
     @Test
     fun `详情页进播放 按返回回到详情页`() = vmTest {
-        val vm = vmWith(listOf(match("m1")))
-        settle()
+        // 走真实路径停在详情页（进程重建恢复），见 vmOnDetail 的说明
+        val vm = vmOnDetail(listOf(match("m1")))
+        assertEquals(Route.DETAIL, vm.route.value)
 
-        // playMatch 会填充 detailState.match（openPlayer 依赖它）
-        vm.playMatch(match("m1"))
-        settle()
-
-        // 模拟"从详情页点线路进播放"：openPlayer 把来源记为 DETAIL
+        // 详情页点第一条线路进播放：来源应被记成 DETAIL
         vm.openPlayer(0)
         settle()
         assertEquals(Route.PLAYER, vm.route.value)
@@ -155,30 +180,22 @@ class PlayerBackStackTest {
 
     @Test
     fun `上一次进详情页的来源不会泄漏到下一次从列表播放`() = vmTest {
-        val vm = vmWith(listOf(match("m1")))
-        settle()
+        val vm = vmOnDetail(listOf(match("m1"), match("m2")))
+        assertEquals(Route.DETAIL, vm.route.value)
 
-        // 第一次：列表进播放 -> 返回（回 LIST）
-        vm.playMatch(match("m1"))
-        settle()
-        vm.back()
-        assertEquals(Route.LIST, vm.route.value)
-
-        // 走一次 openPlayer 把来源写成 DETAIL
-        vm.playMatch(match("m1"))
-        settle()
+        // 详情页 -> 播放 -> 返回：来源被记成 DETAIL
         vm.openPlayer(0)
         settle()
         vm.back()
         assertEquals(Route.DETAIL, vm.route.value)
 
-        // 回到列表
+        // 从详情页返回列表
         vm.back()
         assertEquals(Route.LIST, vm.route.value)
 
         // 第二次从列表直接播放：返回必须回 LIST，
-        // 不能被上一次的 DETAIL 污染
-        vm.playMatch(match("m1"))
+        // 不能被上一次的 DETAIL 来源污染
+        vm.playMatch(match("m2"))
         settle()
         vm.back()
         assertEquals(

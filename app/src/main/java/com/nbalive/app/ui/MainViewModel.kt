@@ -1,6 +1,7 @@
 package com.nbalive.app.ui
 
 import android.util.Log
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nbalive.app.data.model.League
@@ -176,6 +177,16 @@ class MainViewModel(
     private val resolveStream: suspend (StreamSource) -> StreamUrlResolver.Resolved? = {
         repository.resolveStream(it)
     },
+    /**
+     * 跨进程重建用的存档（review/03-ui.md P2-2）。
+     *
+     * ⚠️ **生产必须注入真正接了 SavedStateRegistry 的 handle**
+     * （MainActivity 里 `createSavedStateHandle()`）。这个默认值只是为了
+     * 不强迫既有测试改构造调用；用默认值 = 持久化静默失效（测试全绿、
+     * 线上重建照旧掉回列表）—— 所以源码守卫
+     * `NavRestoreTest.生产必须注入真正可持久化的 SavedStateHandle` 钉住注入点。
+     */
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
 
     companion object {
@@ -188,22 +199,96 @@ class MainViewModel(
         private const val MAX_FALLBACK_CANDIDATES = 3
     }
 
-    private val _route = MutableStateFlow(Route.LIST)
-    val route: StateFlow<Route> = _route.asStateFlow()
+    /**
+     * 单一导航状态（review/03-ui.md P2-3）：
+     * 标签与路由在**同一次迁移**里变，不再需要"切标签时顺手 back()"这种补救动作。
+     *
+     * ⚠️ 详情层不在这里直接落地：`MatchDetailUiState.match` 来自列表，
+     * 重建时列表还是空的 —— 先把"要回哪场"记进 [pendingRestoreMatchId]，
+     * 等列表加载完再跳（否则会先闪一下缺 match 的占位提示）。
+     */
+    private val restoredNav = navStateFromStored(
+        tab = savedStateHandle[navStateKeyFor("tab")],
+        route = savedStateHandle[navStateKeyFor("route")],
+        matchId = savedStateHandle[navStateKeyFor("match")],
+        beforePlayer = savedStateHandle[navStateKeyFor("beforePlayer")],
+    )
+
+    private val _nav = MutableStateFlow(
+        if (restoredNav.route == Route.DETAIL) restoredNav.copy(route = Route.LIST) else restoredNav,
+    )
+    val nav: StateFlow<NavState> = _nav.asStateFlow()
 
     /**
-     * 进入播放页**之前**所在的路由，决定返回键该回哪里。
+     * 进程重建后要自动回到的详情页（review/03-ui.md P2-2）。
      *
-     * ⚠️ 历史 bug：`back()` 里 PLAYER 分支无条件回 DETAIL。
-     * 但进入播放页有两条路：
-     *  - 列表卡片的「立即观看」→ `playMatch()`，从 LIST 直接跳 PLAYER
-     *  - 详情页的线路列表 → `openPlayer()`，DETAIL -> PLAYER
-     * 前者按返回会掉进一个**用户从未见过的详情页**，再按一次才回列表。
-     * 切场（"同时在播"面板）同样从 LIST 直达 PLAYER，问题更明显。
-     *
-     * 所以必须记住来源，而不是写死 DETAIL。
+     * ⚠️ 找不到那场比赛（源站已撤）时就留在列表：硬跳详情只会显示占位提示。
      */
-    private var routeBeforePlayer: Route = Route.DETAIL
+    private var pendingRestoreMatchId: String? =
+        restoredNav.matchId?.takeIf { restoredNav.route == Route.DETAIL }
+
+    /**
+     * `route` 是 [nav] 的**同步镜像**，只为兼容既有调用点与测试而保留。
+     *
+     * ⚠️ 唯一写入口是 [setNav]：它同时更新 [nav]/[route] 并落盘。
+     * 直接写 `_route.value` 会让三者（nav、route、存档）不一致 ——
+     * 那正是"两个状态机"问题的复现。
+     */
+    private val _route = MutableStateFlow(_nav.value.route)
+    val route: StateFlow<Route> = _route.asStateFlow()
+
+    /** 导航状态的唯一写入口：同步镜像 + 落盘（进程重建用）。 */
+    private fun setNav(next: NavState) {
+        if (next == _nav.value) return
+        _nav.value = next
+        _route.value = next.route
+        next.toStoredFields().forEach { (key, value) -> savedStateHandle[key] = value }
+    }
+
+    /**
+     * 切换底部标签（review/03-ui.md P2-3）。
+     *
+     * ⚠️ 这是**一次**导航迁移：标签与路由一起变，不存在"标签切了但页面还在详情页"
+     * 的中间态。原来这件事由 UI 层两支代码拼出来（`tab = it` + 顺手调一次
+     * `viewModel.back()`），谁漏写一半就错位。
+     */
+    fun selectTab(tab: NavTab) {
+        when (_nav.value.route) {
+            // 播放页不渲染底栏（点不到），保险起见按返回把播放态收干净
+            Route.PLAYER -> back()
+            Route.DETAIL -> {
+                // 离开详情页：在途拉线路要停，加载态要复位，
+                // 否则详情页的信号区会永久停在"正在获取信号列表…"
+                detailJob?.cancel()
+                _detailState.update { it.copy(loadingSignals = false, error = null) }
+            }
+            Route.LIST -> Unit
+        }
+        // 用户明确切了标签 = 放弃"重建后回到详情"的意图
+        pendingRestoreMatchId = null
+        setNav(_nav.value.selectTab(tab))
+    }
+
+    /**
+     * 进程重建后回到那场比赛的详情页（review/03-ui.md P2-2）。
+     *
+     * ⚠️ 必须在列表加载**落地之后**调用：详情页渲染靠 `detailState.match`，
+     * 而它唯一的来源是列表。找不到那场（源站已撤 / 比赛结束）就留在列表 ——
+     * 硬跳详情只会显示一个"缺 match"的占位提示，比掉回列表更糟。
+     *
+     * ⚠️ 列表加载**失败**时有意不调用：留着 [pendingRestoreMatchId]，
+     * 等用户下次刷新成功后再恢复，而不是把意图悄悄丢掉。
+     */
+    private fun restorePendingDetail() {
+        val id = pendingRestoreMatchId ?: return
+        val match = _listState.value.matches.firstOrNull { it.id == id }
+        if (match == null) return
+        pendingRestoreMatchId = null
+        _detailState.value = MatchDetailUiState(match = match, loadingSignals = true)
+        setNav(_nav.value.openDetail(match.id))
+        // 走缓存：用户没点过"刷新线路"，重建恢复不该白白回源一次
+        loadDetailSignals(invalidateCache = false)
+    }
 
     private val _listState = MutableStateFlow(MatchListUiState())
     val listState: StateFlow<MatchListUiState> = _listState.asStateFlow()
@@ -332,6 +417,9 @@ class MainViewModel(
                         )
                     }
                 }
+                // ⚠️ 列表落地**之后**才谈得上"回到那场比赛的详情页"（review/03-ui.md P2-2）：
+                // 详情页要的 match 对象就在列表里。
+                restorePendingDetail()
             } catch (ce: CancellationException) {
                 // 协程被取消：收尾 loading/refreshing。
                 // ⚠️ 只在**自己仍是当前那次刷新**时才收尾（review/02-data.md P2-4）：
@@ -389,13 +477,20 @@ class MainViewModel(
      * 详情页「更多 -> 刷新线路」：重新拉一次该场次的信号列表。
      * 源站偶尔会补线路，重进页面不一定能刷新到，给个显式入口。
      */
-    fun refreshSignals() {
+    fun refreshSignals() = loadDetailSignals(invalidateCache = true)
+
+    /**
+     * 拉当前详情页的线路。
+     *
+     * @param invalidateCache 用户显式点「刷新线路」时为 true：先让详情页缓存失效，
+     *   随后的 `loadSignals` 才会真的回源。
+     *   ⚠️ `playMatch()`（首次进场）与"进程重建后回到详情"必须走 **false**：
+     *   否则 5 分钟 TTL 内点「刷新线路」拿到的是同一份旧 HTML，
+     *   源站后补的线路永远看不到，按钮成了摆设（review/02-data.md 的取舍）。
+     */
+    private fun loadDetailSignals(invalidateCache: Boolean) {
         val match = _detailState.value.match ?: return
-        // ⚠️ 用户显式刷新：先让详情页缓存失效，随后的 loadSignals 才会真的回源。
-        // playMatch()（首次进场）走缓存 —— 这两条路径就此分开，
-        // 否则 5 分钟 TTL 内点"刷新线路"拿到的是同一份旧 HTML，
-        // 源站后补的线路永远看不到，按钮成了摆设。
-        match.jrsDetailId?.let { repository.invalidateDetailCache(it) }
+        if (invalidateCache) match.jrsDetailId?.let { repository.invalidateDetailCache(it) }
         detailJob?.cancel()
         _detailState.update { it.copy(loadingSignals = true, error = null) }
         detailJob = viewModelScope.launch {
@@ -429,9 +524,8 @@ class MainViewModel(
         val detail = _detailState.value
         val match = detail.match ?: return
         failedSources.clearAll()
-        // 从详情页的线路列表进来：返回键该回详情页
-        routeBeforePlayer = Route.DETAIL
-        _route.value = Route.PLAYER
+        // 从详情页的线路列表进来：返回键该回详情页（来源由 NavState 记住）
+        setNav(_nav.value.openPlayer(match.id))
         _playerState.value = PlayerUiState(
             match = match,
             signals = detail.signals,
@@ -502,10 +596,9 @@ class MainViewModel(
         // 用户会掉进一个从未见过的详情页。
         // 已经在 PLAYER（"同时在播"切场）时保持原来源不变，
         // 否则返回键会把用户卡在 PLAYER 与 LIST 之间来回跳。
-        if (_route.value != Route.PLAYER) {
-            routeBeforePlayer = _route.value
-        }
-        _route.value = Route.PLAYER
+        // ⚠️ 标签不变：播放页是盖在**当前标签**上的（从「直播」点进去，
+        // 返回还是「直播」）—— 这是 P2-3 要求的"一次迁移"。
+        setNav(_nav.value.openPlayer(match.id))
         _detailState.value = MatchDetailUiState(match = match, loadingSignals = true)
         _playerState.value = PlayerUiState(match = match, resolving = true)
         loadJob = viewModelScope.launch {
@@ -843,7 +936,7 @@ class MainViewModel(
     // ---------- 返回 ----------
 
     fun back() {
-        when (_route.value) {
+        when (_nav.value.route) {
             Route.PLAYER -> {
                 playJob?.cancel()
                 loadJob?.cancel()
@@ -855,7 +948,8 @@ class MainViewModel(
                 // ⚠️ 回到**进入播放页之前**的路由，不是无条件回 DETAIL。
                 // 从列表「立即观看」直接播放时，回 DETAIL 会掉进
                 // 用户从未见过的详情页（要再按一次返回才到列表）。
-                _route.value = routeBeforePlayer
+                // 来源与迁移判据都在 NavState 里（有单测）。
+                setNav(_nav.value.back())
                 // 播放态要清干净：直连地址、兜底地址、错误提示都不能留在状态里
                 // （错误提示原来只靠 UI 层的 route==PLAYER 条件遮住，是隐性不变量）
                 _playerState.update {
@@ -878,7 +972,7 @@ class MainViewModel(
             }
             Route.DETAIL -> {
                 detailJob?.cancel()
-                _route.value = Route.LIST
+                setNav(_nav.value.back())
                 _detailState.update { it.copy(loadingSignals = false, error = null) }
             }
             Route.LIST -> Unit

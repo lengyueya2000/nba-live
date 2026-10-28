@@ -17,7 +17,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.ui.AppPrefs
 import com.nbalive.app.ui.MainViewModel
@@ -53,7 +56,18 @@ class MainActivity : ComponentActivity() {
             val darkPref by AppPrefs.darkMode.collectAsStateWithLifecycle()
             NbaLiveTheme(darkTheme = resolveDarkMode(darkPref)) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    val vm: MainViewModel = viewModel()
+                    // ⚠️ 必须显式注入**接了 SavedStateRegistry 的** SavedStateHandle
+                    // （review/03-ui.md P2-2）：MainViewModel 的 savedStateHandle 有默认值
+                    // （为了不强迫既有测试改构造调用），所以无参 `viewModel()` 拿到的是
+                    // 那个默认 handle —— 导航状态照旧不持久化，而所有单测仍然全绿。
+                    // 这是本轮最容易"静默降级"的地方；NavRestoreTest 扫源码钉住了这里。
+                    val vm: MainViewModel = viewModel(
+                        factory = viewModelFactory {
+                            initializer {
+                                MainViewModel(savedStateHandle = createSavedStateHandle())
+                            }
+                        },
+                    )
                     NbaLiveApp(
                         viewModel = vm,
                         // 偏好落盘是"平台层"的活：需要 Context 的事情留在 Activity，
