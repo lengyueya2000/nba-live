@@ -2,6 +2,7 @@ package com.nbalive.app.ui
 
 import com.nbalive.app.GuardSourceScan
 import java.io.File
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,20 +69,26 @@ class TopBarAndLiveFilterTest {
 
     @Test
     fun `共享方形按钮必须真的接到顶栏与搜索页上`() {
-        // 防"抽出来了没人用"（审查反复点名的形态）
-        val live = stripped("NbaLiveApp.kt")
-        val search = stripped("SearchScreen.kt")
+        // 防"抽出来了没人用"（审查反复点名的形态）。
+        // ⚠️ 跨文件：顶栏外壳随 03-P2-18 拆分搬到 ui/AppChrome.kt（原 NbaLiveApp.kt），
+        // 所以不再写死文件名，而是看"哪些文件真的调用了 SquareIconButton"。
+        val codeByName = uiSources().associate { it.name to stripComments(it.readText()) }
+        val callers = codeByName.filterKeys { it != "Common.kt" }
+            .filterValues { it.contains("SquareIconButton(") }
+            .keys
         assertTrue(
-            "NbaLiveApp 里没有用 SquareIconButton：顶栏按钮又写回私有实现了（P2-22）",
-            live.contains("SquareIconButton("),
+            "只有 ${callers.size} 个文件用了 SquareIconButton（应 ≥2：顶栏外壳 + 搜索页）：$callers\n" +
+                "顶栏按钮又写回私有实现了（P2-22）",
+            callers.size >= 2,
         )
         assertTrue(
             "SearchScreen 的返回键没有用 SquareIconButton（P2-22）",
-            search.contains("SquareIconButton("),
+            callers.contains("SearchScreen.kt"),
         )
-        assertTrue(
-            "NbaLiveApp 里的 TopIconButton 私有实现在改名之后又回来了（P2-22）",
-            !live.contains("fun TopIconButton"),
+        assertFalse(
+            "`fun TopIconButton` 私有实现在改名之后又回来了（P2-22）：" +
+                codeByName.filterValues { it.contains("fun TopIconButton") }.keys.toString(),
+            codeByName.values.any { it.contains("fun TopIconButton") },
         )
     }
 
@@ -143,7 +150,18 @@ class TopBarAndLiveFilterTest {
 
     @Test
     fun `NbaLiveApp 必须把算好的 liveMatches 传给直播页`() {
-        val live = stripped("NbaLiveApp.kt")
+        // ⚠️ 跨文件：直播页的调用点随 03-P2-18 拆分搬到 ui/AppChrome.kt（原 NbaLiveApp.kt）。
+        // 用"非声明地出现 `LiveNowScreen(`"唯一定位调用文件（排除 screens/LiveNowScreen.kt 的声明）；
+        // 0 个/多个都 error()，绝不静默取第一个。
+        val callers = uiSources().filter { f ->
+            val c = stripComments(f.readText())
+            c.contains("LiveNowScreen(") && !Regex("""fun\s+LiveNowScreen\s*\(""").containsMatchIn(c)
+        }
+        if (callers.isEmpty()) error("整个 ui/ 里找不到 LiveNowScreen(...) 调用点，守卫会静默全绿")
+        if (callers.size > 1) {
+            error("LiveNowScreen(...) 出现在 ${callers.size} 个文件：${callers.map { it.name }} —— 锚点不唯一")
+        }
+        val live = stripComments(callers.single().readText())
         // ⚠️ 必须只看 LiveNowScreen 那个调用点：`liveMatches = liveMatches` 在
         // 播放页（PlayerScreen）的"同时在播"面板那里也合法存在 ——
         // 早先写成"全文件 contains(...)"时，把直播页改回传完整列表**抓不到**。
@@ -243,8 +261,8 @@ class TopBarAndLiveFilterTest {
     }
 
     private fun stripped(name: String): String {
-        val f = uiSources().firstOrNull { it.name == name }
-            ?: error("找不到 $name，守卫会静默全绿")
+        // 审计「未验证的怀疑 #7」：按文件名取第一个 → 同名文件时静默守错。现在唯一命中否则 error()。
+        val f = GuardSourceScan.uniqueFile(uiSources(), name)
         return stripComments(f.readText())
     }
 

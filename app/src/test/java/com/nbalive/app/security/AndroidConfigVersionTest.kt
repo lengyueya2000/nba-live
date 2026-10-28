@@ -1,6 +1,8 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.GuardSourceScan
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,9 +48,58 @@ class AndroidConfigVersionTest {
         )
     }
 
-    /** 去掉 XML 注释（`<!-- ... -->`，含跨行）。 */
-    private fun stripXmlComments(text: String): String =
-        Regex("""<!--.*?-->""", setOf(RegexOption.DOT_MATCHES_ALL)).replace(text, "")
+    /**
+     * 剔 XML 注释（`<!-- … -->`，含跨行），走共享实现 [GuardSourceScan.stripXmlComments]。
+     *
+     * ⚠️ 这里原来是第二套本地实现（审计「未验证的怀疑 #6」点名的"两套剔注释"之一）；
+     * 现在全仓只保留 [GuardSourceScan] 一套。跨行行为由
+     * [XML 注释剔除自检 跨行块必须被整体剔掉] 钉住 —— 那份自检同时说明
+     * "只剔整行注释"的实现为什么不够：跨行块注释的中间几行会被当成代码。
+     */
+    private fun stripXmlComments(text: String): String = GuardSourceScan.stripXmlComments(text)
+
+    @Test
+    fun `XML 注释剔除自检 跨行块必须被整体剔掉`() {
+        // 真实反例：themes.xml 顶部的注释是 `<!--` 起、几行后 `-->` 收。
+        // "只把整行注释置空"的实现会把中间那几行（含属性名）当成代码，
+        // 于是"删掉真属性、只在注释里提一句"照样绿（审计 A2 的原形）。
+        val sample = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <!--
+              statusBarColor / navigationBarColor 在 API 35 起被废弃
+              （这是跨行注释，中间几行不是代码）
+            -->
+            <resources>
+                <item name="android:windowBackground">@android:color/black</item>
+            </resources>
+        """.trimIndent()
+        val strippedRaw = GuardSourceScan.stripXmlComments(sample)
+        assertFalse(
+            "跨行 XML 注释里的属性名必须被剔掉（否则删掉真属性也不会红）",
+            strippedRaw.contains("statusBarColor"),
+        )
+        assertFalse(
+            "跨行 XML 注释里的属性名必须被剔掉",
+            strippedRaw.contains("navigationBarColor"),
+        )
+        assertTrue("代码部分不能被误删", strippedRaw.contains("windowBackground"))
+        assertEquals(
+            "剔 XML 注释必须保留行数（行号要能对上真实文件）",
+            sample.lines().size,
+            strippedRaw.lines().size,
+        )
+
+        // 反向：注释之外的属性必须留下来（本类的基础主题断言就靠这条语义）
+        val withItems = """
+            <resources>
+                <item name="android:statusBarColor">@android:color/transparent</item>
+            </resources>
+        """.trimIndent()
+        assertTrue(
+            "真正的 <item> 必须留下（否则本类会把合规写法判成违规）",
+            GuardSourceScan.stripXmlComments(withItems).contains("statusBarColor"),
+        )
+    }
 
     @Test
     fun `基础主题必须保留系统栏颜色 否则旧系统视觉回归`() {

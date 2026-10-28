@@ -170,9 +170,9 @@ class BackAndMissingDataTest {
             File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
         ).firstOrNull { it.isDirectory }
             ?: error("找不到生产源码根（cwd=${System.getProperty("user.dir")}）")
-        return root.walkTopDown()
-            .firstOrNull { it.isFile && it.name == name }
-            ?.readText()
-            ?: error("找不到生产文件 $name —— 本条守卫会静默全绿，所以直接失败")
+        return GuardSourceScan.uniqueFile(
+            root.walkTopDown().filter { it.isFile }.toList(),
+            name,
+        ).readText()
     }
 }

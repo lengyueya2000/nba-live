@@ -2,6 +2,7 @@ package com.nbalive.app.ui
 
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import com.nbalive.app.GuardSourceScan
 import com.nbalive.app.ui.components.logoFallbackFontSize
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -177,8 +178,8 @@ class ComponentPerfTest {
     // ---------------- 基础设施 ----------------
 
     private fun requireCommon(): String {
-        val f = productionFiles().firstOrNull { it.name == "Common.kt" }
-            ?: error("找不到 ui/components/Common.kt（cwd=${System.getProperty("user.dir")}），守卫会静默全绿")
+        // 审计「未验证的怀疑 #7」：按文件名取第一个 → 同名文件时静默守错。现在唯一命中否则 error()。
+        val f = GuardSourceScan.uniqueFile(productionFiles(), "Common.kt")
         return stripComments(f.readText())
     }
 
@@ -267,56 +268,12 @@ class ComponentPerfTest {
     }
 
 /**
-     * 剔除注释：块注释（含 KDoc）与行注释都去掉，字符串字面量原样保留
-     *（`https://…` 里的 `//` 不是注释）。注释里常写着与代码同样的字面量，
-     * 不剔除就会让守卫永远绿。
+     * 剔注释**与字符串字面量**，走共享的词法实现 [GuardSourceScan.stripNonCode]。
+     *
+     * ⚠️ 旧版本地实现（只剔注释、保留字符串）是审计「未验证的怀疑 #6」点名的第二套实现之一；
+     * 现在全仓只有 [GuardSourceScan.stripNonCode] 一套，避免两份实现语义漂移。
      */
-    private fun stripComments(text: String): String {
-        val sb = StringBuilder(text.length)
-        var i = 0
-        var inBlock = false
-        while (i < text.length) {
-            val c = text[i]
-            when {
-                inBlock -> {
-                    if (c == '*' && i + 1 < text.length && text[i + 1] == '/') {
-                        inBlock = false
-                        i += 2
-                    } else {
-                        if (c == '\n') sb.append('\n')
-                        i++
-                    }
-                }
-                c == '/' && i + 1 < text.length && text[i + 1] == '*' -> {
-                    inBlock = true
-                    i += 2
-                }
-                c == '/' && i + 1 < text.length && text[i + 1] == '/' -> {
-                    while (i < text.length && text[i] != '\n') i++
-                }
-                c == '"' -> {
-                    sb.append(c)
-                    i++
-                    while (i < text.length) {
-                        val d = text[i]
-                        sb.append(d)
-                        if (d == '\\' && i + 1 < text.length) {
-                            sb.append(text[i + 1])
-                            i += 2
-                            continue
-                        }
-                        i++
-                        if (d == '"') break
-                    }
-                }
-                else -> {
-                    sb.append(c)
-                    i++
-                }
-            }
-        }
-        return sb.toString()
-    }
+    private fun stripComments(text: String): String = GuardSourceScan.stripNonCode(text)
 
     private companion object {
         /** 组合期新建的局部 `val x = { ... }`（带不带类型都算） */

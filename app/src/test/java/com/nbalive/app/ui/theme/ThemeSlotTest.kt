@@ -1,6 +1,7 @@
 package com.nbalive.app.ui.theme
 
 import androidx.compose.ui.graphics.Color
+import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -250,8 +251,8 @@ class ThemeSlotTest {
     // ---------------- 基础设施 ----------------
 
     private fun themeFile(): File =
-        appSourceFiles().firstOrNull { it.name == "Theme.kt" }
-            ?: error("找不到 ui/theme/Theme.kt（cwd=${System.getProperty("user.dir")}），守卫会静默全绿")
+        // 审计「未验证的怀疑 #7」：按文件名取第一个 → 同名文件时静默守错。现在唯一命中否则 error()。
+        GuardSourceScan.uniqueFile(appSourceFiles(), "Theme.kt")
 
     private fun appSourceFiles(): List<File> {
         val cwd = System.getProperty("user.dir") ?: "."
@@ -264,53 +265,13 @@ class ThemeSlotTest {
         return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
     }
 
-    /** 剔除注释：注释里常写着同样的字面量，不剔除守卫会永远绿。 */
-    private fun stripComments(text: String): String {
-        val sb = StringBuilder(text.length)
-        var i = 0
-        var inBlock = false
-        while (i < text.length) {
-            val c = text[i]
-            when {
-                inBlock -> {
-                    if (c == '*' && i + 1 < text.length && text[i + 1] == '/') {
-                        inBlock = false
-                        i += 2
-                    } else {
-                        if (c == '\n') sb.append('\n')
-                        i++
-                    }
-                }
-                c == '/' && i + 1 < text.length && text[i + 1] == '*' -> {
-                    inBlock = true
-                    i += 2
-                }
-                c == '/' && i + 1 < text.length && text[i + 1] == '/' -> {
-                    while (i < text.length && text[i] != '\n') i++
-                }
-                c == '"' -> {
-                    sb.append(c)
-                    i++
-                    while (i < text.length) {
-                        val d = text[i]
-                        sb.append(d)
-                        if (d == '\\' && i + 1 < text.length) {
-                            sb.append(text[i + 1])
-                            i += 2
-                            continue
-                        }
-                        i++
-                        if (d == '"') break
-                    }
-                }
-                else -> {
-                    sb.append(c)
-                    i++
-                }
-            }
-        }
-        return sb.toString()
-    }
+    /**
+     * 剔注释**与字符串字面量**，走共享的词法实现 [GuardSourceScan.stripNonCode]。
+     *
+     * ⚠️ 旧版本地实现（只剔注释、保留字符串）是审计「未验证的怀疑 #6」点名的第二套实现之一；
+     * 现在全仓只有 [GuardSourceScan.stripNonCode] 一套，避免两份实现语义漂移。
+     */
+    private fun stripComments(text: String): String = GuardSourceScan.stripNonCode(text)
 
     /** WCAG 相对亮度（与 ThemeContrastTest 同一套算法，不依赖 Compose 的 luminance）。 */
     private fun luminance(c: Color): Double {

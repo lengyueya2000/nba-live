@@ -119,7 +119,9 @@ class NavHostGuardTest {
 
     @Test
     fun `列表派生值必须直接读 state 不能再包一层 remember`() {
-        val code = stripComments(nbaLiveApp().readText())
+        // ⚠️ 跨文件定位：派生值随 03-P2-18 拆分搬到了 ui/AppChrome.kt（原 NbaLiveApp.kt）。
+        // 按内容唯一命中，找不到/多个都 error()。
+        val code = stripComments(sourceContaining("val visibleMatches = listState.visibleMatches").readText())
         assertTrue(
             "visibleMatches 应直接读 listState.visibleMatches：MainViewModel 里它已经是" +
                 " data class 的 val（构造时求值一次），再 remember 不产生任何收益，" +
@@ -196,7 +198,10 @@ class NavHostGuardTest {
 
     @Test
     fun `Composable 不得把 Context 传给偏好写入`() {
-        val code = stripComments(nbaLiveApp().readText())
+        // ⚠️ 从"只看 NbaLiveApp.kt"扩到 **ui/ 全目录**：03-P2-18 把 UI 拆成
+        // AppChrome/AppEffects/SearchOverlay 等文件后，只扫一个文件会让回归躲到新文件里
+        //（"扫的文件变了但判据没变"就是假安全感）。
+        val code = uiFiles().joinToString("\n") { stripComments(it.readText()) }
         for (call in listOf("AppPrefs.setDarkMode(", "PlayerPrefs.setAspect(")) {
             assertFalse(
                 "Composable 里直接调 $call 写 SharedPreferences：把 Android Context 这层依赖" +
@@ -220,15 +225,27 @@ class NavHostGuardTest {
             activityCode.contains("onDarkModeChange =") && activityCode.contains("onAspectChange ="),
         )
 
-        val uiCode = stripComments(nbaLiveApp().readText())
+        val uiCode = uiFiles().joinToString("\n") { stripComments(it.readText()) }
         assertTrue(
             "ProfileScreen 的深色开关必须接到参数上，不能传常量或空实现（P2-17）",
             Regex("""onDarkModeChange\s*=\s*onDarkModeChange\b""").containsMatchIn(uiCode),
         )
-        assertEquals(
-            "画面模式有**两个**调用点（我的页 + 播放页），必须都接到参数上（P2-17）",
-            2,
-            Regex("""onAspectChange\s*=\s*onAspectChange\b""").findAll(uiCode).count(),
+        // ⚠️ 从"只看 NbaLiveApp.kt + 精确计数 == 2"改为"扫 ui/ 全目录 + 每个实参都必须是真实回调"：
+        // 03-P2-18 把 UI 拆成 AppChrome/AppEffects/SearchOverlay 后，回调会多一层透传，
+        // 精确计数会随**合法**重构波动（这正是审计点名的"正则只匹配当前写法"形态）；
+        // 而"每个消费点都不许传常量/空实现"才是 P2-17 要守的语义，也比计数更强
+        // （计数不变但把某一处改成 `{}` 时，旧断言抓不到，这条会红）。
+        val aspectArgs = Regex("""onAspectChange\s*=\s*([^\n,)]+)""").findAll(uiCode)
+            .map { it.groupValues[1].trim() }
+            .toList()
+        assertTrue(
+            "画面模式至少要有两个消费点（我的页 + 播放页）接到真实回调（P2-17），" +
+                "实际 ${aspectArgs.size} 处：$aspectArgs",
+            aspectArgs.size >= 2,
+        )
+        assertTrue(
+            "以下 onAspectChange 的实参不是真实回调（传常量/空实现 = 开关点了没反应，P2-17）：$aspectArgs",
+            aspectArgs.all { it.contains("onAspectChange") },
         )
     }
 
@@ -254,7 +271,8 @@ class NavHostGuardTest {
 
     @Test
     fun `无更多时的占位必须用 SubPageBarSideSlot`() {
-        val code = stripComments(nbaLiveApp().readText())
+        // ⚠️ 跨文件定位：二级页顶栏随 03-P2-18 拆分搬到了 ui/AppChrome.kt。
+        val code = stripComments(sourceContaining("fun SubPageTopBar(").readText())
         val body = functionBody(code, "fun SubPageTopBar(")
 
         assertTrue(
@@ -272,7 +290,8 @@ class NavHostGuardTest {
 
     @Test
     fun `顶栏侧位常量必须是 48dp`() {
-        val code = stripComments(nbaLiveApp().readText())
+        // ⚠️ 跨文件定位：常量随顶栏一起搬到 ui/AppChrome.kt。
+        val code = stripComments(sourceContaining("val SubPageBarSideSlot").readText())
         val slot = Regex("""SubPageBarSideSlot\s*=\s*(\d+)\.dp""").find(code)
             ?: error("找不到 SubPageBarSideSlot 常量定义 —— 守卫会静默全绿（P2-35）")
         assertEquals(
@@ -306,10 +325,34 @@ class NavHostGuardTest {
             ?: error("找不到生产源码目录（cwd=$cwd，候选=${candidates.map { it.path }}）—— 守卫会静默全绿")
     }
 
-    private fun source(fileName: String): File {
-        val root = productionRoot()
-        return root.walkTopDown().firstOrNull { it.isFile && it.name == fileName }
-            ?: error("在 ${root.path} 下找不到 $fileName —— 守卫不能静默跳过")
+    private fun source(fileName: String): File = GuardSourceScan.uniqueFile(
+        productionRoot().walkTopDown().filter { it.isFile }.toList(),
+        fileName,
+    )
+
+    /**
+     * 按**代码内容**唯一定位生产文件（跨文件判据用）。
+     *
+     * 03-P2-18 把外壳/副作用从 `NbaLiveApp.kt` 拆到 `AppChrome.kt` / `AppEffects.kt` 等新文件后，
+     * 写死文件名的锚点会失效；按内容定位跟着代码走，抗重构。
+     * 0 个或多个命中都 `error()`（[GuardSourceScan.uniqueFileContaining]），绝不静默。
+     */
+    private fun sourceContaining(marker: String): File =
+        GuardSourceScan.uniqueFileContaining(
+            productionRoot().walkTopDown().filter { it.isFile && it.extension == "kt" }.toList(),
+            marker,
+        )
+
+    /** `ui/` 目录下全部 kt：用于"必须扫全目录"的负向判据。 */
+    private fun uiFiles(): List<File> {
+        val cwd = System.getProperty("user.dir") ?: "."
+        val candidates = listOf(
+            File(cwd, "src/main/java/com/nbalive/app/ui"),
+            File(cwd, "app/src/main/java/com/nbalive/app/ui"),
+        )
+        val root = candidates.firstOrNull { it.isDirectory }
+            ?: error("找不到 ui 源码目录（cwd=$cwd）—— 跨文件判据会静默全绿")
+        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
     }
 
     private fun mainActivity() = source("MainActivity.kt")

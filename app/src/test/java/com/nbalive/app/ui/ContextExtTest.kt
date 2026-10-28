@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -59,8 +60,9 @@ class ContextExtTest {
 
     @Test
     fun `主题里的系统栏配色必须走共用的 findActivity`() {
-        val theme = uiSources().firstOrNull { it.name == "Theme.kt" }
-            ?: error("找不到 Theme.kt，守卫会静默全绿")
+        // 审计「未验证的怀疑 #7」：按文件名取第一个 → 出现同名文件时会静默守错文件。
+        // 现在要求唯一命中，否则 GuardSourceScan.uniqueFile 直接 error()。
+        val theme = GuardSourceScan.uniqueFile(uiSources(), "Theme.kt")
         val code = stripComments(theme.readText())
         assertTrue(
             "Theme.kt 里没有用 findActivity()：宿主 Activity 的取法又变成就地强转了（P2-21）",
@@ -89,11 +91,5 @@ class ContextExtTest {
         return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
     }
 
-    private fun stripComments(text: String): String =
-        text.lineSequence()
-            .map { line ->
-                val t = line.trimStart()
-                if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) "" else line
-            }
-            .joinToString("\n")
+    private fun stripComments(text: String): String = GuardSourceScan.stripNonCode(text)
 }

@@ -135,7 +135,8 @@ class ScreenConsistencyGuardTest {
     }
 
     private fun screenFile(name: String): File =
-        screens().firstOrNull { it.name == name } ?: error("找不到 $name")
+        // 审计「未验证的怀疑 #7」：按文件名取第一个 → 同名文件时静默守错。现在唯一命中否则 error()。
+        GuardSourceScan.uniqueFile(screens(), name)
 
     /** 取 `private fun <name>(...) { ... }` 的花括号体（平衡括号，含嵌套 lambda）。 */
     private fun functionBody(code: String, name: String): String? {

@@ -56,7 +56,9 @@ class AccessibilitySemanticsTest {
 
     @Test
     fun `底栏标签必须成组`() {
-        val code = GuardSourceScan.stripNonCode(source("ui/NbaLiveApp.kt"))
+        // ⚠️ 跨文件定位：底栏外壳已从 NbaLiveApp.kt 拆到 ui/AppChrome.kt（03-P2-18 拆分），
+        // 写死文件名的锚点会随重构失效。按**内容**唯一命中，找不到/多个都 error()。
+        val code = GuardSourceScan.stripNonCode(sourceContaining("selectableGroup()"))
 
         // ⚠️ 必须匹配**调用** `.selectableGroup()`，不能只 contains("selectableGroup")：
         // import 行也含这个字符串，删掉调用、留下 import 时守卫会照样绿
@@ -70,7 +72,8 @@ class AccessibilitySemanticsTest {
 
     @Test
     fun `标签必须声明选中状态`() {
-        val code = GuardSourceScan.stripNonCode(source("ui/NbaLiveApp.kt"))
+        // ⚠️ 同样跨文件定位：`fun SportBottomBar(` 现在在 ui/AppChrome.kt。
+        val code = GuardSourceScan.stripNonCode(sourceContaining("fun SportBottomBar("))
 
         // 只成组还不够：要告诉读屏"当前选中的是哪个"。
         // ⚠️ 审计 A6：原来这里是 `contains("selectable(") || contains("selected = ")` 的
@@ -291,6 +294,19 @@ class AccessibilitySemanticsTest {
             error("$name 唯一命中在 $normalized，不是 .../com/nbalive/app/$relative —— 守卫会守错文件")
         }
         return hit.readText()
+    }
+
+    /**
+     * 按**代码内容**唯一定位生产文件并返回原文。
+     *
+     * 用途：符号被拆分/搬家到新文件后（例如 `NbaLiveApp.kt` → `AppChrome.kt`），
+     * 写死相对路径的锚点会失效；按内容定位跟着代码走。0 个或多个命中都 `error()`
+     * （见 [GuardSourceScan.uniqueFileContaining]），绝不静默。
+     */
+    private fun sourceContaining(marker: String): String {
+        val root = productionRoot()
+        val files = root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        return GuardSourceScan.uniqueFileContaining(files, marker).readText()
     }
 
     private fun productionRoot(): File {

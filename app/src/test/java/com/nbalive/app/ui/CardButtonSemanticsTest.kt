@@ -175,8 +175,8 @@ class CardButtonSemanticsTest {
     }
 
     private fun screenFile(name: String): File =
-        screens().firstOrNull { it.name == name }
-            ?: error("找不到 $name（cwd=${cwd()}），守卫会静默全绿")
+        // 审计「未验证的怀疑 #7」：按文件名取第一个 → 同名文件时静默守错。现在唯一命中否则 error()。
+        GuardSourceScan.uniqueFile(screens(), name)
 
     private fun screens(): List<File> {
         val cwd = System.getProperty("user.dir") ?: "."

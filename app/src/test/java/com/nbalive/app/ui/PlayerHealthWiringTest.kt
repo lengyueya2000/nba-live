@@ -121,10 +121,10 @@ class PlayerHealthWiringTest {
             File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
         ).firstOrNull { it.isDirectory }
             ?: error("找不到生产源码根（cwd=${cwd()}）—— 本文件所有守卫会静默全绿")
-        return root.walkTopDown()
-            .firstOrNull { it.isFile && it.name == name }
-            ?.readText()
-            ?: error("找不到生产文件 $name（cwd=${cwd()}）—— 这条守卫会静默全绿，所以直接失败")
+        return GuardSourceScan.uniqueFile(
+            root.walkTopDown().filter { it.isFile }.toList(),
+            name,
+        ).readText()
     }
 
     /** 生产源码：已剔除注释与字符串字面量（行号不变）。 */

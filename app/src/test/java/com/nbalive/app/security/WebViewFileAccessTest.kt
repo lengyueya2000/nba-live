@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -48,14 +49,14 @@ class WebViewFileAccessTest {
         )
     }
 
-    /** 去掉行注释与块注释，只留代码。 */
-    private fun stripComments(text: String): String =
-        text.lineSequence()
-            .map { line ->
-                val t = line.trimStart()
-                if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) "" else line
-            }
-            .joinToString("\n")
+    /**
+     * 剔注释**与字符串字面量**，走共享的词法实现 [GuardSourceScan.stripNonCode]。
+     *
+     * ⚠️ 旧版本地实现只剔"整行注释"，行尾 `// …` 原样保留 —— 删掉真调用、
+     * 只在同一行留一句提到它的注释就能骗过断言（审计「未验证的怀疑 #6」）。
+     * 现在全仓只有这一套剔非代码实现。
+     */
+    private fun stripComments(text: String): String = GuardSourceScan.stripNonCode(text)
 
     @Test
     fun `JS 桥必须不存在`() {

@@ -277,8 +277,8 @@ class PlayerLockTest {
                 "锁定接线守卫会静默全绿",
             files.size >= 30,
         )
-        val raw = files.firstOrNull { it.name == "NbaLiveApp.kt" }
-            ?: error("找不到 NbaLiveApp.kt —— 锁定接线的唯一锚点，守卫会静默全绿")
+        // 审计「未验证的怀疑 #7」：按文件名取第一个 → 同名文件时静默守错。现在唯一命中否则 error()。
+        val raw = GuardSourceScan.uniqueFile(files, "NbaLiveApp.kt")
 
         val violations = lockWiringViolations(raw.readText())
         assertTrue(

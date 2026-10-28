@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -200,13 +201,13 @@ class DuplicateComponentTest {
         return code.substring(open + 1)
     }
 
-    private fun stripComments(text: String): String =
-        text.lineSequence()
-            .map { line ->
-                val t = line.trimStart()
-                if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) "" else line
-            }
-            .joinToString("\n")
+    /**
+     * 剔注释**与字符串字面量**，走共享的词法实现 [GuardSourceScan.stripNonCode]。
+     *
+     * ⚠️ 旧版本地实现只剔"整行注释"，行尾 `// …` 原样保留 → 删掉真组件、
+     * 只在同一行留一句提到它的注释就能骗过去重判据（审计「未验证的怀疑 #6」）。
+     */
+    private fun stripComments(text: String): String = GuardSourceScan.stripNonCode(text)
 
     private companion object {
         val PRIVATE_FUN = Regex("""private fun (\w+)\s*\(""")
