@@ -25,6 +25,7 @@ import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.ui.AppPrefs
 import com.nbalive.app.ui.MainViewModel
 import com.nbalive.app.ui.NbaLiveApp
+import com.nbalive.app.ui.PipAspectReset
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.PlayerPrefs
@@ -162,8 +163,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 画中画窗口比例：优先用真实视频宽高（非 16:9 的源不该加黑边），
-     * 拿不到时回退 16:9。
+     * 画中画窗口比例。
+     *
+     * ⚠️ **判据唯一来源 = [PipAspectReset.ratioFor]**（review/audit-guards.md B3）：
+     * 这里只做系统上下限的**夹取**与约分，绝不自己再写一份
+     * "非法宽高 → 16:9" 的兜底 —— 两份实现漂移过一次（被 3 条用例钉住的
+     * `ratioFor` 生产零调用，而真正生效的是本函数里那份副本）。
      *
      * 系统要求比例必须落在 1/2.39 ~ 2.39 之间，超出会直接抛异常。
      */
@@ -172,10 +177,11 @@ class MainActivity : ComponentActivity() {
         val size = PipState.videoSize.value
         val w = size.width
         val h = size.height
-        if (w <= 0 || h <= 0) return Rational(16, 9)
-        val ratio = w.toFloat() / h.toFloat()
+        val ratio = PipAspectReset.ratioFor(w, h)
         if (ratio > MAX_PIP_RATIO) return Rational(239, 100)
         if (ratio < 1f / MAX_PIP_RATIO) return Rational(100, 239)
+        // 宽高非法时 ratioFor 已经回退 16:9；这里只是不能再往下约分（除以 0）
+        if (w <= 0 || h <= 0) return Rational(16, 9)
         // 约分：Rational 对超大整数不友好（系统内部会做乘法）
         val g = gcd(w, h)
         return Rational(w / g, h / g)

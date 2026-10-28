@@ -58,6 +58,11 @@ object WebNavigationPolicy {
      * @param currentUrl 当前页面地址（取 `WebView.url`）。拿不到时（首跳前）
      *   退化成「只按白名单判」：白名单内放行，白名单外照拦。
      * @param isMainFrame 是否主框架导航。非主框架**一律放行**（见类说明）。
+     *
+     * ⚠️ **只有一个入口**：`isMainFrame` 已有默认值 `true`，**不许再加 2 参重载**。
+     * 曾经有过一个自称"只给测试用"的重载，等于给同一条判据造出第二个入口，
+     * 看代码的人分不清哪个才是生产在用的（review/audit-guards.md B10）。
+     * 测试需要主框架语义时显式写 `isMainFrame = true`。
      */
     fun shouldBlock(url: String?, currentUrl: String?, isMainFrame: Boolean = true): Boolean {
         if (!isMainFrame) return false
@@ -68,10 +73,6 @@ object WebNavigationPolicy {
         }
         return !hostAllowed(target)
     }
-
-    /** 简化签名：只给测试和已知主框架的场景用。 */
-    fun shouldBlock(url: String?, currentHostPageUrl: String?): Boolean =
-        shouldBlock(url, currentHostPageUrl, isMainFrame = true)
 
     /**
      * 拦下时给用户看的短说明；放行时返回空串。

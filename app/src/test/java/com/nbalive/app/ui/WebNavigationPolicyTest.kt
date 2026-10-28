@@ -1,5 +1,7 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -30,6 +32,15 @@ import org.junit.Test
  * 所以这里的策略是**注册域白名单**：允许源站及其已知播放镜像域，
  * 其余 http(s) 一律拦掉。新增域要显式加进白名单 ——
  * 把"默认允许一切"换成"默认拒绝"。
+ *
+ * ## B10：只留一个入口（review/audit-guards.md B10）
+ *
+ * 原来还有一个 2 参重载 `shouldBlock(url, currentHostPageUrl)`，
+ * 自称"只给测试和已知主框架的场景用"—— 而 3 参版本的 `isMainFrame`
+ * 本来就有默认值 `true`，两者完全等价。多余的入口只会让人以为
+ * 生产用的是"另一个更简洁的判据"。已删除：本文件所有调用点**显式**写
+ * `isMainFrame = true`，语义不变，且能看出自己在断言哪条路径。
+ * 反向守卫见本文件末尾的「shouldBlock 不许再出现 2 参重载」。
  */
 class WebNavigationPolicyTest {
 
@@ -43,7 +54,10 @@ class WebNavigationPolicyTest {
             "weixin://dl/business",
             "tel:10086",
         ).forEach {
-            assertTrue("$it 必须拦掉，否则会拉起商店/其它 App", WebNavigationPolicy.shouldBlock(it, sourceHost))
+            assertTrue(
+                "$it 必须拦掉，否则会拉起商店/其它 App",
+                WebNavigationPolicy.shouldBlock(it, sourceHost, isMainFrame = true),
+            )
         }
     }
 
@@ -60,7 +74,7 @@ class WebNavigationPolicyTest {
         ).forEach {
             assertFalse(
                 "$it 是源站自身/镜像，必须放行，否则正常播放链路第一步就走不通",
-                WebNavigationPolicy.shouldBlock(it, sourceHost),
+                WebNavigationPolicy.shouldBlock(it, sourceHost, isMainFrame = true),
             )
         }
     }
@@ -73,31 +87,51 @@ class WebNavigationPolicyTest {
             "https://www.taobao.com/",
             "http://43.135.8.77/index.php",
         ).forEach {
-            assertTrue("$it 不在白名单，必须拦下（旧代码在这里是放行的）", WebNavigationPolicy.shouldBlock(it, sourceHost))
+            assertTrue(
+                "$it 不在白名单，必须拦下（旧代码在这里是放行的）",
+                WebNavigationPolicy.shouldBlock(it, sourceHost, isMainFrame = true),
+            )
         }
     }
 
     @Test
     fun `同源地址永远放行`() {
-        assertFalse(WebNavigationPolicy.shouldBlock("https://www.jrszbt.com/other/path", sourceHost))
+        assertFalse(
+            WebNavigationPolicy.shouldBlock(
+                "https://www.jrszbt.com/other/path",
+                sourceHost,
+                isMainFrame = true,
+            ),
+        )
     }
 
     @Test
     fun `拿不到当前页面 host 时保守放行`() {
         // 第一次导航前 currentUrl 可能是空或 about:blank，这时无从判断"从哪来"。
         // 保守放行，避免把正常播放页挡在门外。
-        assertFalse(WebNavigationPolicy.shouldBlock("https://www.jrszbt.com/live/1.html", null))
-        assertFalse(WebNavigationPolicy.shouldBlock("https://www.jrszbt.com/live/1.html", "about:blank"))
-        assertFalse(WebNavigationPolicy.shouldBlock("https://www.jrszbt.com/live/1.html", ""))
+        assertFalse(
+            WebNavigationPolicy.shouldBlock("https://www.jrszbt.com/live/1.html", null, isMainFrame = true),
+        )
+        assertFalse(
+            WebNavigationPolicy.shouldBlock("https://www.jrszbt.com/live/1.html", "about:blank", isMainFrame = true),
+        )
+        assertFalse(
+            WebNavigationPolicy.shouldBlock("https://www.jrszbt.com/live/1.html", "", isMainFrame = true),
+        )
         // 但目标本身是广告域时仍拦：首跳的 target 一定来自我们自己 loadUrl，
         // 白名单外的 target 说明是页面自己跳出去的
-        assertTrue(WebNavigationPolicy.shouldBlock("https://ad.example.com/x", null))
+        assertTrue(
+            WebNavigationPolicy.shouldBlock("https://ad.example.com/x", null, isMainFrame = true),
+        )
     }
 
     @Test
     fun `畸形地址拦截而不是抛异常`() {
         listOf("http://", "://x", "   ", "", "http:///x").forEach {
-            assertTrue("$it 不能崩、也不能放行", WebNavigationPolicy.shouldBlock(it, sourceHost))
+            assertTrue(
+                "$it 不能崩、也不能放行",
+                WebNavigationPolicy.shouldBlock(it, sourceHost, isMainFrame = true),
+            )
         }
     }
 
@@ -112,8 +146,20 @@ class WebNavigationPolicyTest {
             "https://jrkan.com.attacker.net/x",
             "https://attacker.net/?redirect=https://www.jrszbt.com/",
         ).forEach {
-            assertTrue("$it 不能因为字符串里含有白名单域就放行", WebNavigationPolicy.shouldBlock(it, sourceHost))
+            assertTrue(
+                "$it 不能因为字符串里含有白名单域就放行",
+                WebNavigationPolicy.shouldBlock(it, sourceHost, isMainFrame = true),
+            )
         }
+    }
+
+    @Test
+    fun `非主框架一律放行`() {
+        // 内层播放器整条链路都靠 iframe 承载：若对非主框架也拦，播放器会被自己的守卫挡死。
+        // 这个显式调用点也是 2 参重载被删后的替代写法（review/audit-guards.md B10）。
+        assertFalse(
+            WebNavigationPolicy.shouldBlock("https://ad.example.com/x", sourceHost, isMainFrame = false),
+        )
     }
 
     @Test
@@ -128,4 +174,74 @@ class WebNavigationPolicyTest {
         // 原因文本不能带 query：query 里可能是源站的签名凭证
         assertFalse("原因文本不能泄漏 query，实际: $reason", reason.contains("y=1"))
     }
+
+    // ---------- B10：判据只有一个入口，不许再出现 2 参重载 ----------
+
+    @Test
+    fun `shouldBlock 不许再出现 2 参重载`() {
+        val declarations = shouldBlockDeclarations(webNavigationPolicyCode())
+        assertTrue(
+            "WebNavigationPolicy 里找不到 shouldBlock 的声明 —— 这条守卫会静默全绿（扫描范围错了）",
+            declarations.isNotEmpty(),
+        )
+        val redundant = declarations.filterNot { it.contains("isMainFrame") }
+        assertTrue(
+            "又出现了 2 参 shouldBlock 重载：$redundant —— 3 参版本已有默认值 " +
+                "`isMainFrame = true`，多一个入口只是给同一条判据造出「第二个入口」的假象" +
+                "（review/audit-guards.md B10 已删过一次）。测试请显式写 isMainFrame = true。",
+            redundant.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `重载判据自检 能认出 2 参声明且不误报 3 参与调用点`() {
+        val twoArg = "fun shouldBlock(url: String?, currentHostPageUrl: String?): Boolean = true"
+        assertTrue(
+            "自检抓不到 2 参重载声明（判据已退化成摆设）",
+            shouldBlockDeclarations(twoArg).any { !it.contains("isMainFrame") },
+        )
+        val threeArg =
+            "fun shouldBlock(url: String?, currentUrl: String?, isMainFrame: Boolean = true): Boolean = true"
+        assertTrue(
+            "自检把 3 参声明误判成冗余重载",
+            shouldBlockDeclarations(threeArg).all { it.contains("isMainFrame") },
+        )
+        assertTrue(
+            "自检把**调用点**当成了声明（剔非代码/只找声明那一步没生效）",
+            shouldBlockDeclarations("val blocked = WebNavigationPolicy.shouldBlock(a, b, isMainFrame = true)")
+                .isEmpty(),
+        )
+    }
+
+    // ---------------------------------------------------------------
+
+    /** [rawText] 里 `fun shouldBlock(...)` 声明的形参表（已剔注释与字符串）。 */
+    private fun shouldBlockDeclarations(rawText: String): List<String> =
+        Regex("""fun\s+shouldBlock\(([^)]*)\)""")
+            .findAll(GuardSourceScan.stripNonCode(rawText))
+            .map { it.groupValues[1].trim() }
+            .toList()
+
+    private fun webNavigationPolicyCode(): String = productionCode()["WebNavigationPolicy.kt"]
+        ?: error(
+            "找不到 WebNavigationPolicy.kt（cwd=${cwd()}）—— 重载守卫会静默全绿，所以直接失败",
+        )
+
+    /** 生产源码：文件名 → 已剔除注释与字符串的代码。 */
+    private fun productionCode(): Map<String, String> {
+        val root = productionRoot()
+        return root.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .associate { it.name to GuardSourceScan.stripNonCode(it.readText()) }
+    }
+
+    private fun productionRoot(): File =
+        listOf(
+            File("src/main/java/com/nbalive/app"),
+            File("app/src/main/java/com/nbalive/app"),
+            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
+        ).firstOrNull { it.isDirectory }
+            ?: error("找不到生产源码目录（cwd=${cwd()}）—— 重载守卫会静默全绿")
+
+    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
 }

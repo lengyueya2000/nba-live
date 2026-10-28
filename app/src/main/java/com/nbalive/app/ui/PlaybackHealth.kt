@@ -23,8 +23,9 @@ package com.nbalive.app.ui
  *    （ExoPlayer `onPlayerError`、WebView 主框架真实失败码）。
  *    才允许收掉小窗，且处置降级为可逆（保留最近任务）。
  *
- * 命名沿用 `PipState.shouldKeepPip` 里已经写过的那条原则：
- * **"有地址"不等于"在播"**，真正确认要看播放器有没有报错。
+ * 小窗处置不在这里另立判据：**"有地址"不等于"在播"**，
+ * 真正确认能播要看播放器有没有报错 —— 这条原则由 [pipDisposition] 落地
+ * （`MainActivity.finishPipIfBroken` 是它的生产消费点）。
  */
 object PlaybackHealth {
 
@@ -71,6 +72,12 @@ object PlaybackHealth {
      * 或者用户在计时窗口内连点两次「重连」（`WebSurface` 的 update 里
      * `loadUrl` 打断上一次导航）。旧代码不分码一律判死，于是**一次正常的重定向
      * 就能把播放页判成彻底坏了**。
+     *
+     * ⚠️ **有意零消费点**（review/audit-guards.md B7）：它**不在**
+     * `FATAL_WEB_ERRORS` 里，生产代码也不引用它，只作为
+     * `isConfirmedWebFailure(-3, …) == false` 的语义锚点 —— 这是设计，
+     * 不要为了"有消费点"硬加一处使用。负向用例见 `PlaybackHealthTest`
+     * 的「ERR_ABORTED 不判死」。
      */
     const val WEB_ERROR_ABORTED = -3
 

@@ -1,5 +1,7 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.GuardSourceScan
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -13,10 +15,13 @@ import org.junit.Test
  *  2. WebView 的报错要按 errorCode / 主框架 / 重定向 / 加载是否完成**四重过滤**；
  *  3. 小窗处置必须是**可逆**的（保留最近任务）。
  *
- * 背景：旧链路的处置条件是
- * `PipState.shouldKeepPip(hasStream = false, hasPlaybackError = true)` ——
- * 传的是常量 false/true，结果恒为 false，所以 v1.2.9 之后
- * 「小窗里播不出来就收窗」其实**从来没生效过**（review/01-P0-1 的连带发现）。
+ * 背景（B1，review/audit-guards.md）：旧链路的处置条件写成
+ * `PipState.shouldKeepPip(...)`，但那个函数**生产零调用**（传的又是常量，
+ * 结果恒为 false），所以 v1.2.9 之后「小窗里播不出来就收窗」其实
+ * **从来没生效过**（review/01-P0-1 的连带发现）。
+ * 现在唯一的生产链路是 `MainActivity.finishPipIfBroken` →
+ * [PlaybackHealth.pipDisposition]；本文件末尾有接线守卫钉住它，
+ * 另有一条反向守卫钉住那个旧函数不许复活。
  */
 class PlaybackHealthTest {
 
@@ -265,4 +270,130 @@ class PlaybackHealthTest {
         assertFalse(PlaybackHealth.isPlaylistRequest(null))
         assertFalse(PlaybackHealth.isPlaylistRequest("   "))
     }
+
+    // ---------- 6. 接线（B1）：收窗处置只能走 pipDisposition ----------
+
+    @Test
+    fun `收小窗的处置权限必须由 pipDisposition 给出`() {
+        val body = functionBody(mainActivityCode(), "fun finishPipIfBroken(")
+        assertTrue(
+            "MainActivity.finishPipIfBroken 的函数体里没有 PlaybackHealth.pipDisposition(...)：" +
+                "处置权限必须由分级判定给出，不许在 Activity 里另判一遍等级 —— " +
+                "否则「推断不配拿走不可逆处置」这条规则会出现第二份实现" +
+                "（review/audit-guards.md B1）。\n实际函数体：\n$body",
+            body.contains("PlaybackHealth.pipDisposition("),
+        )
+    }
+
+    @Test
+    fun `shouldKeepPip 这条死链路不许复活`() {
+        val offenders = productionCode()
+            .filterValues { it.contains("shouldKeepPip") }
+            .keys
+            .sorted()
+        assertTrue(
+            "生产源码里又出现了 shouldKeepPip（命中：$offenders）：它的语义已由 " +
+                "PlaybackHealth.pipDisposition 承担，而原函数生产零调用 —— " +
+                "整个 PipExitOnErrorTest 守的是线上跑不到的代码（review/audit-guards.md B1）。",
+            offenders.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `接线判据自检 能抓体内真实调用且不误报注释与字符串`() {
+        val sample = listOf(
+            "class Sample {",
+            "    fun finishPipIfBroken(level: Int) {",
+            "        // 注释里的 PlaybackHealth.pipDisposition( 不算调用",
+            "        when (PlaybackHealth.pipDisposition(level)) { else -> Unit }",
+            "    }",
+            "    fun other() { /* 故意不放 PlaybackHealth.pipDisposition */ }",
+            "}",
+        ).joinToString("\n")
+        val body = functionBody(sample, "fun finishPipIfBroken(")
+        assertTrue(
+            "自检样本里的真实调用没抓到（判据已退化成摆设）：$body",
+            body.contains("PlaybackHealth.pipDisposition("),
+        )
+        assertTrue(
+            "函数体提取吃过了函数结尾（把别的函数也吞进来）：$body",
+            !body.contains("fun other("),
+        )
+
+        val commentOnly = listOf(
+            "class Sample {",
+            "    fun finishPipIfBroken(level: Int) {",
+            "        // PlaybackHealth.pipDisposition(level) 只在注释里",
+            "        val s = \"PlaybackHealth.pipDisposition(level) 字符串里也不算\"",
+            "        Unit",
+            "    }",
+            "}",
+        ).joinToString("\n")
+        assertFalse(
+            "接线判据命中了注释/字符串里的字面量（剔非代码那一步没生效）",
+            functionBody(commentOnly, "fun finishPipIfBroken(")
+                .contains("PlaybackHealth.pipDisposition("),
+        )
+    }
+
+    @Test
+    fun `扫描必须真的扫到生产源码`() {
+        val files = productionCode()
+        assertTrue("只扫到 ${files.size} 个生产文件（应 ≥30，cwd=${cwd()}）", files.size >= 30)
+        assertTrue(
+            "没扫到 MainActivity.kt —— 上面的接线守卫会静默全绿",
+            files.containsKey("MainActivity.kt"),
+        )
+        assertTrue(
+            "没扫到 PipState.kt —— 上面的反向守卫会静默全绿",
+            files.containsKey("PipState.kt"),
+        )
+    }
+
+    // ---------------------------------------------------------------
+
+    private fun mainActivityCode(): String = productionCode()["MainActivity.kt"]
+        ?: error("找不到 MainActivity.kt（cwd=${cwd()}）—— 接线守卫会静默全绿，所以直接失败")
+
+    /** 生产源码：文件名 → 已剔除注释与字符串的代码（行号不变）。 */
+    private fun productionCode(): Map<String, String> =
+        productionRoot().walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .associate { it.name to GuardSourceScan.stripNonCode(it.readText()) }
+
+    private fun productionRoot(): File =
+        listOf(
+            File("src/main/java/com/nbalive/app"),
+            File("app/src/main/java/com/nbalive/app"),
+            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
+        ).firstOrNull { it.isDirectory }
+            ?: error("找不到生产源码目录（cwd=${cwd()}）—— 接线守卫会静默全绿")
+
+    /**
+     * 从 `declaration`（如 `fun finishPipIfBroken(`）开始、按花括号配对截出的函数体。
+     *
+     * ⚠️ 先 [GuardSourceScan.stripNonCode]：注释/字符串里提一句同名调用**不算接线**
+     * （审计 A1 抓到的就是"删掉真调用、留一句注释，断言照样绿"）。
+     * 找不到声明直接 `error()` 硬失败，绝不静默跳过。
+     */
+    private fun functionBody(rawText: String, declaration: String): String {
+        val code = GuardSourceScan.stripNonCode(rawText)
+        val start = code.indexOf(declaration)
+        if (start < 0) error("找不到声明 `$declaration`（接线守卫会静默失效，所以直接失败）")
+        val open = code.indexOf('{', start)
+        if (open < 0) error("`$declaration` 后面找不到函数体起始 `{`")
+        var depth = 0
+        for (i in open until code.length) {
+            when (code[i]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return code.substring(open, i + 1)
+                }
+            }
+        }
+        error("`$declaration` 的函数体花括号没有配对")
+    }
+
+    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
 }

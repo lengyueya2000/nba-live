@@ -74,25 +74,4 @@ object PipState {
      */
     fun shouldAutoEnterPip(isPlayerRoute: Boolean, hasStream: Boolean): Boolean =
         isPlayerRoute && hasStream
-
-    /**
-     * 小窗是否还值得留着。
-     *
-     * 实测回归（v1.2.8，Android 14 / API 34）：播放页显示「网络错误」，
-     * 画面完全是死的，按 Home 仍然弹出一个画中画窗，里面还是那句
-     * 「网络错误 / 请试试 刷新」—— 一个坏掉的小窗挂在桌面上，
-     * 用户既看不了球，也没有任何办法操作它。
-     *
-     * [shouldAutoEnterPip] 的 `hasStream` 只区分"拿到过地址"和"没拿到地址"，
-     * 拦不住这个：网页兜底在直连失败后**仍然带着地址**（hasStream=true），
-     * 但 WebView 里报的是"网络错误"。**"有地址"不等于"在播"** ——
-     * 地址拿到的瞬间只是"该试试"，真正确认能播要看播放器有没有报错。
-     *
-     * 因此小窗的存亡要绑到播放器真实状态上：报过错就退出。
-     *
-     * @param hasStream 是否有可播的流（直连 m3u8 或网页兜底页）
-     * @param hasPlaybackError 播放器是否正处于错误态（网络错误/解析失败）
-     */
-    fun shouldKeepPip(hasStream: Boolean, hasPlaybackError: Boolean): Boolean =
-        hasStream && !hasPlaybackError
 }
