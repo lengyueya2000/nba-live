@@ -217,46 +217,37 @@ class JrkanParserTest {
     """.trimIndent()
 
     /**
-     * 名字过滤**绝不能**把列表过滤成"零条可直连线路"。
+     * 主播线路整条过滤（2026-10-29 用户明确要求：过滤掉涉及主播的线路）。
      *
-     * 线上现象（v1.2.13/1.2.14）：点进比赛只有视频区纯黑、控件在、没有声音。
-     * 实测根因（2026-10-29，真实播放页 `steam825208.html` 的 sub_playlist）：
-     * 7 条线路里**只有** 3 条 `/play/sm.html` 能被静态解析成直连 HLS，
-     * 而它们恰好叫「主播解说①②③」→ 被 [ChannelAdmission.EXCLUDED_KEYWORDS] 全部删除，
-     * 只剩 vxt/kbs/mgxl/pao 四条只能走 WebView 的线路（那四条页面用
-     * `playerConfig.playerUrlBase64` + `encodedStr` 加密，静态不可解析）。
-     * 结果：App 永远不尝试直连，WebView 那条链在该网络下一条媒体请求都没有 → 纯黑。
+     * ## 为什么这条曾经反过来写
+     *
+     * `007ad88` 起这里断言的是"可直连的敏感线路必须补回来"，理由是"网页线路播不了、
+     * 只有直连能出画面"。那条理由是**误诊**：网页线路播不了的真因是 v1.2.13 的明文
+     * 策略误禁了源站创建播放器的脚本主机（`net::ERR_CLEARTEXT_NOT_PERMITTED`），
+     * v1.2.16（`45fdb89`）修掉后网页线路正常。补回来的效果是 App 默认播
+     * 「主播解说①」——用户要的恰恰是"其他的线路"，所以补偿规则连同这条断言一起删了
+     * （判据见 [ChannelAdmission] 的 KDoc）。
      */
     @Test
-    fun `主播线路被名字过滤 但可直连的必须留下 否则只剩网页线路`() {
+    fun `主播线路整条过滤 只剩非主播的网页线路`() {
         val channels = parser.parseChannels(playPage, "jrkan-3941088")
 
-        // 产品要求：界面不出现主播/解说名义
-        assertTrue(channels.none { it.label.contains("主播") })
-        assertTrue(channels.none { it.label.contains("解说") })
-
-        // 不黑屏要求：源站确实给了可直连线路，列表里就必须至少留一条
+        // 产品要求：界面不出现主播/解说名义，且这些线路根本不该进列表
+        assertTrue(channels.none { it.label.contains("主播") || it.label.contains("解说") })
+        assertEquals("2 条主播线路被过滤，只剩 wen/pao 两条网页线路", 2, channels.size)
         assertTrue(
-            "可直连线路被名字过滤清零了，只剩网页线路（线上黑屏的直接原因）",
-            channels.any { it.isDirectHls },
+            "该夹具里可直连线路恰好全是主播线路 → 过滤后一条都不该剩",
+            channels.none { it.isDirectHls },
         )
-        // 可直连优先：默认选中项就应该是能播的那条
-        assertTrue(channels[0].isDirectHls)
-        assertTrue(channels[1].isDirectHls)
-
-        // 补偿回来的敏感线路必须用中性名，且编号在排序后重排
-        assertEquals("线路1", channels[0].label)
-        assertEquals("线路2", channels[1].label)
-        // 非敏感的非直连线路保持源站原名
-        assertEquals("高清直播③", channels[2].label)
-        assertEquals("高清直播④", channels[3].label)
-
-        assertEquals("补偿回来的线路不能重复", 4, channels.map { it.pageUrl }.toSet().size)
+        // 非敏感线路保持源站原名，顺序不变（都不是直连，排序是稳定的）
+        assertEquals("高清直播③", channels[0].label)
+        assertEquals("高清直播④", channels[1].label)
+        assertEquals("过滤后的线路不能重复", 2, channels.map { it.pageUrl }.toSet().size)
     }
 
-    /** 已经有非敏感的直连线路时，敏感线路仍按产品要求删除，不做补偿。 */
+    /** 已经有非敏感的直连线路时，主播线路照样整条删除。 */
     @Test
-    fun `有非敏感可直连线路时 敏感线路仍按产品要求删除`() {
+    fun `有非敏感可直连线路时 主播线路照样删除`() {
         val html = """
             <a data-play="/play/sm.html?id=1&id2="><strong>高清直播①</strong></a>
             <a data-play="/play/sm.html?id=2&id2="><strong>主播解说②</strong></a>
@@ -270,9 +261,9 @@ class JrkanParserTest {
         assertEquals("高清直播③", channels[1].label)
     }
 
-    /** 补偿只针对"可直连"的敏感线路：敏感但不可直连的线路不配被救回来。 */
+    /** 主播线路即使不可直连（没有"补回"可言）也一样不进列表。 */
     @Test
-    fun `敏感且不可直连的线路不会被补偿回来`() {
+    fun `主播线路即使不可直连也不进列表`() {
         val html = """
             <a data-play="/play/pao/?id=1&id2="><strong>主播解说①</strong></a>
             <a data-play="/play/mgxl/?id=2&id2="><strong>高清直播②</strong></a>

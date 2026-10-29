@@ -954,11 +954,21 @@ class MatchRepository(
         // 每个播放页用独立的 id 前缀：parseChannels 内部的编号从 0 开始，
         // 两个页面共用前缀会产出重复 id —— 播放器把 id 当 LazyColumn 的 key，
         // 重复 key 会直接抛 IllegalArgumentException 崩掉（这个仓库已经崩过两次）。
-        val jrkanSignals = jrkanSources.flatMapIndexed { index, source ->
+        val jrkanExpansions = jrkanSources.mapIndexed { index, source ->
             expandJrkanPlayPage(source, "${match.id}-jr$index", fetch)
         }
-        // 展开失败时退回列表页给的播放页，至少还能用 WebView 打开
-        val jrkanFinal = jrkanSignals.ifEmpty { jrkanSources }
+        val jrkanSignals = jrkanExpansions.flatMap { it.channels }
+        // 展开失败时退回列表页给的播放页，至少还能用 WebView 打开。
+        //
+        // ⚠️ 但只要**有一个播放页真的取到了正文**，就不退回：那说明源站把线路给了我们，
+        // 过滤后为空就是"这一场只剩主播线路"（用户要求过滤掉）。
+        // 而入口页（`/play/steam<id>.html`）会自动选中它自己的第一条 —— 正是主播线路，
+        // 退回入口页等于把刚过滤掉的内容又播回来（见 `ChannelAdmission` 的 KDoc）。
+        val jrkanFinal = if (jrkanSignals.isEmpty() && jrkanExpansions.none { it.pageFetched }) {
+            jrkanSources
+        } else {
+            jrkanSignals
+        }
 
         // ⚠️ 最后一道防线：保证信号 id 全局唯一。
         // 播放器把 id 当 LazyColumn 的 key，重复 key 直接 IllegalStateException 闪退
@@ -1000,20 +1010,26 @@ class MatchRepository(
         source: StreamSource,
         matchId: String,
         fetch: suspend (String, String?) -> FetchResult,
-    ): List<StreamSource> {
+    ): Expansion {
         val candidates = SourceEndpoints.playPageCandidates(
             source.pageUrl,
             synchronized(listFailedHosts) { listFailedHosts.toSet() },
         )
+        // 只要**有一页**拿到过正文就记下来：此时"0 条线路"是事实（全是主播线路），
+        // 而不是"没连上"。两种情况对调用方的含义完全不同，见 [Expansion]。
+        var pageFetched = false
         for (url in candidates) {
             val html = when (val r = fetch(url, http.refererOf(url))) {
-                is FetchResult.Ok -> r.body
+                is FetchResult.Ok -> {
+                    pageFetched = true
+                    r.body
+                }
                 is FetchResult.Rejected -> {
                     // 403/429 是限流信号：立即停整个源，不试镜像。
                     // 镜像与主域名同属一个站点家族，大概率共享限流窗口。
                     Log.w("MatchRepo", "播放页被拒绝(HTTP ${r.code})，放弃重试: ${redactUrl(url)}")
                     synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
-                    return emptyList()
+                    return Expansion(emptyList(), pageFetched)
                 }
                 is FetchResult.Unreachable -> {
                     synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
@@ -1025,12 +1041,22 @@ class MatchRepository(
             // 否则主域名死了、线路是从镜像展开出来的，地址却仍指向死域名，
             // 播放器点开就是错误页 —— 换了域名等于没换。
             val channels = jrkanParser.parseChannels(html, matchId, SourceEndpoints.originOf(url))
-            if (channels.isNotEmpty()) return channels
-            // 拿得到正文但一条线路都解析不出来：这个页面本身可能已经改版，
-            // 换下一个候选域名试（镜像有时还留着一份旧结构）。
+            if (channels.isNotEmpty()) return Expansion(channels, pageFetched = true)
+            // 拿得到正文但一条线路都解析不出来：可能改版，也可能过滤后确实为空
+            // （全是主播线路）。换下一个候选域名试（镜像有时还留着一份旧结构）。
         }
-        return emptyList()
+        return Expansion(emptyList(), pageFetched)
     }
+
+    /**
+     * 一个播放页的展开结果。
+     *
+     * @param channels 过滤后进入界面的线路（**可能为空**）
+     * @param pageFetched 是否真的拿到过正文。拿到过 → 我们知道源站给了哪些线路，
+     *   `channels` 为空就是"这一场只剩主播线路"这个事实；没拿到 → 我们不知道里面
+     *   有什么，调用方可以退回列表页给的入口页用 WebView 兜底。
+     */
+    private data class Expansion(val channels: List<StreamSource>, val pageFetched: Boolean)
 
     /** loadSignals 的结果：信号列表 + 可选校正（源站列表"直播中"滞后时用） */
     data class Detail(

@@ -12,13 +12,33 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 线路准入判据（线上黑屏的直接原因所在）。
+ * 线路准入判据。
  *
- * 背景（2026-10-29 实测）：视频区纯黑、控件还在、没声音。根因是
- * [JrkanParser.parseChannels] 按 `主播/解说/美女/聊天` **删除**线路，
- * 而某场 NBA 的 7 条线路里只有 3 条 `/play/sm.html` 能被静态解析成直连 HLS，
- * 它们恰好叫「主播解说①②③」→ 全被删掉 → App 一次直连都没试过，
- * 只剩只能走 WebView 的 vxt/kbs/mgxl/pao（那几条在当前网络下零媒体请求）。
+ * ## 现行规则（2026-10-29 用户明确要求）
+ *
+ * 名字涉及 主播/解说/美女/聊天 的线路 —— **整条过滤掉**：
+ * 既不"隐名保留"，也不"清零时补回来"。
+ *
+ * ## 被删掉的「补偿规则」与它为什么是错的（别再把它加回来）
+ *
+ * `007ad88`（2026-10-29 13:08）曾加过规则 2：若按名字过滤会把「可直连
+ * (`/play/sm.html`)」线路清零，就把这些敏感线路以中性名（"线路N"）补回列表。
+ *
+ * 那条规则是**误诊的产物**：当时的证据是"网页线路一条媒体请求都不发、页内播放器
+ * 没跑起来"，被解释成"这些页面只能直连"。真实根因是 v1.2.13 的明文策略误禁了
+ * 源站创建播放器的脚本主机（`net::ERR_CLEARTEXT_NOT_PERMITTED`，日志逐字见
+ * `network_security_config.xml` 的 KDoc），已在 v1.2.16（`45fdb89`）修掉 ——
+ * 网页线路本身是能播的。
+ *
+ * 补偿生效后 App 的默认线路变成「主播解说①」（直连优先），用户看到的就是
+ * "只有主播线路能看"，于是要求把这类线路**过滤掉**。
+ *
+ * ## 2026-10-29 21:00 实测（23 个场次、95 条线路）
+ *
+ * - 48 条敏感线路 **全部** 是 `/play/sm.html`（可直连 HLS）；
+ * - 47 条非敏感线路 **全部** 是 `/play/pao|wen|mgxl|wlive/`（只能走 WebView）。
+ * ⇒ "过滤后一条可直连线路都不剩"是**正常结果**，不是故障；
+ *   过滤结果为 0 条也是合法结果（`admit` 返回空，界面显示"该赛事暂无可用线路"）。
  */
 class JrkanChannelAdmissionTest {
 
@@ -51,7 +71,7 @@ class JrkanChannelAdmissionTest {
     """.trimIndent()
 
     // ------------------------------------------------------------------
-    // 规则 1：名字命中敏感词
+    // 规则：名字命中敏感词
     // ------------------------------------------------------------------
 
     @Test
@@ -70,45 +90,42 @@ class JrkanChannelAdmissionTest {
     }
 
     // ------------------------------------------------------------------
-    // 规则 2：过滤不允许把"可直连线路"清零
+    // 过滤：敏感线路整条进不了列表
     // ------------------------------------------------------------------
 
     @Test
-    fun `过滤清零可直连线路时 用中性名补回可直连的敏感线路`() {
+    fun `名字敏感的线路一律不进列表 即使它是唯一的可直连线`() {
         val admitted = ChannelAdmission.admit(
             listOf(
                 RawChannel("/play/sm.html?id=384&id2=", "主播解说①"),
-                RawChannel("/play/mgxl/?id=5&id2=", "中文高清 M⑥"),
+                RawChannel("/play/pao/?id=5&id2=", "高清直播②"),
             ),
         )
 
-        assertEquals(2, admitted.size)
-        // admit 只管"准入"，顺序由调用方排序决定 → 这里按路径定位，不假设下标
-        val rescued = admitted.single { it.path.contains("sm.html") }
-        // 敏感线路的可直连路径被补回来，且**原始名不落进结果**（界面不能出现主播名义）
-        assertEquals("", rescued.rawLabel)
-        assertTrue("留在结果里的那条不能是敏感线路", !ChannelAdmission.isSensitive(rescued.rawLabel))
-        // 非敏感的网页线路照旧保留
-        assertTrue(admitted.any { it.path.contains("mgxl") && it.rawLabel == "中文高清 M⑥" })
+        assertEquals("敏感的可直连线路不许以任何名义留在列表里", 1, admitted.size)
+        assertEquals("/play/pao/?id=5&id2=", admitted.single().path)
+        assertFalse(ChannelAdmission.isSensitive(admitted.single().rawLabel))
     }
 
     @Test
-    fun `已存在非敏感可直连线路时不补回`() {
+    fun `只剩主播线路时返回空列表 而不是把主播线路补回来`() {
         val admitted = ChannelAdmission.admit(
             listOf(
-                RawChannel("/play/sm.html?id=1&id2=", "高清直播①"),
+                RawChannel("/play/sm.html?id=1&id2=", "主播解说①"),
                 RawChannel("/play/sm.html?id=2&id2=", "主播解说②"),
-                RawChannel("/play/pao/?id=3&id2=", "高清直播③"),
             ),
         )
 
-        assertEquals(2, admitted.size)
-        assertTrue(admitted.none { it.path.contains("id=2") })
-        assertTrue(admitted.none { ChannelAdmission.isSensitive(it.rawLabel) })
+        assertEquals(
+            "这一场只剩主播线路（用户要求过滤）→ 结果必须是 0 条；" +
+                "补回来就会让 App 默认播主播线路（007ad88 的误诊补偿）",
+            0,
+            admitted.size,
+        )
     }
 
     @Test
-    fun `敏感但不可直连的线路永远不补回`() {
+    fun `敏感线路无论能不能直连都整条过滤`() {
         val admitted = ChannelAdmission.admit(
             listOf(
                 RawChannel("/play/pao/?id=1&id2=", "主播解说①"),
@@ -117,19 +134,31 @@ class JrkanChannelAdmissionTest {
         )
 
         assertEquals(1, admitted.size)
-        assertEquals("/play/mgxl/?id=2&id2=", admitted[0].path)
+        assertEquals("/play/mgxl/?id=2&id2=", admitted.single().path)
     }
 
+    // ------------------------------------------------------------------
+    // 防回退：admit 里不许再出现"补回敏感线路"的例外分支
+    // ------------------------------------------------------------------
+
     @Test
-    fun `补回只在可直连线路真的被清零时发生`() {
-        // 夹具里没有任何可直连线路（既没有被删的，也没有留下的）→ 什么都不用补
-        val admitted = ChannelAdmission.admit(
-            listOf(
-                RawChannel("/play/pao/?id=1&id2=", "主播解说①"),
-                RawChannel("/play/kbs/?id=2&id2=", "主播解说②"),
-            ),
+    fun `admit 里不许出现把敏感线路补回来的分支`() {
+        val text = productionFile("com/nbalive/app/data/remote/ChannelAdmission.kt").readText()
+        // 非空性锚点：扫到的确实是判据文件
+        assertTrue("扫错文件了", text.contains("object ChannelAdmission"))
+
+        val body = GuardSourceScan.functionBody(text, "fun admit(")
+        // 非空性锚点：函数体真被截出来了（截空时下面两条断言会静默全绿）
+        assertTrue("admit 的函数体扫出来是空的 —— 守卫会静默全绿", body.isNotBlank())
+        assertTrue(
+            "admit 必须只做名字过滤（filterNot），实际函数体：$body",
+            Regex("""filterNot\s*\{""").containsMatchIn(body),
         )
-        assertEquals(0, admitted.size)
+        assertFalse(
+            "admit 里出现了 isDirectPath —— 「可直连线路被过滤清零就补回敏感线路」" +
+                "那条误诊规则又回来了：它会让 App 默认播主播线路，与本次产品要求直接冲突",
+            Regex("""isDirectPath\s*\(""").containsMatchIn(body),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -172,24 +201,40 @@ class JrkanChannelAdmissionTest {
     }
 
     // ------------------------------------------------------------------
-    // 真实页面回归：活站点的 7 条线路必须留下可直连线路
+    // 真实页面回归：只剩非主播（网页）线路，且默认选中项不是主播线路
     // ------------------------------------------------------------------
 
     @Test
-    fun `真实 sub_playlist 解析后必须留下可直连线路且不出现主播名义`() {
+    fun `真实 sub_playlist 解析后不出现任何主播线路`() {
         val channels = parser.parseChannels(liveSubPlaylist, "jrkan-live")
 
         assertTrue(
-            "源站给了 3 条可直连线路，解析结果里一条都没有 → App 只会走 WebView（线上黑屏）",
-            channels.any { it.isDirectHls },
-        )
-        assertTrue(
-            "界面不许出现主播/解说名义",
+            "界面/播放列表里不许出现任何主播/解说名义：${channels.map { it.label }}",
             channels.none { ChannelAdmission.isSensitive(it.label) },
         )
-        // 可直连优先：默认选中第一条即可播
-        assertTrue("可直连线路必须排在最前面", channels.first().isDirectHls)
-        assertEquals(7, channels.size)
+        assertEquals(
+            "夹具里 3 条主播线路被过滤，只剩 4 条非敏感线路（vxt/kbs/mgxl/pao）",
+            4,
+            channels.size,
+        )
+        assertFalse(
+            "直连线路在该夹具里恰好全是主播线路 → 过滤后一条都不该剩" +
+                "（剩了说明有线路绕过了过滤）：${channels.map { it.pageUrl }}",
+            channels.any { it.isDirectHls },
+        )
+        // 默认选中第一条：必须是非主播的网页线路（这就是用户要的「其他线路」）
+        assertEquals("中文高清 Q ④", channels.first().label)
+        assertFalse(channels.first().isDirectHls)
+    }
+
+    @Test
+    fun `整页都是主播线路时 parseChannels 返回空列表而不是抛出`() {
+        val html = """
+            <a data-play="/play/sm.html?id=1&id2="><strong>主播解说①</strong></a>
+            <a data-play="/play/sm.html?id=2&id2="><strong>主播解说②</strong></a>
+        """.trimIndent()
+
+        assertEquals(0, parser.parseChannels(html, "jrkan-empty").size)
     }
 
     // ------------------------------------------------------------------
@@ -204,7 +249,7 @@ class JrkanChannelAdmissionTest {
 
         val body = GuardSourceScan.functionBody(text, "fun parseChannels(")
         assertEquals(
-            "parseChannels 必须走 ChannelAdmission.admit（自己写过滤就会再次出现线上黑屏那个分支）",
+            "parseChannels 必须走 ChannelAdmission.admit（自己写过滤就会与判据分叉）",
             1,
             Regex("""ChannelAdmission\s*\.\s*admit\s*\(""").findAll(body).count(),
         )

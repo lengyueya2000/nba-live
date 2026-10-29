@@ -124,7 +124,7 @@
 | 04-P1-2 | `JrsParser` 打未脱敏 href | 已落地 | `JrsParser.kt:61/71` 均为 `redactText(path)`；`RedactUrlTest`/`RedactUrlEdgeCaseTest`/`LoggingDisciplineTest` |
 | 04-P1-3 | WebView 加载第三方页无来源约束 | 已落地 | `WebNavigationPolicy`（注册域白名单 + `shouldBlock`/`blockReason`），调用点 `PlayerScreen.kt:2057`；`WebNavigationPolicyTest`（8，含 `白名单匹配注册域而不是子串`、`拿不到当前页面 host 时保守放行`） |
 | 04-P1-4 | `shouldOverrideUrlLoading` 只拦非 http(s) | 已落地 | 同上（主框架白名单）；`PlayerScreen.kt:2047-2051` 注释 + `WebNavigationPolicyTest` |
-| 04-P1-5 | `network_security_config` 全局放行明文 | 已落地 | `res/xml/network_security_config.xml:46-53` 两个 `cleartextTrafficPermitted="false"` 的 domain-config（jrszbt.com / im-imgs-bucket.oss-accelerate.aliyuncs.com）+ base-config 保留（:35）；`CleartextPolicyTest`（3，双向：该禁的禁、该放的放）；commit `25dfde9` |
+| 04-P1-5 | `network_security_config` 全局放行明文 | 已落地（**第九回合修正了其中一处误禁**） | `res/xml/network_security_config.xml`：`jrszbt.com` 仍 `cleartextTrafficPermitted="false"`；`im-imgs-bucket.oss-accelerate.aliyuncs.com` 改回 **`true`** —— 原因是 v1.2.13 把它列进禁明文只考虑了"App 自己以 https 访问它"，漏了"WebView 里的源站页面以 http 从它加载 `pjs.js`"，导致「点比赛纯黑」（证据逐字写在该文件 KDoc，修复提交 `45fdb89`）；base-config 保留（:35）。守卫 `CleartextPolicyTest`(4) 已是**双向**：该禁的禁（jrszbt.com）、**WebView 承载的脚本主机必须允许**（OSS），回退即红 1 条；初始提交 `25dfde9` |
 | 04-P2-1 | `MIXED_CONTENT_ALWAYS_ALLOW` | 有据的取舍 | `PlayerScreen.kt:2035-2037`："收紧成 COMPATIBILITY 会黑屏，这是**实测后的有意取舍**"（审查的建议就是"保留现状 + 记一条"，理由已在代码里） |
 | 04-P2-2 | `mediaPlaybackRequiresUserGesture = false` | 有据的取舍 | `PlayerScreen.kt:2034`；审查自己判定"**不改此项**（改了会破坏自动起播）"，属产品需求 |
 | 04-P2-3 | `allowFileAccess` 未显式关闭 | 已落地 | `PlayerScreen.kt:2044-2045 allowFileAccess = false / allowContentAccess = false`（:2039-2043 注释）；`WebViewFileAccessTest`（2）；commit `e2ab4af` |
@@ -141,21 +141,25 @@
 
 | 状态 | 条数 | 占比 |
 |---|---|---|
-| 已落地 | **85** | 89.5% |
+| 已落地 | **86** | 90.5% |
 | 有据的取舍 | **8** | 8.4% |
-| 未落地 | **2** | 2.1% |
+| 未落地 | **1** | 1.1% |
 | 无法判定 | **0** | 0% |
 | 合计 | **95** | 100% |
 
-> 另有一条（**03-P2-17**）状态记为"已落地（未提交·进行中）"：实现已在工作区完成，但改动尚未提交、
-> 其守卫测试也在同一时刻被改写，因此**不能算作已收尾**。这是唯一处于"已实现未提交"的条目。
+> 计数更新（2026-10-29 第九回合）：**03-P2-30** 已由 `48a3f3a` 收尾、**03-P2-17** 已由 `db528f0` 提交，
+> 因此"已落地"由 85 升至 **86**、"未落地"由 2 降至 **1**（只剩 04-P2-7）。
 
 ### 未落地（按严重度排序）
 
 | 排序 | 编号 | 严重度 | 现状 | 还差什么 |
 |---|---|---|---|---|
-| 1 | **03-P2-30** 绕过主题的硬编码颜色 | P2（**用户可见**：浅色主题下队徽圆底消失） | `Common.kt:152 .background(Color.White)` 仍硬编码；浅色主题 `SportLight.Card=#FFFFFF` → 对比度 1.0:1（审查 `03-ui.md:443` 结论："队徽边缘完全消失"） | 一行改动：`background(if (isSystemInDarkTheme()) Color.White else MaterialTheme.colorScheme.surfaceVariant)`，或加 `border(1.dp, outlineVariant, CircleShape)`；随后补一条对比度/语义断言 |
-| 2 | **04-P2-7** 使用 AGP 内部实现类 | P2（**构建安全**：AGP 升级时可能静默/显式失败） | `app/build.gradle.kts:87` 仍转型 `VariantOutputImpl`；已缓解为 `throw GradleException`（:88-94） | 需升 AGP 后用公开 API（`VariantOutput.outputFileName` 在 AGP 8.x 已是公开 Property）→ 本次核对时 AGP 仍 8.7.3，未做 |
+| 1 | **04-P2-7** 使用 AGP 内部实现类 | P2（**构建安全**：AGP 升级时可能静默/显式失败） | `app/build.gradle.kts:87` 仍转型 `VariantOutputImpl`；已缓解为 `throw GradleException`（:88-94） | 需升 AGP 后用公开 API（`VariantOutput.outputFileName` 在 AGP 8.x 已是公开 Property）→ 本次核对时 AGP 仍 8.7.3，未做 |
+
+> **台账修正（2026-10-29 第九回合）**：本节原先还列着 **03-P2-30**（队徽圆底硬编码白）为未落地 ——
+> 该条已由提交 `48a3f3a` 收尾（主题 token `SportLight.LogoPlate=#B8C0D4` + `logoPlateFor` +
+> `LogoPlateContrastTest`(7)，回退即红 ×2），因此从"未落地"移出。**未落地现为 1 条（04-P2-7）**。
+> 同理 §2.1 注里"03-P2-17 是唯一处于已实现未提交的条目"已过时：`db528f0` 已提交并附三方重锚守卫。
 
 ### 有据的取舍（8 条，全部有"明确写下的理由"）
 
@@ -273,3 +277,70 @@ val DISPLAY_ONLY = setOf("MatchFormat.kt", "MatchListScreen.kt", "MatchStatusClo
 （实测当前文件里只有注释、没有调用），先补一条独立判据再移除。
 这条与我在 `review/audit-guards.md` 记的"白名单把该守的文件排除"同源 —— 两轮审计互相印证，
 说明这类洞会**跟着修好的代码一起留下来**，值得作为一类模式单独防。
+
+---
+
+## 五、2026-10-29 第九回合：用户需求变更 —— 过滤掉涉及主播的线路
+
+> 这一节不是审查条目，而是**产品规则的改向**，以及随之删除的一条"误诊补丁"。
+> 之所以写进台账：被删的那条补丁本身就写在 `ChannelAdmission` 的 KDoc 里当作依据，
+> 不点名会让下一轮的人照着旧 KDoc 把它加回来。
+
+### 5.1 规则
+
+`ChannelAdmission.admit(raw)` 只剩一条规则：
+
+```kotlin
+fun admit(raw: List<RawChannel>): List<RawChannel> {
+    return raw.filterNot { isSensitive(it.rawLabel) }   // 主播/解说/美女/聊天 → 整条过滤
+}
+```
+
+返回 **空列表是合法结果**（该场次只有主播线路），由 `MatchRepository.loadSignals` → 播放页
+显示 `"该赛事暂无可用线路"`。
+
+### 5.2 删掉的补偿规则与它错在哪
+
+`007ad88`（2026-10-29 13:08）加过规则 2：*若按名字过滤会把可直连线路清零，就把这些敏感线路
+以中性名 "线路N" 补回列表*。
+
+- 它的依据是"网页线路零媒体请求、页内播放器没跑起来，所以只有直连能播"；
+- 真因是 v1.2.13 明文策略误禁了 `http://im-imgs-bucket.oss-accelerate.aliyuncs.com/pjs.js`
+  （`net::ERR_CLEARTEXT_NOT_PERMITTED`，逐字证据见 `res/xml/network_security_config.xml` KDoc），
+  已由 v1.2.16（`45fdb89`）修复；**网页线路本身可播**；
+- 补偿生效后 `MainViewModel.kt:707` 的"默认线路优先选可直连"恰好选中被补回来的主播线路 ⇒
+  用户看到的就是"只有主播线路能看"，于是**明确要求过滤掉它们**。
+
+### 5.3 实测数据（2026-10-29 21:00，源站 23 个场次、95 条线路）
+
+| 类别 | 条数 | 路径 |
+|---|---|---|
+| 敏感（主播/解说…） | 48 | **全部** `/play/sm.html`（可直连 HLS） |
+| 非敏感 | 47 | **全部** `/play/pao\|wen\|mgxl\|wlive/`（只能走 WebView） |
+
+⇒ **过滤后 0 条直连线路是正常结果，不是故障。**
+
+### 5.4 配套改动与守卫
+
+1. `MatchRepository.expandJrkanPlayPage` 返回 `Expansion(channels, pageFetched)`；
+   **只要有一个播放页真取到正文就不再退回入口页**（入口页 `steam<id>.html` 会自动选中它自己的
+   第一条 = 主播线路，退回等于绕过过滤）；一次都没取到正文时才退回入口页做 WebView 兜底。
+2. `JrkanChannelAdmissionTest`(13) 新增函数体扫描：`admit` 内出现 `isDirectPath(` 即红。
+3. `SourceEndpointsWiringTest` 新增 2 条（全过滤不退回入口页 / 取不到正文仍退回入口页）。
+4. **回退实验**：把补偿分支与无条件退回同时加回去 → **恰好 7 条红**（41 tests / 7 failed），
+   与新增/改写的断言一一对应。
+
+### 5.5 实机验证
+
+- debug 构建（雷电 9 / 1280×720）：点 CBA 场次 → `线路 1/4`；chromium 加载
+  `http://play.sportsteam368.com/play/mgxl/?id=00594084&id2=`（**非敏感线路**）+
+  `pjs.js` → `ExoPlayerImpl Init` + `OMX.qcom.video.decoder.avc`；视频带
+  **96.4% / 94.8% 非黑**、中心 98.9% / 98.1%、帧间差 **214**（画面在动）。
+- release 包（versionCode 21，R8）：WebView → 嗅探 → `ExoPlayerImpl Init` 同样成功；
+  此次点到的是一场已结束/无源的比赛，清单返回 404（`Caused by: x1.t: Response code: 404`），
+  属源站事实，不属 App 回归。
+
+### 5.6 已知代价
+
+同一批 23 个场次里 **5 个场次只剩主播线路**（825263 / 825262 / 825266 / 825273 / 825227），
+过滤后为 0 条线路，界面显示"该赛事暂无可用线路"。是否改成隐藏这 5 场或显示占位提示，待用户拍板。

@@ -151,6 +151,36 @@ class SourceEndpointsWiringTest {
         )
     }
 
+    @Test
+    fun `播放页取到正文但线路全被主播过滤时不退回入口页`() = runBlocking {
+        // 这一场只剩主播线路（用户要求过滤掉）。
+        // 退回列表页给的入口页 = 用 WebView 打开 steam<id>.html，源站 JS 会自动
+        // 选中它自己的第一条（就是主播线路）—— 等于把刚过滤掉的内容又播回来。
+        val detail = repo.loadSignals(jrkanMatch(primaryPlayHost)) { _, _ ->
+            FetchResult.Ok(sensitiveOnlyChannelsHtml())
+        }
+
+        assertEquals(
+            "主播线路必须一条都不剩；退回入口页会绕过过滤（实际：${detail.signals.map { it.pageUrl }}）",
+            0,
+            detail.signals.size,
+        )
+    }
+
+    @Test
+    fun `播放页一次都没取到正文时仍退回入口页`() = runBlocking {
+        // 取不到正文 = 我们不知道里面有什么，此时入口页还有 WebView 兜底价值
+        val detail = repo.loadSignals(jrkanMatch(primaryPlayHost)) { _, _ ->
+            FetchResult.Unreachable("全挂")
+        }
+
+        assertEquals(1, detail.signals.size)
+        assertTrue(
+            "兜底线路必须是列表页给的那个入口页，实际：${detail.signals.map { it.pageUrl }}",
+            detail.signals.single().pageUrl == "$primaryPlayHost/play/steam824761.html",
+        )
+    }
+
     // ---------- 接线守卫：候选常量必须有生产消费点 ----------
 
     @Test
@@ -282,6 +312,10 @@ class SourceEndpointsWiringTest {
 
     private fun channelsHtml() =
         """<a class="item" data-play="/play/sm.html?id=439&id2="><strong>线路1</strong></a>"""
+
+    /** 播放页里只有主播线路（用户要求过滤掉的那一类）。 */
+    private fun sensitiveOnlyChannelsHtml() =
+        """<a class="item" data-play="/play/sm.html?id=439&id2="><strong>主播解说①</strong></a>"""
 
     /** 定位 `app/src/main/java/com/nbalive/app`；单测工作目录是模块目录。 */
     private fun sourceRoot(): File? {

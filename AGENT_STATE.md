@@ -3,8 +3,8 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **566 通过 / 0 失败 / 0 跳过**，
-  debug 与 release 两个变体同数）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **570 通过 / 0 失败 / 0 跳过**，
+  debug 与 release 两个变体同数，80 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
 - 测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在 Gradle 锁内拷走再计数**；XML 带 BOM，用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 读）
@@ -15,11 +15,15 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近两个回合的提交
-### 2026-10-29 第八回合（用户紧急反馈）：明文策略误伤 → 「只有主播线路能看、其他线路全黑」
-1 个提交 + 发版 **v1.2.16**（`45fdb89`）。全量 debug+release 各 **567/0/0**。
+### 2026-10-29 第九回合（用户需求变更）：**过滤掉涉及主播的线路** + 删掉 007ad88 的误诊补偿
+1 个提交 + 发版 **v1.2.17**。全量 debug+release 各 **570/0/0**（80 suites）+ `assembleDebug`/`assembleRelease` 成功。
 | 提交 | 内容 |
 |---|---|
-| `45fdb89` | **回归定位与修复**：用户实测「比赛能播，但只有主播线路（直连）能看，pao/mgxl/wen/wlive 全黑」，并指出**v1.2.12 能看** → 同机同场同坐标 A/B：v1.2.12 视频带 99.5% 非黑 / v1.2.13 整屏 `mean=0.0`；`isDirectHls` 两版一致、356/368 播放页均正常 → 问题在网页播放链。加探针拿到直接证据：`ERR main=false code=-1 desc=net::ERR_CLEARTEXT_NOT_PERMITTED url=http://im-imgs-bucket.oss-accelerate.aliyuncs.com/pjs.js` —— **源站用来创建播放器 iframe 的脚本被 WebView 拒绝** → 零媒体请求 → 黑屏。根因：**04-P1-5 的明文收紧（v1.2.13）把该主机列进禁明文**，只考虑了"App 自己以 https 访问它"，漏了"WebView 里的源站页面以 http 从它加载播放器脚本"。修法：该主机**显式允许明文**（配置 KDoc 写清事故证据），`jrszbt.com` 继续禁；`CleartextPolicyTest` 改成**双向**（新增「WebView 承载的源站脚本主机必须允许明文」，回退即红 1 条）。验证：链路跑通（pjs.js→paps.html→xgplayer→真实 m3u8→ExoPlayer 初始化，画面 99.8% 非黑）、R8 release 构建同样跑通、发布包实测有画面 |
+| `dfd13ac` | **产品规则改向**：`ChannelAdmission.admit` 只剩一条规则 —— 名字命中 `主播/解说/美女/聊天` 的线路**整条过滤**；删除 `007ad88` 加的"可直连线路被清零就以中性名补回"补偿分支。**为什么原来那条是错的**：它的依据是"网页线路一条媒体请求都不发、播放器没跑起来"，而真因是 v1.2.13 明文误禁 `pjs.js`（v1.2.16 / `45fdb89` 修掉）；补偿生效后 `MainViewModel.kt:707` 的"默认线路优先选可直连"恰好选中被补回的主播线路 ⇒ 用户看到"只有主播线路能看"。**21:00 实测 23 场次 95 条线路：48 条敏感线路全部是 `/play/sm.html`（可直连），47 条非敏感线路全部是 `/play/pao\|wen\|mgxl\|wlive/`（只能走 WebView）** ⇒ 过滤后 0 条直连是正常结果。配套改 `MatchRepository`：`expandJrkanPlayPage` 返回 `Expansion(channels, pageFetched)`，**只要有一个播放页真取到正文就不再退回入口页**（入口页会自动选中它自己的第一条 = 主播线路，等于绕过过滤）；一次都没取到正文时仍退回入口页兜底。守卫：`JrkanChannelAdmissionTest`(13，含函数体扫描"`admit` 内不许出现 `isDirectPath`")、`JrkanParserTest`(3 条改写)、`SourceEndpointsWiringTest` 新增 2 条。**回退实验：把补偿分支与无条件退回都加回去 → 恰好 7 条红**（逐条：只剩主播线路返回空/唯一的可直连线/整页全主播/真实 sub_playlist/函数体扫描/主播线路整条过滤/全过滤不退回入口页）。**实机（雷电 9 / 1280x720 / debug 构建）**：点 CBA 场次后 `线路 1/4`，chromium 加载 `play.sportsteam368.com/play/mgxl/?id=00594084`（非敏感线路）+ `pjs.js` → `ExoPlayerImpl Init` + `OMX.qcom.video.decoder.avc`；视频带 **96.4% / 94.8% 非黑**、中心 98.9%/98.1%、帧间差 **214**（在动）。release 包（versionCode 21）：WebView→嗅探→ExoPlayer 同样初始化成功，此次点到的是一场**已结束/无源**的比赛，清单 404（`Caused by: x1.t: Response code: 404`），属源站事实不属 App 回归 |
+
+**已知代价（下一轮必须向用户交待）**：同一批 23 个场次里有 **5 个场次只剩主播线路**（825263/825262/825266/825273/825227），
+过滤后变为 0 条线路，界面走 `MatchRepository.loadSignals` → `"该赛事暂无可用线路"`。要不要把这 5 场从列表里隐藏、
+或改成"其它线路"占位提示，等用户拍板。
 
 **教训（已写进配置与守卫 KDoc）**：收紧安全边界前必须列出**所有发起者** ——
 同一主机可能既被 App 以 https 访问，又被 WebView 里的第三方页面以 http 访问；
