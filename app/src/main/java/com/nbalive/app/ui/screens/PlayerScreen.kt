@@ -123,6 +123,7 @@ import com.nbalive.app.ui.SystemBarsPolicy
 import com.nbalive.app.ui.PipAspectReset
 import com.nbalive.app.ui.WebMediaPauseScript
 import com.nbalive.app.ui.WebNavigationPolicy
+import com.nbalive.app.ui.WebSniffWatchdog
 import com.nbalive.app.ui.PlayerLock
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.StatusChip
@@ -1909,10 +1910,13 @@ private fun WebSurface(
      */
     onPlaybackDead: () -> Unit = {},
     /**
-     * 网页线路**疑似**播不出来时上报（25 秒内没嗅探到任何流）。
+     * 网页线路**疑似**播不出来时上报（时限内没嗅探到任何流）。
+     *
+     * 时限有两条，都在 [WebSniffWatchdog]：页面已 finish 时是 finish 后 25 秒；
+     * 页面**永不** `onPageFinished` 时是从加载起算 45 秒（后者是"永久黑屏"的兜底）。
      *
      * 这是**推断**：源站用 MSE/`blob:` 播放、m3u8 地址不带 `.m3u8` 字面量、
-     * 弱网首帧超过 25 秒，都会嗅探不到但画面其实正常。
+     * 弱网首帧超过时限，都会嗅探不到但画面其实正常。
      * 所以走独立回调，上层只用于显示提示 + 停自动进小窗，**不**收窗、不关任务。
      */
     onPlaybackSuspect: () -> Unit = {},
@@ -1931,14 +1935,23 @@ private fun WebSurface(
     // 否则计时从 loadUrl 那一刻起跑，源站播放页常有 2~3 跳重定向，
     // 光导航就吃掉十几秒，留给播放器的时间根本不够 —— 正常线路也会被判疑似。
     var pageFinishedAt by remember(url) { mutableStateOf(0L) }
+    // 本次加载的起点（**单调时钟**，与 pageFinishedAt 同源）。
+    // ⚠️ 它是"页面永不 finish"那条兜底时限的基准：只按 pageFinishedAt 计时的看门狗
+    // 在那类页面上永远不触发 —— 用户看到的是永久黑屏且没有任何提示（已实测）。
+    val loadStartedAt = remember(url) { android.os.SystemClock.elapsedRealtime() }
     // 被守卫拦下的跳转说明（04-P1-3/4）。源站广告把播放页导航走时，
     // 这条路径不报 ExoPlayer 错误、也不报 onReceivedError，界面必须自己说话，
     // 否则用户只看到一个动不了的广告页，以为 App 卡死。
     var blockedNavigation by remember(url) { mutableStateOf("") }
 
-    // 比赛已结束时源站页面是一片黑且永远不会出流：
-    // 页面加载完成后 25 秒内没看到任何媒体请求，就给用户明确提示，而不是干等黑屏。
-    // 嗅探成功后本组件会被 VideoSurface 替换、协程自动取消，无需手动复位。
+    // 源站页面可能一片黑且永远不出流（比赛已结束、播放器 JS 没跑起来）：
+// 两条时限内没看到任何媒体请求，就给用户明确提示、并让上层自动换线，
+// 而不是干等黑屏。嗅探成功后本组件会被 VideoSurface 替换、协程自动取消，无需手动复位。
+//
+// ⚠️ 两条时限都定义在 [WebSniffWatchdog]（判据唯一来源）：
+//  - 页面已 finish：finish 之后 25 秒（旧实现就是这个语义）；
+//  - 页面**永不** finish：从 loadUrl 起算 45 秒（没有这条兜底时限时，
+//    这类页面会让看门狗彻底失效 —— 见下面的说明）。
     //
     // ⚠️ suppressHint 只抑制**用户可见的提示**，不能连判定一起跳过：
     // 嗅探过但直连失败、退回网页播放时 suppressHint=true，
@@ -1948,15 +1961,31 @@ private fun WebSurface(
     // ⚠️ 判死分级（P0-1）：这一条只报**疑似**（onPlaybackSuspect），不再报死亡。
     // 它本质是推断，误判代价原本却是"移除整个任务"，两者不成比例。
     var noSignal by remember(url) { mutableStateOf(false) }
+    // ⚠️ 判据**唯一来源**是 [WebSniffWatchdog]（有单测）；这里只负责轮询采样与执行。
+    //
+    // 早先这里的第一句是 `if (pageFinishedAt == 0L) return@LaunchedEffect`：
+    // 判据被 onPageFinished 门控 —— 源站播放页被广告/坏 iframe 卡住永不 finish 时，
+    // 看门狗永远不触发，既不提示也不自动换线，就是**永久黑屏**（实测纯黑 95 秒、
+    // logcat 一条相关输出都没有）。现在两条时限并列：永不 finish 走"从加载起算的硬上限"，
+    // 已 finish 走"finish 后 25 秒"（语义与旧实现一致）。
     LaunchedEffect(url, pageFinishedAt, suppressHint) {
-        // 页面还没加载完不起跑：source 站点常有几跳重定向
-        if (pageFinishedAt == 0L) return@LaunchedEffect
-        delay(25_000)
-        // 已经看到媒体请求 = 播放器在拉数据了（哪怕地址不带 .m3u8 字面量），
-        // 这不是"播不出来"，不再报疑似。
-        if (sawMediaRequest.get()) return@LaunchedEffect
-        if (!suppressHint) noSignal = true
-        onPlaybackSuspectState.value()
+        while (true) {
+            val reported = WebSniffWatchdog.shouldReport(
+                loadStartedAt = loadStartedAt,
+                pageFinishedAt = pageFinishedAt,
+                nowMs = android.os.SystemClock.elapsedRealtime(),
+                sawMediaRequest = sawMediaRequest.get(),
+            )
+            if (reported) {
+                // ⚠️ suppressHint 只抑制**用户可见的提示**，不抑制判定与上报：
+                // 嗅探过但直连失败、退回网页播放时 suppressHint=true，
+                // 而那恰恰是最需要留痕的情况（见上面那段说明）。
+                if (!suppressHint) noSignal = true
+                onPlaybackSuspectState.value()
+                return@LaunchedEffect
+            }
+            delay(WebSniffWatchdog.POLL_MS)
+        }
     }
 
     // 与 ExoPlayer 同理：退到后台（非小窗）时暂停页面定时器，省电并防止声音后台外放。
