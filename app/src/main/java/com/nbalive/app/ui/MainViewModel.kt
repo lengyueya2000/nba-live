@@ -320,6 +320,16 @@ class MainViewModel(
     val playerState: StateFlow<PlayerUiState> = _playerState.asStateFlow()
 
     /**
+     * 已经**自动换线试过**的线路下标（线上黑屏修复，见 [onPlaybackSuspect]）。
+     *
+     * 每条线路只自动试一次：否则一条死线路与另一条死线路之间会来回跳，
+     * 把源站的播放页请求量翻倍（同 `play` 里 `MAX_FALLBACK_CANDIDATES` 的理由）。
+     * 换一场比赛时清空（[playMatch]）；用户**主动**点某条线时把那条移出
+     * （[selectSignal]）——用户的选择要能再试一次。
+     */
+    private val autoTriedIndices = mutableSetOf<Int>()
+
+    /**
      * 写错误提示：顺带把 [PlayerUiState.errorId] 自增。
      *
      * 界面拿 errorId 当提示的 key——只拿文案当 key 时，同样的文案连着报两次，
@@ -540,6 +550,8 @@ class MainViewModel(
         if (index !in state.signals.indices) return
         // 用户明确点了这条线，就再给它一次机会（此前被自动故障切换拉黑过）
         state.signals.getOrNull(index)?.let { failedSources.clear(it.pageUrl) }
+        // 用户主动选 = 也从"自动换线试过"的名单里拿掉，让它还能被自动重试
+        autoTriedIndices.remove(index)
         // 用户主动换线 = 换了个播放页，"这个页升级失败过"的记录不再适用。
         // ⚠️ 必须**无条件清空**：
         // 之前写成 `if (it.failedSniffPage == newPage) null else it.failedSniffPage`
@@ -590,6 +602,8 @@ class MainViewModel(
         refreshJob?.cancel()
         _listState.update { it.copy(loading = false, refreshing = false) }
         failedSources.clearAll()
+        // 换了一场比赛：上一场的"自动换线试过哪些线路"作废
+        autoTriedIndices.clear()
         // ⚠️ 记住**来源**而不是写死 DETAIL：
         // 列表卡片「立即观看」、直播页、搜索页、"同时在播"面板切场
         // 都是从 LIST 直达 PLAYER，返回时若回 DETAIL，
@@ -869,8 +883,47 @@ class MainViewModel(
         val state = _playerState.value
         // 已经在直连播了就不管：网页组件可能滞后于嗅探升级才回调
         if (state.streamUrl != null) return
+
+        // 同一条线路只处理一次：播放器的疑似回调可能连发多次
         if (state.playbackSuspect) return
         _playerState.update { it.markPlaybackSuspect(true) }
+
+        // ⚠️ 线上黑屏修复（2026-10-29）：光置"疑似"会让用户对着黑屏干等。
+        //
+        // 源站首条线路（多数是 JRS）只能走 WebView，而它依赖的
+        // `document.write` 跨站脚本会被 chromium 拦截 → 永远嗅不到媒体 →
+        // 旧行为只是显示一句提示，**从不换线**，而同一场的 JRKAN 线路
+        // 明明可以静态解析出真 m3u8（已用真实播放页验证）。
+        // 现在按 [PlaybackAutoAdvance] 的判据换下一条，每条只试一次。
+        //
+        // 判据里 `hasDirectStream = false` 是**写死的**：上面那行
+        // `streamUrl != null` 已经提前返回，走到这里必然是"一条流都没有"。
+        when (
+            val decision = PlaybackAutoAdvance.decide(
+                signalCount = state.signals.size,
+                currentIndex = state.selectedIndex,
+                hasDirectStream = false,
+                suspect = true,
+                alreadyTried = autoTriedIndices,
+            )
+        ) {
+            is PlaybackAutoAdvance.Decision.Advance -> {
+                val current = state.selectedIndex
+                autoTriedIndices += current
+                // 记进失败账本：`play` 会跳过被拉黑的线路，避免又转回同一条死线
+                state.signals.getOrNull(current)?.let { failedSources.markFailed(it.pageUrl, nowMs()) }
+                _playerState.update {
+                    it.withError("线路 ${current + 1} 无信号，正在切换线路 ${decision.nextIndex + 1}")
+                }
+                selectSignal(decision.nextIndex)
+            }
+            PlaybackAutoAdvance.Decision.Exhausted -> {
+                _playerState.update {
+                    it.withError("所有线路都没有信号，请稍后重试或换一场")
+                }
+            }
+            PlaybackAutoAdvance.Decision.Wait -> Unit
+        }
     }
 
     /**
