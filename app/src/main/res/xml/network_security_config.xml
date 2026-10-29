@@ -16,15 +16,26 @@
 
   ## 那收紧的是什么
 
-  App **自己发起**、且**只走 https** 的请求，不该被全局明文许可兜着：
+  App **自己发起**、且**只走 https**、且**不经过 WebView** 的请求，不该被全局明文许可兜着：
   一旦被降级或中间人改写，策略层不会拒绝。这些主机名是写死在代码里的常量
   （不需要运行时生成），所以可以精确收紧：
-    - jrszbt.com：JRS 列表页与详情页，代码里全部是 https://
-    - im-imgs-bucket.oss-accelerate.aliyuncs.com：JRKAN 列表 js，https://
+    - jrszbt.com：JRS 列表页与详情页，代码里全部是 https://，且 WebView **从不**加载它
 
   ⚠️ 绝不要把 play.sportsteam*.com 或 *.jrszb444.com 收进"禁明文"清单：
   它们**就是**明文提供服务的，收了等于播放全挂。
-  这条边界由 CleartextPolicyTest 双向钉住（该禁的禁、该放的放）。
+
+  ## ⚠️ 曾经收错过一次：im-imgs-bucket.oss-accelerate.aliyuncs.com（线上黑屏事故）
+
+  该主机早先被收进"禁明文"清单，理由是"App 自己的 JRKAN 列表 js 走 https"——
+  但**源站播放器自己的脚本 `pjs.js` / `8.js` 正是从这台主机以 http 加载的**，
+  而且发起者是我们 WebView 里的源站页面，不是 App 自己：
+    - v1.2.12：全局放行明文 → 脚本加载成功 → 网页播放链路正常，非主播线路能看；
+    - v1.2.13 起收紧了这台主机 → WebView 收到
+      `net::ERR_CLEARTEXT_NOT_PERMITTED`（实测探针日志）→ 播放器 iframe 永不创建
+      → 一直没有任何媒体请求 → **只有主播线路（走 ExoPlayer 直连）能看，其他线路全黑**。
+  所以它必须**显式允许明文**（下面那条 domain-config）：这不是放松纪律，
+  而是把"由 WebView 承载的源站资源"和"App 自己发起的 https-only 请求"分开对待。
+  这条边界由 CleartextPolicyTest 双向钉住（该禁的禁、该放的放，含上面这段事故证据）。
 -->
 <network-security-config xmlns:tools="http://schemas.android.com/tools">
     <!--
@@ -41,14 +52,19 @@
 
     <!--
       JRS 源站：代码里全部以 https:// 访问（SourceEndpoints.JRS_LIST 主域名、
-      详情页 URL 模板）。收紧后若被降级成明文，连接会直接失败而不是静默裸奔。
+      详情页 URL 模板），且 WebView 从不加载它。收紧后若被降级成明文，
+      连接会直接失败而不是静默裸奔。
     -->
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">jrszbt.com</domain>
     </domain-config>
 
-    <!-- JRKAN 列表 js：OSS 加速域名，代码里是 https:// -->
-    <domain-config cleartextTrafficPermitted="false">
+    <!--
+      ⚠️ 必须**允许明文**：源站播放器脚本（pjs.js / 8.js）由 WebView 里的源站页面
+      以 http 加载。禁止它 = 网页播放链路第一步就断（线上黑屏事故的根因，见文件头）。
+      显式写成 true 而不是删掉这条，是为了留下"这是**有意**放行"的痕迹。
+    -->
+    <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">im-imgs-bucket.oss-accelerate.aliyuncs.com</domain>
     </domain-config>
 </network-security-config>
