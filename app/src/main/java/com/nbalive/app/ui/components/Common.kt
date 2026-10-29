@@ -65,6 +65,7 @@ import com.nbalive.app.ui.theme.GradNbaOnWhite
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
 import com.nbalive.app.ui.theme.accentBrush
+import com.nbalive.app.ui.theme.logoPlate
 
 /**
  * 队徽回退首字的字号（review/03-ui.md P2-27）。
@@ -120,7 +121,13 @@ private fun LogoFallback(size: Dp, teamName: String) {
 }
 
 /**
- * 队徽：白底圆形 + contain 适配（设计稿 .logo），加载失败回退队名首字色块。
+ * 队徽：主题圆底 + contain 适配（设计稿 .logo），加载失败回退队名首字色块。
+ *
+ * ⚠️ 圆底必须是**随主题走的 token**（[logoPlate]），不能写死 `Color.White`：
+ * 深色主题下白盘压在 `SportDark.Card=#161C33` 上是 16.83:1（正常），
+ * 但浅色主题的卡片就是 `SportLight.Card=#FFFFFF` —— 白盘压白卡 **1.00:1**，
+ * 「边缘完全消失」，圆盘和卡片糊在一起（review/03-ui.md P2-30）。
+ * 判据见 `ui/theme/LogoPlateContrastTest`（纯 token 对比度 + 本函数的调用点扫描两层）。
  *
  * ⚠️ 默认可被无障碍忽略（[contentDescription] 为 null）：
  * 队徽旁边永远紧跟着球队名文本，两边都带语义时 TalkBack 会把队名连读两遍
@@ -149,7 +156,7 @@ fun TeamLogo(
         modifier = modifier
             .size(size)
             .clip(CircleShape)
-            .background(Color.White),
+            .background(logoPlate()),
         // 两个槽只做调用：回退块提到函数外，重组不再产生新的子组合内容（P2-11）
         loading = { LogoFallback(size, teamName) },
         error = { LogoFallback(size, teamName) },

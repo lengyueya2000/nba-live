@@ -60,6 +60,16 @@ internal object SportDark {
     val Cba = Color(0xFFFF4D6D)
     val Ok = Color(0xFF2FD07E)
     val Warn = Color(0xFFFFC24B)
+    /**
+     * 队徽圆底（`TeamLogo` 图片下面那层圆，review/03-ui.md P2-30）。
+     *
+     * 深色主题**有意**保留纯白：深卡片 `#161C33` 上白盘 16.83:1，视觉正常
+     * —— 不要为了"看起来像改过了"把它压暗，那是退化。
+     *
+     * ⚠️ 只许在 [logoPlateFor] 里按主题取用；组件层一律走 `logoPlate()`，
+     * 不许直接 import 色板（ThemeSlotTest 的源码守卫钉着这一条）。
+     */
+    val LogoPlate = Color(0xFFFFFFFF)
 }
 
 // ---------- 浅色 ----------
@@ -87,6 +97,20 @@ internal object SportLight {
      * #9E6400 在白底 4.91:1、Card3 上 4.54:1，两处都达标，且仍是同一个琥珀色相。
      */
     val Warn = Color(0xFF9E6400)
+
+    /**
+     * 队徽圆底（浅色主题）。
+     *
+     * ⚠️ 原来是**硬编码纯白**（`TeamLogo` 里的 `Color.White`）：深色主题下没问题
+     * （白盘压深卡片 16.83:1），但浅色主题的卡片就是 `Card = #FFFFFF` ——
+     * 白盘压白卡只有 **1.00:1**，审查原话「边缘完全消失」，圆形队徽与卡片糊成一片
+     * （review/03-ui.md P2-30，`review/coverage-ledger.md` 指名的最后一条未落地项）。
+     *
+     * 取 #B8C0D4：压白卡 **1.82:1**、压 `Card2 = #F4F6FC` 1.69:1，
+     * 都过"能看出圆形"的下限 1.5:1（门槛取值与理由见 `LogoPlateContrastTest` 的类 KDoc），
+     * 又比 `Txt3 = #818AA8`（3.42:1）浅得多 —— 保留"浅盘衬队徽"的观感，不抢队徽本身。
+     */
+    val LogoPlate = Color(0xFFB8C0D4)
 }
 
 /**
@@ -178,6 +202,26 @@ val GradCba = Brush.linearGradient(
 /** 联赛渐变的**白字安全版**：联赛标签（LeagueChip）压的是 9.5sp 白字，必须压暗 */
 val GradNbaOnWhite = safeOnWhite(listOf(Color(0xFF2563EB), Color(0xFF60A5FA)))
 val GradCbaOnWhite = safeOnWhite(listOf(Color(0xFFE11D48), Color(0xFFFB923C)))
+
+/**
+ * 队徽圆底按主题取值的**唯一判据**（纯函数，JVM 可测）。
+ *
+ * 组件层不自己 `if (深色)`：深浅只在这里判一次，[NbaLiveTheme] 把结果提供出去，
+ * 组件只消费 [logoPlate]。原来的写法是组件里写死 `Color.White`（P2-30 的原缺陷）。
+ */
+fun logoPlateFor(darkTheme: Boolean): Color =
+    if (darkTheme) SportDark.LogoPlate else SportLight.LogoPlate
+
+/**
+ * 当前主题下的队徽圆底（由 [NbaLiveTheme] 提供）。
+ *
+ * 默认值是**深色**档：本应用深色优先，且 [AppPrefs.resolveDarkMode] 对 `null` 的解释也是深色 ——
+ * 万一有 Composable 在 [NbaLiveTheme] 之外渲染（`@Preview`、单测），拿到的也是主设计那一档。
+ */
+internal val LocalLogoPlate = staticCompositionLocalOf { SportDark.LogoPlate }
+
+@Composable
+fun logoPlate(): Color = LocalLogoPlate.current
 
 /** 8dp 间距节奏（设计稿实测 6/8/10/11/16 混用，这里归一到 4 的倍数） */
 object Space {
@@ -355,5 +399,8 @@ fun NbaLiveTheme(
             controller.isAppearanceLightNavigationBars = !darkTheme
         }
     }
-    MaterialTheme(colorScheme = colors, typography = AppTypography, content = content)
+    // 队徽圆底随主题走（P2-30）：组件层用 `logoPlate()` 取，不用知道深浅。
+    CompositionLocalProvider(LocalLogoPlate provides logoPlateFor(darkTheme)) {
+        MaterialTheme(colorScheme = colors, typography = AppTypography, content = content)
+    }
 }
