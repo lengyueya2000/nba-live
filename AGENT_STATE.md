@@ -3,7 +3,7 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **509 通过 / 0 失败 / 0 跳过**，
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **557 通过 / 0 失败 / 0 跳过**，
   debug 与 release 两个变体同数）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
@@ -15,6 +15,22 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近两个回合的提交
+### 2026-10-29 第六回合（goal round 4 被暂存 → 本轮收尾 + 线上黑屏修复）：全量 **557/0/0**
+8 个提交（含一次发版）。全量 debug+release 各 **557/0/0**（79 suites）+ `assembleDebug` 成功。
+| 提交 | 内容 |
+|---|---|
+| `007ad88` | **线上「点比赛就黑屏」的根因修复**：`parseChannels` 按名字（主播/解说…）删除线路，而实测一场 NBA 的 8 条有效线路里**只有 4 条 `/play/sm.html` 能被静态解析成直连 HLS**，它们恰好叫「主播解说①②③④」→ 被删光，只剩 4 条只能走 WebView 的线路 ⇒ App **一次直连都没试过**（logcat 实测解析器 0 次、ExoPlayer 0 次），WebView 那条链在这些页面上跑不起播放器 ⇒ 整屏纯黑。修法：新增纯判据 `ChannelAdmission`（规则一隐名、规则二"过滤不许把可直连线路清零"，补偿时用中性名）+ `isDirectHls` 收敛到 `isStaticallyResolvablePlayPage` 单一来源并补上链路 A 入口 `/play/steam<数字>.html`。**同机单变量 A/B**：旧行为整屏 `mean=0.0 max=0.0`（纯黑）/新行为视频带 95.7% 非黑、中心 99.5% 非黑、帧间差 43~54（在动） |
+| `641a8a1` | **发版 v1.2.15**（versionCode 19，签名证书与 v1.2.11~14 同一把 `62bd4ee4…`，APK sha256 `51476662…`）。GitHub Release 已挂 APK；repo 为 PUBLIC + `DISCLAIMER.md`（免责声明） |
+| `c3841de` | **03-P2-17 剩余 + 审计#5**：`ui/PrefsStore.kt`（接口 + `InMemoryPrefsStore` + 平台层 `AndroidPrefsStore`），VM 注入偏好、UI 只读 `vm.darkPref/aspectMode`；`AppPrefs/PlayerPrefs` 改 `attach(context)` + **无 Context setter**（未 attach 直接 `error()`）；LIVE 过滤收敛到 `ui/MatchFilters.kt` 的 `liveOnly`。守卫 `PrefsBoundaryGuardTest`(8)/`MatchFilterGuardTest`(5)，并把 `NavHostGuardTest` 旧判据**收紧重锚**。5 处生产回退 → 37 tests / 8 failed |
+| `42c6b9d` | 03-P2-7 定论写进 `PlayerNoticeEffect` KDoc（有意"只显示最新一条"，别再改） |
+| `789ed0b` | **04-P2-5 自动化**：`.github/workflows/release.yml`（14 步，tag 触发，测试不过不发，mapping 只作 artifact）+ README「CI 发版」小节 + `ReleasePipelineGuardTest`(5)（步骤块级判据，回退即红×2）。⚠️ 未在真实 runner 上跑过 |
+| `474ca1d` | **黑屏第二种形态**：WebView 看门狗原先第一句 `if (pageFinishedAt == 0L) return@LaunchedEffect` → 页面永不 finish 时**永久黑屏且无声**。抽纯判据 `ui/WebSniffWatchdog.kt`（媒体请求→不报；永不 finish→加载起算 45s；已 finish→25s，与旧语义一致）+ `WebSniffWatchdogTest`(8，含嵌套实参按括号配对的提取)。回退 → 恰好 2 条接线守卫红 |
+| `20d36df` | 审计#3 取证 + `LoadDeadlineTest` 判据收紧（双边窗口 250..1500ms）+ `review/flake-audit.md` |
+
+**第六回合遗留（下一轮候选）**：① `PrefsStore` 的写路径只收口一半（见「仍存在的主要缺口 A2」）；
+② 看门狗/CI 已落地但**未发版**（用户未要求；要让用户拿到需发 v1.2.16）；
+③ `task-15/task-16/task-17/task-18` 已收尾，`review/flake-audit.md` 是新增证据文件。
+
 ### 2026-10-29 第五回合（goal round 3）：结构性拆分 + 审计"未验证的怀疑"落地
 4 个提交，全量 **509/0/0**（UTC 钉死下，debug+release）+ `assembleDebug` 成功。
 | 提交 | 内容 |
@@ -107,29 +123,39 @@ P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~13、
 - ✅ **#4 夹具写死日期依赖机器时钟** → 改相对日期；
 - ✅ **#6 `stripComments` 两套实现并存** → 统一（3 个可执行反例留在测试里）；
 - ✅ **#7 按文件名取第一个** → 11 处改 `uniqueFile`（0 或 >1 命中都 `error()`）。
-- ⬜ **#3 慢机/受限网络下的假红**：`LoadDeadlineTest`（真实墙钟，`elapsedMs < 5_000`）、
-  `HttpClientFetchTest`（真实 loopback socket）、`StreamSniffOwnershipTest`/`MainViewModelTest`
-  的 `Thread.yield()` 自旋 —— **仍未做重复跑统计**（建议 10 次统计 flake，或把
-  `LoadDeadlineTest` 放宽到 2s / 改虚拟时间）。
-- ⬜ **#5 `MainViewModelTest.liveIds` 是测试侧重实现的 LIVE 过滤**：生产过滤在
-  `AppChrome.kt` 的 `ListBranch`（原 `NbaLiveApp.kt`）。两者当前逐字一致，但生产一旦加条件
-  （例如排除延期场次）测试不会红 → 建议把过滤提成一处可测函数，测试改为断言那个函数。
+- ✅ **#3 慢机/受限网络下的假红** → **第六回合已取证**：三个可疑类各 18 轮（10 空闲 +
+  5 轮 8 进程忙等 + 3 轮 15 进程占满 16 核）= 54 个"类×轮"**全部 0 失败**，未见 flake；
+  报告 `review/flake-audit.md`（含"未验证的部分"）。顺带**证实并修掉**一条"判据过松"：
+  `LoadDeadlineTest` 的 `elapsedMs < 5_000` 抓不住"注入的 300ms 被忽略"（生产写死 3_000L
+  时旧判据仍绿、耗时 3.008s）→ 收紧成双边窗口 `elapsedMs in 250L..1_500L`
+  （EXP2 同一回退变红、EXP3 改成 100L 也红；收紧后含全核负载 4 轮 0.305~0.306s 未假红）。
+- ✅ **#5 `MainViewModelTest.liveIds` 测试侧重实现 LIVE 过滤** → **第六回合已落地**：
+  过滤提成 `ui/MatchFilters.kt` 的 `liveOnly` 唯一实现，生产（`NbaLiveApp.kt` 的 `RouteHost`）
+  与测试侧都调它；`MatchFilterGuardTest`(5) 钉住"ui/ 里规范形状只许出现在 `MatchFilters.kt`
+  且恰好一处 / 生产必须真的调用 liveOnly / 测试侧必须复用"。判据边界（多条件过滤是另一种语义）
+  写进了 KDoc，避免后来人一刀切。
 
 ## 仍存在的主要缺口
 ### A. 结构性大改（03 组残余）
 1. ~~**03-P2-18** 820 行上帝组件拆分~~ → **第五回合已完成**（817→391 行，`fun NbaLiveApp(`
    391→110 行，根 collect 8→1），顺带消掉 **03-P2-6** 与 **03-P2-15**。
-2. **03-P2-17 剩余**：UI 仍直接读偏好 `StateFlow`；setter 仍带 Context 形参。
-   彻底做要把偏好读进 `MainViewModel`，它是纯 `ViewModel` → 得改成 `AndroidViewModel`
-   （牵动 `MainViewModelTest`），属结构性改动。
+2. **03-P2-17 剩余**：读路径已彻底收口（第六回合），**写路径只做了一半** ——
+   UI 的写仍走平台层回调（`MainActivity` → 无 Context 的 `AppPrefs.setDarkMode(it)`），
+   `PrefsStore.setDarkMode/setAspect` 目前只被 `MainActivity` 的注入用。
+   要改成"UI 只调 `viewModel.setDarkMode(...)`"必须**同步改** `NavHostGuardTest` 里那段
+   按名字要求 `MainActivity` 出现这两个调用点 / UI 保留 `onDarkModeChange = onDarkModeChange`
+   接线的旧判据（否则守卫会红）—— 属下一轮的结构性小改，别只改生产。
 3. **03-P2-14**：**已做有据的取舍**（信号列表保持 `forEachIndexed`，注释写明
    "线路数假设 < 20"与重估条件）。不是漏做。
 4. **03-P2-7** 判定为**不成立/无效修复**（显式 `dismiss()` 是多写一行，已回退）。**别再做**。
 5. **03-P2-33 剩余**：全量文案硬编码（审查自己判定现状可接受）。
-6. **04-P2-5** release mapping 归档 → **已落地为流程**（README「发版清单」+ `.gitignore` 排除
-   `*-mapping.txt`，本次 v1.2.13 已按流程归档）；仍可做的是**自动化**（CI 在 tag 上
-   产出 APK+mapping 并挂到 Release，目前是手工按清单执行）。
-   **04-P2-7 彻底版**需升级 AGP。
+6. **04-P2-5** release mapping 归档 → **已完成（第六回合 `789ed0b`）**：
+   手工流程早在 README「发版清单」，本轮补上 **tag 触发自动流水线**
+   `.github/workflows/release.yml`（14 步：两变体单测不过就不发 → 打包/验签 → mapping 只作
+   artifact → gh release 只挂 APK+AAB），守卫 `ReleasePipelineGuardTest`(5) 用步骤块级判据
+   钉住"不许把 mapping 混进公开 Release"。⚠️ **从未在真实 GitHub runner 上跑过**
+   （本地无 Actions/actionlint），首次真跑前需确认 runner 上 Android SDK 35/build-tools/gh CLI。
+   **04-P2-7 彻底版**仍需升级 AGP（未做）。
 
 ### B. 只读审计的产物（`review/audit-guards.md`，498 行，**必读**）
 审计覆盖 68/68 测试类 + ui/ 全目录，发现两类"假安全感"。**A、B 两组已于第四回合清零**：
