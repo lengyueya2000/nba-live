@@ -3,7 +3,7 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **557 通过 / 0 失败 / 0 跳过**，
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **566 通过 / 0 失败 / 0 跳过**，
   debug 与 release 两个变体同数）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
@@ -15,6 +15,21 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近两个回合的提交
+### 2026-10-29 第七回合（goal round 6）：95 条清单覆盖台账 + 03-P2-17/03-P2-30 收尾 + CI 预检
+4 个提交。全量 debug+release 各 **566/0/0**（80 suites）+ `assembleDebug` 成功。
+| 提交 | 内容 |
+|---|---|
+| `7f0d2d6` | **`review/coverage-ledger.md`**：把 01~04 的 P0/P1/P2 编号条目**逐条**核成 已落地/有据取舍/未落地/无法判定，每条附**可复核证据**，并宣布**不把本文件当证据**。口径先说清（01:19 + 02:23 + 03:4+35 + 04:14 = **95**）。结果 **85 / 8 / 2 / 0**；点名本文件 3 处错（03-P2-30 被错记入落地区间、03-P2-17 自相矛盾、02-P2-13 口径错）——**均已按此修正**。末尾第四节挑出 6 条"改了没人红"（含 **03-P1-3** 这条 P1 零信号）与 1 处守卫白名单洞 |
+| `48a3f3a` | **03-P2-30 收尾**：队徽圆底硬编码白（浅色主题压白卡 **1.00:1**，边缘消失）→ 主题 token `SportLight.LogoPlate=#B8C0D4`（**1.82:1**）/ 深色仍纯白（**16.83:1**）+ 纯函数 `logoPlateFor` + `CompositionLocal`；守卫 `LogoPlateContrastTest`(7)，回退即红 ×2（组件改回白 → 1 failed；token 改回白 → 2 failed） |
+| `db528f0` | **03-P2-17 收尾**：写路径收口 `UI → viewModel.setDarkMode/setAspectMode → prefs.* → AndroidPrefsStore → AppPrefs/PlayerPrefs`，**消灭零消费点**（接口写方法此前 0 生产调用点）；旧接线判据**重锚**为新链路三点（UI 必须调 VM 写入口 / 落盘实现只许在 `PrefsStore.kt` 且恰好两处 / MainActivity 必须仍注入平台存储）；先 RED（2 failed）+ 单变量回退 ×3（分别 2/1/1 failed）|
+| `7549b8b` | **CI 预检**：修掉真实 runner 上必炸的两处 —— ① `gradlew` 模式位 `100644`（ubuntu 上 `./gradlew` Permission denied）→ `git update-index --chmod=+x` + workflow 自行 `chmod +x`；② `set -euo pipefail` 下 `aapt2 dump badging \| head -1` 的 SIGPIPE 陷阱 → 先落盘再 head + 显式兜底。守卫断言"必须真执行 chmod"（剔注释后判定），回退 → 恰好 1 条红。本地把 `assembleRelease`+`bundleRelease` 跑通（APK 2,733,921 B / AAB 5,951,069 B）|
+
+**第七回合结论**：95 条里 **86 条已落地**（新增 P2-17、P2-30）、**8 条有据的取舍**、
+**1 条未落地（04-P2-7 需升 AGP）**；另有 **6 条"代码已落地但缺护栏"** 与 **1 处守卫白名单洞**
+进入下一轮议程（见「下一次接手的建议顺序」⑧⑨）。`task-16` 第 (3) 步（ChannelAdmission
+回退实验的独立复核）在 guard-auditor 手上，若其未完成，**Lead 自己的等价回退实验已在本文件
+第五回合记录**（去掉补偿 → 恰好 3 条红）。
+
 ### 2026-10-29 第六回合（goal round 4 被暂存 → 本轮收尾 + 线上黑屏修复）：全量 **557/0/0**
 8 个提交（含一次发版）。全量 debug+release 各 **557/0/0**（79 suites）+ `assembleDebug` 成功。
 | 提交 | 内容 |
@@ -96,10 +111,27 @@ Lead 做 B5/B4/B2 各 1 次（各 2 条目标断言红，其余守卫全绿，SH
 - `7cdf50e` 03-P2-19/20（InfoRow/错误态收敛 + 结构化重复守卫）
 
 ## 已验证落地（不必重做）
-P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~13、
-03-P1-1~4、**03-P2-1~5/6/8~13/15/16/18~32/34/35**、
-04-P1-1~5、04-P2-3/4/6/7(部分)/8/9
-（03 组仍未做的只有 **P2-14**(有据取舍)、**P2-17 剩余**、**P2-33 剩余** —— 见下）
+⚠️ **权威口径以 `review/coverage-ledger.md` 为准**（第七回合逐条核对、每条附可复核证据：
+commit / 测试类·用例名 / `文件:行号` / grep 输出）。下面只是摘要。
+P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~12、
+03-P1-1~4、**03-P2-1~6/8~32/34/35**（含第七回合收尾的 **P2-17 写路径** 与 **P2-30**）、
+04-P1-1~5、04-P2-3/4/5/6/8/9
+（03 组只剩 **P2-14**（有据取舍）、**P2-33 剩余**（审查自判可接受）；04 组只剩 **P2-7**（需升 AGP））
+
+**有据的取舍（不修，但理由有明确落点）**：01-P2-10、**02-P2-13**（不是"删死代码"，
+而是加注释说明这是**防御性兜底**，落点见 `MainViewModel` 的 KDoc —— 第七回合台账点名本文件
+旧摘要把这条记成"已落地"，已改）、03-P2-7（有意"只显示最新一条"）、03-P2-14、
+03-P2-33（文案硬编码，审查自判可接受）、04-P2-1、04-P2-2、04-P2-9。
+
+**只落地了代码、但缺护栏的 6 条（下一轮议程 —— 台账第四节的镜像问题「改了没人红」）**：
+02-P2-5（`back()` 取消 `detailJob`：测试源集 grep `detailJob` **0 命中**）、
+02-P2-7（详情缓存 TTL 时间戳位置）、02-P2-11（2 月 29 日）、
+**03-P1-3（浅色主题导航栏图标 —— P1·用户可见，全仓只有 `Theme.kt` 一行赋值、测试源集 0 命中）**、
+03-P2-25（TalkBack 双节点，需实机语义树）、04-P2-8（未签名 AAB 拦截点，缺一次
+"缺 keystore 跑 bundleRelease，断言失败且不产出 `.aab`" 的实验）。
+另有一条**守卫有洞**：`SourceZoneDisciplineTest` 的 `DISPLAY_ONLY` 白名单仍含**判定层**文件
+`MatchStatusClock.kt` —— 以后有人在 `byClock/aged` 里写回 `systemDefault()` 不会红
+（该文件当前只有注释、无实际调用，移出白名单是安全的）。
 
 **审计 A/B 两组（2026-10-29 第四回合）**：
 - ✅ **B1–B8、B10、B11 全部落地**：B1/B3 删死链路+唯一来源、B2/B4 接线（提示真的画出来、
@@ -139,12 +171,12 @@ P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~13、
 ### A. 结构性大改（03 组残余）
 1. ~~**03-P2-18** 820 行上帝组件拆分~~ → **第五回合已完成**（817→391 行，`fun NbaLiveApp(`
    391→110 行，根 collect 8→1），顺带消掉 **03-P2-6** 与 **03-P2-15**。
-2. **03-P2-17 剩余**：读路径已彻底收口（第六回合），**写路径只做了一半** ——
-   UI 的写仍走平台层回调（`MainActivity` → 无 Context 的 `AppPrefs.setDarkMode(it)`），
-   `PrefsStore.setDarkMode/setAspect` 目前只被 `MainActivity` 的注入用。
-   要改成"UI 只调 `viewModel.setDarkMode(...)`"必须**同步改** `NavHostGuardTest` 里那段
-   按名字要求 `MainActivity` 出现这两个调用点 / UI 保留 `onDarkModeChange = onDarkModeChange`
-   接线的旧判据（否则守卫会红）—— 属下一轮的结构性小改，别只改生产。
+2. **03-P2-17**：**已收尾（第七回合 `db528f0`）**。读写都收口到 `PrefsStore`，
+   写路径是 `UI → viewModel.setDarkMode/setAspectMode → prefs.* → AndroidPrefsStore → AppPrefs/PlayerPrefs`，
+   顺带消灭了"接口声明了却没人消费"的零消费点（`prefs.setDarkMode/setAspect` 现在各有 1 处真实调用点）。
+   旧接线判据（要求 `MainActivity` 出现 `AppPrefs.setDarkMode(`、UI 保留 `onDarkModeChange =` 透传）
+   已**重锚**为"UI 必须调 VM 写入口 / 落盘实现只许在 `PrefsStore.kt` 且恰好两处 / MainActivity 必须
+   仍注入 `AndroidPrefsStore`"，并各有内存样本自检与单变量回退实验。
 3. **03-P2-14**：**已做有据的取舍**（信号列表保持 `forEachIndexed`，注释写明
    "线路数假设 < 20"与重估条件）。不是漏做。
 4. **03-P2-7** 判定为**不成立/无效修复**（显式 `dismiss()` 是多写一行，已回退）。**别再做**。
@@ -242,16 +274,24 @@ P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~13、
       并永久钉死 UTC）；
    ② ~~`DeadCodeWiringGuardTest` 残余文件级 contains~~ → **已清零**（12 处升级 + stripComments 统一）；
    ③ ~~**03-P2-18** 上帝组件拆分~~ → **已完成**（817→391 行，顺带消 03-P2-6 / 03-P2-15）；
-   现在真正剩下的：
-   ④ **审计怀疑 #3**（慢机/受限网络假红）：对 `LoadDeadlineTest`、`HttpClientFetchTest`、
-      `StreamSniffOwnershipTest`、`MainViewModelTest` 的线程/墙钟用例**重复跑 10 次统计 flake**，
-      或把 `LoadDeadlineTest` 的 5s 上界放宽 / 改虚拟时间；
-   ⑤ **审计怀疑 #5**：把 LIVE 过滤提成一处可测函数（生产在 `AppChrome.kt` 的 `ListBranch`），
-      让 `MainViewModelTest.liveIds` 断同一个函数，而不是测试侧重实现；
-   ⑥ **03-P2-17 剩余**（UI 直接读偏好 `StateFlow`，需改 `AndroidViewModel`）+
-      **03-P2-33 剩余**（文案硬编码）；
-   ⑦ 04-P2-5 自动化（CI 在 tag 上产出 APK+mapping 挂 Release）+ 04-P2-7 彻底版（需升级 AGP）。
-4. **C 的产品缺口**（`Route.DETAIL` 无入口）需要问用户，不要自行删页面。
+   ④ ~~审计怀疑 #3~~ → **已完成**（18 轮重复跑取证未见 flake）+ 顺带把 `LoadDeadlineTest`
+      的过松判据收紧成双边窗口；
+   ⑤ ~~审计怀疑 #5~~ → **已完成**（`liveOnly` 单一实现 + `MatchFilterGuardTest`）；
+   ⑥ ~~**03-P2-17**~~ → **已完成**（读写都过 `PrefsStore`；写路径零消费点已消灭）；
+      **03-P2-33 剩余**（文案硬编码）**审查自判可接受**，只在台账里记为"有据的取舍"；
+   ⑦ ~~04-P2-5 自动化~~ → **已完成**（`789ed0b` + 第七回合 `7549b8b` 修掉 runner 上必炸的两处）；
+      **04-P2-7 彻底版**（升 AGP）**仍未做**，是 95 条里唯一"未落地"的构建类条目。
+   现在真正剩下的（按台账第四节）：
+   ⑧ **给 6 条"改了没人红"的条目补护栏**（02-P2-5 / 02-P2-7 / 02-P2-11 / **03-P1-3（P1）** /
+      03-P2-25 / 04-P2-8），其中 04-P2-8 是"缺一次实验"（缺 keystore 跑 `bundleRelease`）；
+   ⑨ 补 `SourceZoneDisciplineTest` 白名单的洞（把判定层 `MatchStatusClock.kt` 移出 `DISPLAY_ONLY`）；
+   ⑩ 04-P2-7（升 AGP，风险大，单独一轮）。
+4. **要问用户/需要拍板的**（不要自行决定）：
+   - `Route.DETAIL` 无入口：加"选择线路"入口，还是删掉详情页那条链；
+   - `LogoFallback`（队徽加载/失败态盘面 `surfaceVariant`，浅色 1.17:1）要不要一起 token 化
+     （统一换亮盘会让深色回退盘由"暗盘+浅字"变白，属退化，需先定字色）；
+   - `Common.kt` 里 `LeagueChip` 的 9.5sp 白字是否改走 `AccentContrast.OnAccent`（03-P2-30 同族）；
+   - **是否发 v1.2.16**（看门狗/CI/偏好边界等已进 main 但未发版）。
 5. 新增守卫一律登记进 `ZeroConsumerGuardTest`（声明必须真有调用点）、
    `GuardHygieneTest`（不许 assume 家族 / Kotlin 原生 assert）或
    `AppStructureGuardTest`（结构上界），别再另铺一套散装断言；
