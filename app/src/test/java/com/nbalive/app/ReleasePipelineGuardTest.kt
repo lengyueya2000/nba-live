@@ -70,6 +70,29 @@ class ReleasePipelineGuardTest {
         )
     }
 
+    /**
+     * ⚠️ 这一类失败**只在真实 runner 上才会暴露**，而且发生在整条流水线的第一步：
+     * `gradlew` 在 git 里的模式位若不是 100755，ubuntu 上执行 `./gradlew` 会直接
+     * `Permission denied`（exit 126）。本地 Windows 永远看不出来（NTFS 没有这个位），
+     * 静态核对也看不出来 —— 第一次推 tag 才炸。所以要求 workflow **自己**先
+     * `chmod +x gradlew`：把"仓库模式位"从"靠克隆方保留执行位"变成"流水线自己保证"。
+     *
+     * （本判据能红：实测把这一行删掉后本用例变红，见提交说明。）
+     */
+    @Test
+    fun `workflow 必须先保证 gradlew 可执行`() {
+        val code = stripYamlComments(workflowText())
+        assertTrue(
+            "workflow 里没有 `chmod +x gradlew`：checkout 一旦丢掉可执行位（或有人下载 zip 取代码），" +
+                "`./gradlew` 会在 ubuntu 上 Permission denied，第一次推 tag 就整条失败（04-P2-5）",
+            Regex("""chmod\s+\+x\s+gradlew""").containsMatchIn(code),
+        )
+        assertFalse(
+            "把 chmod 只写进 echo/字符串里不算（必须是真执行的命令）——「写得好听」骗过守卫的老形态",
+            Regex("""echo\s+["']?chmod\s+\+x\s+gradlew""").containsMatchIn(code),
+        )
+    }
+
     // ---------- ② 正向：发版步骤必须齐全，测试不过不许发 ----------
 
     @Test
