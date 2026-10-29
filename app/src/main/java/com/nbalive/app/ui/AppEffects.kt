@@ -124,6 +124,21 @@ internal fun AppListStatusAgeEffect(route: Route, tab: NavTab, onTick: () -> Uni
  * ⚠️ key 用 errorId（每次报错自增），不能只拿文案当 key：
  * 同样的文案连着报两次时，StateFlow 会把相等值合并掉，
  * LaunchedEffect 不重启，第二次就再也弹不出来了。
+ *
+ * ## P2-7 的定论：这是**有意**的「只显示最新一条」，不是 bug
+ *
+ * 审查（03-ui.md P2-7）指出：`showSnackbar` 是挂起调用，`errorId` 再自增时本 effect
+ * 重启 → 上一条的协程被取消 → **前一条提示提前消失**；故障切换连发两条时用户只看到最后一条。
+ *
+ * 复核后的结论是**不改代码**，理由是审查自己给的第二个选项：
+ * 「若只想显示最新一条」——这正是当前行为（`showSnackbar` 本身就会先撤掉上一条），
+ * 所以"覆盖"已经是实际语义；再补一句 `currentSnackbarData?.dismiss()` 只是把同一件事写第二遍
+ * （新增的显式调用在旧协程尚未处理完取消时最多省一次等待），属无效修复，已回退。
+ * 至于审查的第一个选项（用 Channel 逐条顺序展示），那是**产品选择**：连发两条时
+ * 用户要不要排队看完，得由产品定；在没定之前保持"最新一条"更符合"错误提示不堆积"的直觉。
+ *
+ * ⚠️ 因此：**不要**给这里加 Channel/队列，除非产品明确要求逐条展示
+ * （那会改变用户看到提示的时长与数量）。
  */
 @Composable
 internal fun PlayerNoticeEffect(
