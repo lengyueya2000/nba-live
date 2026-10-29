@@ -15,6 +15,12 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近两个回合的提交
+### 2026-10-30 第十回合（goal round 9）：**95 条清单全部收口** —— 04-P2-7 落地 + 6 条缺护栏补齐
+1 个提交（`7648f66`）+ 发版 **v1.2.18**。全量 debug+release 各 **581/0/0**（84 suites）+ `assembleDebug`/`assembleRelease` 成功。
+| 提交 | 内容 |
+|---|---|
+| `7648f66` | **04-P2-7（唯一的未落地）→ 落地**：`javap` 实测 AGP 8.7.3 公开 `VariantOutput` 只有 versionCode/versionName/enabled/enable —— **没有 outputFileName**，所以删掉对 `com.android.build.api.variant.impl.VariantOutputImpl` 的依赖，改为 Gradle 文件 API 在打包任务 `doLast` 改名（未签名 APK 实测默认名 `app-release-unsigned.apk` → `app-UNSIGNED-release.apk` 2,725,737 B；签名包 `app-release.apk` 2,733,929 B 不受影响）。**04-P2-8 三场景实验**：签名 bundleRelease exit=0 产正式名 AAB；无凭据 exit=1 且 `.aab` count=0（闸挂在产出任务 `*ReleaseBundle.doFirst`，挂生命后期太晚）；`-PskipSigning` exit=0 只留 `app-UNSIGNED-release.aab`（改名若放产出 doLast 会被 AGP `produceReleaseBundleIdeListingFile` 打红，实测）。**03-P2-25** 生产去掉内层重复 `.clickable` + 新守卫；**03-P1-3（P1）** 新增 `SystemBarsAppearanceTest`(2) 函数体级守卫；`SourceZoneDisciplineTest` 白名单洞收口。队友：`guard-fixups` 补 02-P2-11 闰日 2 条（20/0/0/0）、`pip-health` 补 02-P2-5 行为级 1 条（13/0/0/0）；新增 04-P2-7/8 守卫 `BuildScriptHygieneTest`(3)。**95 条结果：87 已落地 / 8 有据取舍 / 0 未落地 / 0 无法判定** |
+
 ### 2026-10-29 第九回合（用户需求变更）：**过滤掉涉及主播的线路** + 删掉 007ad88 的误诊补偿
 1 个提交 + 发版 **v1.2.17**。全量 debug+release 各 **570/0/0**（80 suites）+ `assembleDebug`/`assembleRelease` 成功。
 | 提交 | 内容 |

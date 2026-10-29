@@ -366,6 +366,79 @@ class JrkanParserTest {
         )
     }
 
+    // ---- 回归：02-P2-11 闰日 "02-29" 不得抛异常静默降级 ----
+    //
+    // 源站时间串没有年份，生产 `parseDateTime` 用 `MonthDay.of(month, day).atYear(now.year)`
+    // 合成日期 —— 平年 2 月没有 29 日时 **归一到 28 日**，而不是抛 `DateTimeException`。
+    // 旧写法 `LocalDate.of(now.year, 2, 29)` 在平年会抛，被 `runCatching` 吞成 null ->
+    // `startAtMillis` 静默为 null -> 状态退回 UPCOMING、跨源合并键也对不上（02-P2-11）。
+
+    @Test
+    fun `闰日 02-29 必须能解析出开赛时刻 不得静默降级`() {
+        val matches = parser.parseList(statusBlock("02-29 19:35"))
+        assertEquals("闰日样本不能被整场丢弃", 1, matches.size)
+        val m = matches.first()
+
+        // ① 核心判据：必须拿到时间戳（旧写法在平年会静默为 null）
+        assertTrue(
+            "02-29 必须解析出 startAtMillis（平年由 MonthDay.atYear 归一，不能被抛成 null）；" +
+                "实际 timeLabel=${m.timeLabel} startAtMillis=${m.startAtMillis}",
+            m.startAtMillis != null,
+        )
+        val start = m.startAtMillis!!
+        val zdt = java.time.Instant.ofEpochMilli(start)
+            .atZone(MatchStatusClock.SOURCE_ZONE)
+        val date = zdt.toLocalDate()
+        val today = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
+
+        // ② 落点形态：仍在 2 月；平年归一后是 28 日（闰年是 29 日）
+        assertEquals("闰日落点不能跑到别的月份：$date", 2, date.monthValue)
+        assertTrue(
+            "平年归一时 02-29 应落到 28 日（MonthDay.atYear 的语义）：$date",
+            date.dayOfMonth in 28..29,
+        )
+        // ③ 时刻原样保留
+        assertEquals(
+            "HH:mm 必须原样保留",
+            java.time.LocalTime.of(19, 35),
+            zdt.toLocalTime(),
+        )
+        // ④ ±6 个月窗口规则（不写死年份）：落点年份只能是 today 的去年/今年/明年
+        assertTrue(
+            "落点年份 ${date.year} 不在 ${today.year - 1}..${today.year + 1} 内 —— ±6 个月窗口规则被破坏",
+            date.year in (today.year - 1)..(today.year + 1),
+        )
+        val days = java.time.temporal.ChronoUnit.DAYS.between(today, date)
+        assertTrue("$date 距今天 $today 有 $days 天，超出 ±6 个月窗口", kotlin.math.abs(days) <= 200)
+
+        // ⑤ 状态必须由这个开赛时刻推出（null 时生产会直接兜底成 UPCOMING）
+        assertEquals(
+            "状态必须由解析出的开赛时刻按 byClock 推出，不能是 null 的兜底 UPCOMING",
+            MatchStatusClock.byClock(
+                start,
+                java.time.ZonedDateTime.now(MatchStatusClock.SOURCE_ZONE),
+            ),
+            m.status,
+        )
+    }
+
+    /**
+     * 样本自检（不直接碰解析器）：说明主判据里"落到 28 日"的来源 —— JDK 的
+     * [`MonthDay.atYear`] 语义。平年 2 月没有 29 日时归一为 28 日，闰年保留 29 日。
+     * 这能防"有人以为 atYear 会抛、于是写成 LocalDate.of"的误解被悄悄带回来。
+     */
+    @Test
+    fun `闰日归一规则自检 平年落到 28 日 闰年落到 29 日`() {
+        val year = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE).year
+        val normalized = java.time.MonthDay.of(2, 29).atYear(year)
+        assertEquals(2, normalized.monthValue)
+        assertEquals(
+            "MonthDay.atYear 在平年应归一为 2/28，闰年保留 2/29（当前年份 $year）",
+            if (java.time.Year.isLeap(year.toLong())) 29 else 28,
+            normalized.dayOfMonth,
+        )
+    }
+
     /** 走公开入口 parseList，拿到解析后的开赛日期。 */
     private fun parseStartDate(timeLabel: String): java.time.LocalDate {
         val js = """

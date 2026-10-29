@@ -148,8 +148,16 @@ class SourceZoneDisciplineTest {
     }
 
     private companion object {
-        /** 允许使用设备时区的文件：只做**展示**（时间戳 -> 人类可读文案）。 */
-        val DISPLAY_ONLY = setOf("MatchFormat.kt", "MatchListScreen.kt", "MatchStatusClock.kt")
+        /**
+         * 允许使用设备时区的文件：只做**展示**（时间戳 -> 人类可读文案）。
+         *
+         * ⚠️ 不要再把 `MatchStatusClock.kt` 放进来（审计#7 的白名单洞）：
+         * 它是**判定层**文件（KDoc 写着"解析与判定固定东八区"），
+         * 白名单把它排除后，以后有人在 `byClock`/`aged` 里写回 `systemDefault()`
+         * 这条纪律守卫**不会红**。实测该文件当前没有任何 `systemDefault()` 调用，
+         * 所以移除白名单是纯收紧、零风险。
+         */
+        val DISPLAY_ONLY = setOf("MatchFormat.kt", "MatchListScreen.kt")
 
         /** 设备时区**调用**（不是提到这个名字）。 */
         val BANNED = Regex("""\bsystemDefault\s*\(\s*\)""")

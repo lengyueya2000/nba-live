@@ -141,25 +141,23 @@
 
 | 状态 | 条数 | 占比 |
 |---|---|---|
-| 已落地 | **86** | 90.5% |
+| 已落地 | **87** | 91.6% |
 | 有据的取舍 | **8** | 8.4% |
-| 未落地 | **1** | 1.1% |
+| 未落地 | **0** | 0% |
 | 无法判定 | **0** | 0% |
 | 合计 | **95** | 100% |
 
-> 计数更新（2026-10-29 第九回合）：**03-P2-30** 已由 `48a3f3a` 收尾、**03-P2-17** 已由 `db528f0` 提交，
-> 因此"已落地"由 85 升至 **86**、"未落地"由 2 降至 **1**（只剩 04-P2-7）。
+> 计数更新（2026-10-30 第十回合）：**04-P2-7** 已真正落地 —— 不再依赖 AGP 私有实现类
+> （javap 实测公开 `VariantOutput` 没有 `outputFileName`），改为在产出任务 `*ReleaseBundle` 上
+> 用 Gradle 文件 API 改名；`BuildScriptHygieneTest`(3) 钉住，回退即红。
+> **95 条：87 已落地 / 8 有据的取舍 / 0 未落地 / 0 无法判定。**
 
 ### 未落地（按严重度排序）
 
-| 排序 | 编号 | 严重度 | 现状 | 还差什么 |
-|---|---|---|---|---|
-| 1 | **04-P2-7** 使用 AGP 内部实现类 | P2（**构建安全**：AGP 升级时可能静默/显式失败） | `app/build.gradle.kts:87` 仍转型 `VariantOutputImpl`；已缓解为 `throw GradleException`（:88-94） | 需升 AGP 后用公开 API（`VariantOutput.outputFileName` 在 AGP 8.x 已是公开 Property）→ 本次核对时 AGP 仍 8.7.3，未做 |
+无。
 
-> **台账修正（2026-10-29 第九回合）**：本节原先还列着 **03-P2-30**（队徽圆底硬编码白）为未落地 ——
-> 该条已由提交 `48a3f3a` 收尾（主题 token `SportLight.LogoPlate=#B8C0D4` + `logoPlateFor` +
-> `LogoPlateContrastTest`(7)，回退即红 ×2），因此从"未落地"移出。**未落地现为 1 条（04-P2-7）**。
-> 同理 §2.1 注里"03-P2-17 是唯一处于已实现未提交的条目"已过时：`db528f0` 已提交并附三方重锚守卫。
+> **台账修正（2026-10-30 第十回合）**：04-P2-7 已落地（见第六节）；本节不再是"还剩"清单。
+> 台账里另有 6 条"代码已落地但当时无判据"（§四 A 类），本轮全部补齐并逐条做了回退实验。
 
 ### 有据的取舍（8 条，全部有"明确写下的理由"）
 
@@ -237,23 +235,27 @@ T3 实证（`/play/384.html` 的 iframe **带** `&id2=` 尾巴与 `auth_key`，�
 
 ---
 
-## 四、建议下一轮加固（85 条"已落地"里证据最弱的 10 条）
+## 四、护栏补齐（原 6 条"改了没人红" → 第十回合已全部补齐）
 
-> 这一节是**顺着上一节"证据"列反向自查**得到的：我把 85 条按证据强度重排，
-> 挑出那些**只有代码位置、没有判据**，或**只给了测试类名没给用例名**的条目。
-> 它**不改变第二节的计数**（这些条目确实改好了），改的是"下一轮该补什么护栏"。
-> 分两类：**A 类 = 真的没有判据（需新做一件事，6 条）**；**B 类 = 判据存在、只是引用不够具体（4 条 + 1 条附）**。
+> 这一节最初是**顺着第二节"证据"列反向自查**得到的：挑出那些**只有代码位置、没有判据**的条目。
+> **2026-10-30 第十回合已把它们逐条补上判据，并各自实测「去掉修复会红」**（证据见第六节）。
 
-### A 类：真的没有判据（6 条，按严重度）
+### A 类：原先真的没有判据（6 条，现全部已补）
 
-| # | 条目 | 现状证据（我核到的） | 缺什么 | 建议怎么做 |
-|---|---|---|---|---|
-| 1 | **02-P2-5** 返回时不取消 `detailJob`（P2·行为） | `MainViewModel.kt:272/529/624/1025/1052` 共 5 处 `detailJob?.cancel()`；但 `grep detailJob` 在 `app/src/test/**` **0 命中** → 删掉 `back()` 分支里那一处**不会有任何测试红** | 一条"删掉修复就变红"的判据 | 纯判据：`refreshSignals()` 起 detailJob → `back()` → 放行旧 job 的挂起点，断言 `_detailState` 不被旧值覆写（照 `RefreshRaceTest` 的 `CompletableDeferred` 写法）；或源码守卫：`NavState.back()` 的 PLAYER 分支体内必须含 `detailJob?.cancel()` |
-| 2 | **02-P2-7** 缓存时间戳在 fetch 之后取（P2·语义） | `MatchRepository.kt:307-311` 注释 + `cachedAt` 已移到取正文之后；测试里 `DETAIL_CACHE`/`TTL`/`时间戳` **0 命中** | 一条钉住"TTL 起点在拿到正文之后"的判据 | 注入慢 fetch（`delay(TTL/2)`）→ 断言"再过 TTL/2 仍命中缓存"（即 TTL 没被请求耗时吃掉）；或源码守卫断言 `cachedAt` 赋值语句出现在 fetch 调用之后 |
-| 3 | **02-P2-11** 2 月 29 日不再抛异常静默降级（P2） | `JrkanParser.kt:353 MonthDay.of(...).atYear(...)` 已在；测试里 `02-29`/`MonthDay` **0 命中** | 一条日期用例 | 给 `parseList` 喂 `"02-29 19:35"`，断言 `startAtMillis != null` 且日期按"±6 个月窗口"规则落点正确 —— 当前**改了也没人红** |
-| 4 | **03-P1-3** 浅色主题导航栏图标不可见（**P1·用户可见**） | 只有 `Theme.kt:355` 一行赋值（+ :351-354 注释）；`grep isAppearanceLightNavigationBars` 在 `test/**` **0 命中** | 任何自动化信号 | JVM 单测拿不到 `WindowInsetsController`：需要 `androidTest`（Compose UI test / Robolectric）断言 `== !darkTheme`；退一步至少加**源码守卫**（断言该赋值与 `!darkTheme` 同源、禁止被删），并在发版清单里留一条人工检查项 |
-| 5 | **03-P2-25** TalkBack 双可点节点（P2·无障碍） | 源码层已落地（`LiveNowScreen.kt:224/228`），内层 `.clickable` 仍在 `:295` | 语义树层验证 | 需实机 TalkBack 走查，或 `androidTest` 的 `SemanticsNodeInteraction`（本工程**没有 instrumentation 测试**）→ 本轮无法自动化，已在上文诚实标注 |
-| 6 | **04-P2-8** 未签名 AAB 拦截点（P2·构建安全） | `build.gradle.kts:151-162` 已用 `withType<PackageAndroidArtifact>()`；`grep PackageAndroidArtifact` 在 `test/**` **0 命中**，且 `ReleasePipelineGuardTest` 只管 workflow、不管 gradle | 一次实验或一条守卫 | 实验：动/删 `keystore.properties` 后跑 `./gradlew :app:bundleRelease`，断言任务失败**且** `build/outputs/bundle/release/` 里没有 `.aab`（这正是原条目的判据）；随后固化成脚本/CI 检查 |
+| # | 条目 | 补的判据（测试类） | 回退实验 |
+|---|---|---|---|
+| 1 | **02-P2-5** 返回时不取消 `detailJob` | `MainViewModelTest.从播放页返回后 在途详情请求晚到也不能覆写详情态`（行为级：`CompletableDeferred` 卡住 refresh，`back()` 后放行，断言详情态未被旧值覆写） | 删生产 `detailJob?.cancel()` → **恰好 1 条红** |
+| 2 | **02-P2-7** 缓存时间戳在 fetch 之后取 | `DetailCacheTtlTest.慢请求的缓存年龄从拿到正文之后开始算`（2s 慢 fetch + 反射只读时间戳 + 命中计数复核；未改生产可见性） | 把 `cachedAt` 挪到 fetch 之前 → **恰好 1 条红**（实测差值 15ms vs 2000ms） |
+| 3 | **02-P2-11** 2 月 29 日不得静默降级 | `JrkanParserTest.闰日 02-29 必须能解析出开赛时刻 不得静默降级` + `闰日归一规则自检` | 生产改回 `LocalDate.of(now.year, month, day)` → **恰好 1 条红**（`startAtMillis=null`） |
+| 4 | **03-P1-3** 浅色主题导航栏图标不可见（**P1**） | `ui/theme/SystemBarsAppearanceTest`(2)：函数体级断言两个系统栏赋值都在、都等于 `!darkTheme` | 改成 `= false` → **恰好 1 条红** |
+| 5 | **03-P2-25** TalkBack 双可点节点 | 生产移除内层重复 `.clickable`；`ui/LiveNowCardSemanticsTest`(2) 钉住「`LiveNowCard` 体内恰好一次 `.clickable(` 且带 `onClickLabel`」 | 加回内层 `.clickable` → **恰好 1 条红**。⚠️ 语义树层仍需实机 TalkBack 走查，不宣称已完全解决 |
+| 6 | **04-P2-8** 未签名 AAB 拦截点 | 生产把闸从 `bundleRelease` 生命周期任务移到产出任务 `*ReleaseBundle.doFirst`；`BuildScriptHygieneTest.构建脚本不得引用 AGP 内部实现包`／`未签名产物必须显式改名`／`bundle 任务必须按名字补签名闸`(3) | 见 6.2 的三场景行为实验 |
+
+### 额外：原"已落地但守卫有个洞"（已收口）
+
+**02-P2-2（时区）**：`SourceZoneDisciplineTest.DISPLAY_ONLY` 原先把**判定层**文件
+`MatchStatusClock.kt` 当成"展示层"排除在白名单里的洞已修 —— 该文件实测没有任何
+`systemDefault()` 调用，移除它之后这条纪律守卫只收紧不放宽。§四 表见上。
 
 ### B 类：判据存在，只是我的引用没落到用例名（4 条 + 1 条附）
 
@@ -265,17 +267,11 @@ T3 实证（`/play/384.html` 的 iframe **带** `&id2=` 尾巴与 `auth_key`，�
 | 10 | **04-P2-3** `allowFileAccess`/`allowContentAccess` | `WebViewFileAccessTest.播放页 WebView 必须显式关闭本地文件访问`（另一条 `JS 桥必须不存在`） |
 | 附 | **03-P2-13** LiveDot 共享相位 | `LiveDotAnimationTest.列表页必须用 LiveDotPhase 包住`（调用点断言，由 `GuardSourceScan.stripNonCode` 驱动，比"共享机制存在"那条强得多） |
 
-### 额外：一条"已落地但守卫有个洞"（不计入上面 10 条，属守卫设计问题）
+### 额外：原"已落地但守卫有个洞"（第十回合已收口）
 
-**02-P2-2（时区）已落地，但护栏有洞**：`SourceZoneDisciplineTest.kt:152`
-```kotlin
-val DISPLAY_ONLY = setOf("MatchFormat.kt", "MatchListScreen.kt", "MatchStatusClock.kt")
-```
-`MatchStatusClock.kt` 是**判定层**文件（它自己的 KDoc 写着"解析与判定固定东八区"），却被列进
-"允许使用设备时区"的**展示层**白名单。后果：以后有人在 `byClock`/`aged` 里写回 `systemDefault()`，
-这条纪律守卫**不会红**。建议把 `MatchStatusClock.kt` 从白名单移除；若它当前确实需要 `systemDefault()`
-（实测当前文件里只有注释、没有调用），先补一条独立判据再移除。
-这条与我在 `review/audit-guards.md` 记的"白名单把该守的文件排除"同源 —— 两轮审计互相印证，
+**02-P2-2（时区）** 的洞是 `SourceZoneDisciplineTest.DISPLAY_ONLY` 把**判定层**文件
+`MatchStatusClock.kt` 当成"展示层"排除。已修（该文件实测无 `systemDefault()` 调用）。
+这条与 `review/audit-guards.md` 记的"白名单把该守的文件排除"同源 —— 两轮审计互相印证，
 说明这类洞会**跟着修好的代码一起留下来**，值得作为一类模式单独防。
 
 ---
@@ -344,3 +340,49 @@ fun admit(raw: List<RawChannel>): List<RawChannel> {
 
 同一批 23 个场次里 **5 个场次只剩主播线路**（825263 / 825262 / 825266 / 825273 / 825227），
 过滤后为 0 条线路，界面显示"该赛事暂无可用线路"。是否改成隐藏这 5 场或显示占位提示，待用户拍板。
+
+---
+
+## 六、2026-10-30 第十回合：护栏补齐 + 04-P2-7 收尾
+
+### 6.1 04-P2-7（唯一的"未落地"）→ 已落地
+
+旧写法：`androidComponents.onVariants { output as? com.android.build.api.variant.impl.VariantOutputImpl }`
+改输出文件名。取证：`javap -cp gradle-api-8.7.3.jar com.android.build.api.variant.VariantOutput`
+只暴露
+`getVersionCode / getVersionName / getEnabled / getEnable` —— **公开接口没有 `outputFileName`**，
+所以"用公开 API"这条路不存在，也不必为此升级 AGP。
+
+改法：删除内部类依赖。未签名 APK 交给 **Gradle 文件 API**：
+
+- `tasks.withType<PackageAndroidArtifact>()` 的 `doFirst` 保留签名凭据检查；
+- `doLast` 把 `outputs/apk/<variant>/app-*-unsigned.apk` 改名成 `app-UNSIGNED-<variant>.apk`。
+  实测 AGP 默认未签名名是 `app-release-unsigned.apk`（改名后 `app-UNSIGNED-release.apk`，
+  2,725,737 B），正式签名包 `app-release.apk`（2,733,929 B）不受影响。
+- 若 AGP 以后改名导致匹配不到，产物仍是 `*-unsigned.apk`，**永不占用**正式名 —— 退化方向安全。
+
+### 6.2 04-P2-8 三场景行为实验（同一把 Gradle 锁内，跑完逐字恢复凭据）
+
+| 场景 | 命令 | exit | `outputs/bundle/release/` |
+|---|---|---|---|
+| A 有凭据（签名） | `:app:bundleRelease --rerun-tasks` | **0** | `app-release.aab` 5,950,921 B（正式名，允许） |
+| **B 无凭据** | 同上（`keystore.properties` 挪到 TEMP） | **1** | **无 `.aab`（count=0）** ✅ 原条目判据满足 |
+| C `-PskipSigning=true` + 无凭据 | `... -PskipSigning=true` | **0** | 只有 `app-UNSIGNED-release.aab` 5,933,374 B |
+
+机理：`bundleRelease` 生命周期任务的 `doFirst` 太晚（`packageReleaseBundle` 已落盘），
+故闸挂在 `*ReleaseBundle.doFirst`；而改名放 `bundleRelease.doLast` ——
+若放产出任务 `doLast`，AGP 的 `produceReleaseBundleIdeListingFile` 会因
+`finalBundleFile` 路径不存在而把构建打红（实测 exit=1）。
+
+### 6.3 本轮新增/改写的守卫
+
+- 新增测试类 4 个（14 条）：`SystemBarsAppearanceTest`(2)、`LiveNowCardSemanticsTest`(2)、`BuildScriptHygieneTest`(3)、`DetailCacheTtlTest`(1)；并使 `SourceZoneDisciplineTest` 白名单收紧。
+- 生产改动 2 处：`LiveNowScreen.kt` 去掉内层重复 `.clickable`；`app/build.gradle.kts` 改名/签名闸重构。
+- 队友 `guard-fixups` 补 02-P2-11 两条用例（20/0/0/0）；`pip-health` 补 02-P2-5 行为级用例（13/0/0/0）。
+- 每条均有独立回退实验（见第四节表与 6.2）。
+
+### 6.4 验收数字
+
+- 全量 debug + release 各 **581 通过 / 0 失败 / 0 跳过**（84 suites）；
+- `:app:assembleDebug` / `:app:assembleRelease` 成功，versionCode 22 / 1.2.18；
+- release 包装机后列表正常加载（10 月 30 日 8 场）。

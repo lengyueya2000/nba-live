@@ -34,8 +34,8 @@ android {
         applicationId = "com.nbalive.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 21
-        versionName = "1.2.17"
+        versionCode = 22
+        versionName = "1.2.18"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -70,34 +70,18 @@ android {
     // 手工往 GitHub Release 上传时根本分不出哪个是能装的，
     // 发上去用户装不上（"应用未安装"）——发布事故。
     // 文件名里带 UNSIGNED，看一眼就知道不能发。
-    if (missingKeystoreKeys.isNotEmpty() || skipSigning) {
-        androidComponents {
-            onVariants(selector().withBuildType("release")) { variant ->
-                variant.outputs.forEach { output ->
-                    // ⚠️ 文件名必须改掉，否则未签名包和正式包**同名同路径**
-                    // （app-release.apk），手工上传 GitHub Release 时分不出哪个能装，
-                    // 用户装不上（"应用未安装"）—— 发布事故。
-                    //
-                    // ⚠️ AGP 目前**没有公开的 outputFileName setter**
-                    // （`VariantOutput` 只暴露只读属性），所以只能落到内部实现类。
-                    // 审查报告（04-P2-7）要求去掉对内部类的依赖，但那需要 AGP 升级 ——
-                    // 这里至少把 `as?` 的**静默失败**改成显式报错：
-                    // 转换失败说明 AGP 内部结构变了，必须让人当场知道，
-                    // 而不是悄悄产出同名包。
-                    val impl = output as? com.android.build.api.variant.impl.VariantOutputImpl
-                    if (impl == null) {
-                        throw GradleException(
-                            "无法重命名未签名包：AGP 的 VariantOutput 实现类变了" +
-                                "（期望 VariantOutputImpl）。请检查 AGP 版本升级，" +
-                                "并改用新的公开 API —— 绝不能静默产出与正式包同名的未签名包。",
-                        )
-                    }
-                    impl.outputFileName = "app-UNSIGNED-${variant.name}.apk"
-                }
-            }
-        }
-    }
-
+    //
+    // ⚠️ 不要再用 AGP 内部实现类 `com.android.build.api.variant.impl.VariantOutputImpl`
+    // 改 outputFileName（review/04-security.md P2-7）：
+    // javap 实测 AGP 8.7.3 的**公开** `com.android.build.api.variant.VariantOutput`
+    // 只有 versionCode / versionName / enabled / enable 四个 Property，
+    // 根本没有 outputFileName —— 旧写法依赖 AGP 私有结构，升级时会静默失效或当场抛错。
+    // 现在只依赖 Gradle 自己的任务与文件 API：打包任务跑完后把产物改名。
+    //  - AGP 对未签名 release APK 的默认文件名**实测**是 `app-release-unsigned.apk`，
+    //    改名后是 `app-UNSIGNED-release.apk`；
+    //  - 正式签名包的 `app-release.apk` 不含 `-unsigned`，完全不受影响；
+    //  - 万一 AGP 以后改了命名导致这里匹配不到，产物也仍是 `*-unsigned.apk`，
+    //    **绝不会**占用 `app-release.apk` —— 退化方向是安全的。
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -157,6 +141,81 @@ tasks.withType<com.android.build.gradle.tasks.PackageAndroidArtifact>().configur
                     "请在仓库根放好 keystore.properties（内容不入库），" +
                     "或用 -PskipSigning=true 明确构建无签名包（仅供本地调试，别拿去发布）。"
             )
+        }
+    }
+    // 未签名产物改名（见上面 P2-7 的说明）：只动 `*-unsigned.apk`，
+    // 正式签名包 `app-release.apk` 一个字都不碰。
+    doLast {
+        val apkRoot = layout.buildDirectory.dir("outputs/apk").get().asFile
+        val unsigned = apkRoot.listFiles()
+            ?.filter { it.isDirectory }
+            ?.flatMap { variantDir ->
+                variantDir.listFiles()
+                    ?.filter { it.isFile && it.name.endsWith("-unsigned.apk") }
+                    ?.map { variantDir to it }
+                    .orEmpty()
+            }
+            .orEmpty()
+        for ((variantDir, apk) in unsigned) {
+            val target = File(variantDir, "app-UNSIGNED-${variantDir.name}.apk")
+            if (!apk.renameTo(target)) {
+                throw GradleException(
+                    "无法重命名未签名包：${apk.absolutePath} -> ${target.absolutePath}。" +
+                        "绝不能静默留下可能与正式包混淆的产物。",
+                )
+            }
+            logger.lifecycle("NBALive: 未签名包已改名为 ${target.relativeTo(apkRoot)}（不能发布）")
+        }
+    }
+}
+
+// ⚠️ AAB 侧的真实缺口（review/04-security.md P2-8）：
+// `bundleRelease` 的打包任务实测是 `com.android.build.gradle.internal.tasks.PackageBundleTask_Decorated`，
+// **不继承** `com.android.build.gradle.tasks.PackageAndroidArtifact` —— 所以上面那道 `doFirst`
+// 闸对 AAB 路径**根本不会 configure**，检查静默不执行（等于没有保护）。
+// 实测：挪走 keystore.properties 后跑 `:app:bundleRelease` 仍 exit=0，
+// 并产出 `outputs/bundle/release/app-release.aab`（默认发布名）。
+//
+// 修法：闸必须挂在**真正产出 AAB 的那个任务**上，且不依赖任何 AGP 内部类型
+// （按任务名 `*ReleaseBundle` 匹配，换 AGP 版本也不会静默失效 —— 见下）：
+//  - 无凭据且未显式声明调试 → 在产出前直接失败，磁盘上**不会**出现 `.aab`
+//    （实测把闸挂在 `bundleRelease` 生命周期任务上太晚：`packageReleaseBundle`
+//     已经把 `app-release.aab` 写出来了，构建失败但文件仍在 —— 不满足原条目的判据）；
+//  - `-PskipSigning=true` 是显式调试路径，允许产出，但必须换成醒目的 UNSIGNED 名字，
+//    绝不能留在 `app-release.aab` 这个发布路径上。
+//    ⚠️ 改名**不能**放在 `packageReleaseBundle.doLast`：AGP 之后的
+//    `produceReleaseBundleIdeListingFile` 仍按 `finalBundleFile` 原路径找文件，
+//    改名会把构建打红（实测 exit=1 / "finalBundleFile specifies file … which doesn't exist"）。
+//    所以改名放在生命周期最后一步 `bundleRelease.doLast`。
+tasks.matching { it.name.endsWith("ReleaseBundle") }.configureEach {
+    doFirst {
+        if (!skipSigning && missingKeystoreKeys.isNotEmpty()) {
+            throw GradleException(
+                "bundleRelease 缺少签名凭据：keystore.properties 缺少或为空 -> " +
+                    "${missingKeystoreKeys.joinToString(", ")}。" +
+                    "无签名的 AAB 不能发布；若只是本地调试，用 -PskipSigning=true 显式声明。",
+            )
+        }
+    }
+}
+
+tasks.matching { it.name == "bundleRelease" }.configureEach {
+    doLast {
+        // 只有显式跳过签名才会走到这里；正式签名包的 `app-release.aab` 一个字都不碰。
+        if (!skipSigning) return@doLast
+        val bundleDir = layout.buildDirectory.dir("outputs/bundle/release").get().asFile
+        val unsigned = bundleDir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".aab") && !it.name.startsWith("app-UNSIGNED-") }
+            .orEmpty()
+        for (aab in unsigned) {
+            val target = File(bundleDir, "app-UNSIGNED-release.aab")
+            if (!aab.renameTo(target)) {
+                throw GradleException(
+                    "无法重命名未签名 AAB：${aab.absolutePath} -> ${target.absolutePath}。" +
+                        "绝不能静默留下可能与正式包混淆的产物。",
+                )
+            }
+            logger.lifecycle("NBALive: 未签名 AAB 已改名为 ${target.relativeTo(bundleDir)}（不能发布）")
         }
     }
 }

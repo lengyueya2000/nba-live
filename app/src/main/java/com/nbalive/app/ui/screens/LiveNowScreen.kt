@@ -292,7 +292,10 @@ private fun LiveNowCard(match: Match, onClick: () -> Unit) {
                     .minimumInteractiveComponentSize()
                     .clip(RoundedCornerShape(Radius.btn))
                     .background(accentBrush())
-                    .clickable(onClick = onClick)
+                    // ⚠️ 这里**不再**单独 `.clickable`（review/03-ui.md P2-25）：
+                    // 点击由整卡承担（外层 `.clickable(onClick = onClick)` 带 onClickLabel），
+                    // 内层再挂一个同动作的 clickable 会让 TalkBack 读到两个可点节点。
+                    // 保留 accentBrush() 底色 —— 视觉上仍是一颗按钮。
                     .padding(horizontal = 14.dp, vertical = 7.dp),
                 contentAlignment = Alignment.Center,
             ) {

@@ -483,4 +483,60 @@ class MainViewModelTest {
         vm.selectSignal(0)
         settle()
     }
+
+    // ---------- 02-P2-5：从播放页返回必须取消在途的详情页请求 ----------
+
+    @Test
+    fun `从播放页返回后 在途详情请求晚到也不能覆写详情态`() = vmTest {
+        // 复现：用户点「刷新线路」（detailJob 在途）后立刻进播放页再按返回。
+        // 旧实现只取消 playJob/loadJob，detailJob 会在用户已经离开详情页之后
+        // 才落地并写 _detailState —— 界面被一个早该结束的请求改掉。
+        val gate = CompletableDeferred<Unit>()
+        var calls = 0
+        val watching = match("watching", "湖人", "勇士", MatchStatus.LIVE)
+        val late = source("watching-late", WEB_PAGE)
+        val vm = MainViewModel(
+            loadMatches = { Result.success(listOf(watching)) },
+            loadSignals = {
+                calls++
+                if (calls == 1) {
+                    // 进场那次：立刻返回空信号，让路由稳定停在 PLAYER
+                    MatchRepository.Detail(signals = emptyList())
+                } else {
+                    // 「刷新线路」那次：挂在 gate 上，模拟真实的在途请求
+                    gate.await()
+                    MatchRepository.Detail(signals = listOf(late))
+                }
+            },
+        )
+        settle()
+        try {
+            vm.playMatch(watching)
+            waitForLoadSignals(vm)
+            settle()
+            assertEquals("进场后应停在播放页", Route.PLAYER, vm.route.value)
+
+            vm.refreshSignals()
+            settle()
+            assertTrue("刷新线路应处于在途", vm.detailState.value.loadingSignals)
+
+            vm.back() // 播放页返回：PLAYER 分支必须取消 detailJob
+            assertEquals(Route.LIST, vm.route.value)
+            assertFalse(vm.detailState.value.loadingSignals)
+
+            // 放行旧请求的挂起点：若 detailJob 没被取消，它会写回详情态
+            gate.complete(Unit)
+            repeat(5) { runCurrent() }
+
+            assertTrue(
+                "已离开播放页后，旧详情请求不能再写 _detailState" +
+                    "（signals=${vm.detailState.value.signals.map { it.pageUrl }}）",
+                vm.detailState.value.signals.isEmpty(),
+            )
+            assertNull(vm.detailState.value.error)
+        } finally {
+            gate.complete(Unit) // 被取消的协程也要能干净收尾
+            vm.back()
+        }
+    }
 }
