@@ -93,6 +93,47 @@ git tag vX.Y.Z
 > 它与 APK 一样**不入库**（`.gitignore` 已排除）：文件里是全量「混淆名 → 原名」对照表，
 > 公开仓库等于把混淆形同虚设。
 
+## CI 发版（tag 自动跑）
+
+`.github/workflows/release.yml`：推 `v*` tag 即自动执行上面那份手工清单，逐步对应：
+
+1. 校验触发 ref 是 `v*` tag，并核对 tag 与 `app/build.gradle.kts` 的 `versionName` 一致（不一致直接失败）；
+2. JDK 17 + Gradle 缓存 + Gradle wrapper 校验；
+3. **两变体全量单测** `:app:testDebugUnitTest :app:testReleaseUnitTest --rerun-tasks` —— 测试不过就不发；
+4. 从 secrets 写出签名凭据（缺任何一个 secret 就明确报错退出，绝不产出未签名包）；
+5. `:app:assembleRelease :app:bundleRelease`；
+6. `apksigner verify --print-certs` 验签 + `aapt2 dump badging` 核对版本号，结果进 job summary；
+   同时检查**没有**产出 `app-UNSIGNED-*.apk`（出现即说明签名凭据没生效）；
+7. 上传 **R8 mapping 作为 workflow artifact**（`r8-mapping-<tag>`，`if-no-files-found: error`）；
+8. 创建/更新 GitHub Release，附件**只有 APK + AAB**。
+
+> ⚠️ **mapping 只作 artifact，绝不挂公开 Release**：它是「混淆名 → 原始名/行号」的全量对照表，
+> 传上去等于把 R8 混淆作废。取用方式：Actions 运行页 → Artifacts → `r8-mapping-<tag>`。
+> 这条由 `ReleasePipelineGuardTest` 的**步骤块级**反向断言钉住。
+
+### 需要的 secrets
+
+| secret | 对应 `keystore.properties` 的键 | 说明 |
+| --- | --- | --- |
+| `KEYSTORE_BASE64` | （文件本身） | `release.jks` 的 base64：`base64 -w0 release.jks`（macOS 用 `base64 -i release.jks`） |
+| `KEYSTORE_PASSWORD` | `storePassword` | keystore 口令 |
+| `KEY_ALIAS` | `keyAlias` | 密钥别名（本仓库当前是 `nba-live`） |
+| `KEY_PASSWORD` | `keyPassword` | 密钥口令 |
+
+workflow 里 `storeFile=release.jks` 写的是**相对仓库根**的路径（`app/build.gradle.kts` 用
+`rootProject.file(...)` 解析），CI 上不需要绝对路径。四个 secret 少任何一个，流水线在打包前就失败。
+
+### 演练（不推新 tag）
+
+```bash
+gh workflow run release.yml --ref <已存在的 tag>   # 用一个已存在的 tag 重跑整条流水线
+```
+
+同一个 tag 的重复触发由 `concurrency` 串行化；Release 已存在时用 `gh release upload --clobber` 覆盖附件。
+
+> 上一节的手工清单**仍然有效**：本地演练、CI 故障或离线发版时照跑；
+> CI 只是把同一条清单自动化，不改变任何一步的判据。
+
 ## 安全与网络
 
 - 明文流量策略集中在 `app/src/main/res/xml/network_security_config.xml`：源站的播放页与 m3u8 切片走 HTTP，而清单所在的 CDN 主机名是**运行时由源站生成并混淆**的（`hdl2.<反转后的主域名>`），无法预先写进域名白名单，因此保留明文许可并把已知主机备案在文件里
