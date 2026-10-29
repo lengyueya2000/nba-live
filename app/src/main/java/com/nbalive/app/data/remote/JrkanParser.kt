@@ -44,8 +44,9 @@ class JrkanParser {
 
         private const val TAG = "JrkanParser"
 
-        /** 线路名里出现这些词就从界面名称中隐去（主播个人推流，不展示其名义）。 */
-        private val EXCLUDED_CHANNEL_KEYWORDS = listOf("主播", "解说", "美女", "聊天")
+        // ⚠️ 线路名的敏感词表已搬到 [ChannelAdmission.EXCLUDED_KEYWORDS]：
+        // 它的语义从"命中即删除整条线路"变成了"命中即隐去名义（必要时才保留）"，
+        // 而那个决定必须能单测，所以和判据放在一起。这里不再留第二份。
     }
 
     /** 队徽地址补全：相对路径按源站 origin 补齐 */
@@ -281,9 +282,12 @@ class JrkanParser {
      *   拼回写死域名的话线路地址指向已经下线的 host，点开就是错误页 ——
      *   换了域名却等于没换。默认值保持 [PLAY_HOST] 只为兼容原调用形态。
      *
-     * 处理策略（按用户要求）：
-     *  1. **删除**线路名含"主播/解说"等字样的线路（主播个人推流，界面不呈现）
-     *  2. 其余线路保留；能直连 m3u8 的排前面，默认选中即可播
+     * 处理策略：**判据在 [ChannelAdmission]**，这里只负责解析、排序与命名：
+     *  1. 名字含"主播/解说"等字样的线路默认不展示其名义
+     *  2. **但过滤不允许把可直连线路清零**：源站确实给了可直连线路时，
+     *     列表里就必须留下至少一条（规则 2 的由来见 [ChannelAdmission] 的 KDoc，
+     *     线上黑屏就是这条被违反造成的）
+     *  3. 能直连 m3u8 的排前面，默认选中即可播；编号在排序后重新分配
      */
     fun parseChannels(
         html: String,
@@ -291,7 +295,7 @@ class JrkanParser {
         playHost: String = PLAY_HOST,
     ): List<StreamSource> {
         val seen = linkedSetOf<String>()
-        val raw = mutableListOf<Pair<String, String>>()  // path to rawLabel
+        val raw = mutableListOf<RawChannel>()
 
         Regex("""<a[^>]*data-play="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
             .findAll(html).forEach { m ->
@@ -303,14 +307,14 @@ class JrkanParser {
 
                 val rawLabel = Regex("""<strong>([^<]+)</strong>""")
                     .find(m.groupValues[2])?.groupValues?.get(1)?.trim().orEmpty()
-                // 涉及主播/解说的线路直接过滤掉，不进入列表
-                if (EXCLUDED_CHANNEL_KEYWORDS.any { rawLabel.contains(it) }) return@forEach
-                raw += path to rawLabel
+                raw += RawChannel(path = path, rawLabel = rawLabel)
             }
 
-        // 可直连的排前面，保证默认选中项就是能播的；
-        // 编号在排序后重新分配，否则界面会出现"线路2、线路3、线路1"
-        return raw.sortedByDescending { (path, _) -> path.contains("/play/sm.html") }
+        // 准入判据：名字过滤 + "不许把可直连线路清零"的补偿（可单测，见 ChannelAdmission）
+        return ChannelAdmission.admit(raw)
+            // 可直连的排前面，保证默认选中项就是能播的；
+            // 编号在排序后重新分配，否则界面会出现"线路2、线路3、线路1"
+            .sortedByDescending { (path, _) -> ChannelAdmission.isDirectPath(path) }
             .mapIndexed { index, (path, rawLabel) ->
                 StreamSource(
                     id = "$matchId-c$index",

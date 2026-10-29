@@ -204,11 +204,46 @@ enum class Provider(val displayName: String) {
 }
 
 /**
+ * 能**静态**还原出 m3u8 的播放页路径。
+ *
+ * ## 为什么是这两个
+ *
+ * 实测（2026-10-29，`play.sportsteam*.com` 的 sub_playlist）：
+ *  - `/play/sm.html?id=N` —— 链路 A 的中转页，页面用 JS 拼出 `/play/{N}.html`，
+ *    里头是 `<iframe src="//demo.songzenet.com/msss.html?id=<encodeURIComponent(m3u8)>">`，
+ *    纯 Kotlin 就能还原（含主域名第二级标签反转）。
+ *  - `/play/steam{playId}.html` —— 链路 A 的**入口**页，页面里就有 `sm.html?id=...`
+ *    的 iframe，跟随一跳即进入上面的中转页。以前它被门禁挡在外面：
+ *    JRKAN 列表页兜底用的正是这个地址，于是兜底线路永远只能走 WebView。
+ *
+ * 其余播放器（vxt / kbs / mgxl / pao）的页面里既没有 `msss.html` 链、也没有 `.m3u8`
+ * 字面量（独立复核：4/4 页面两条抽取规则命中数都是 0）—— 它们把
+ * `window.playerConfig.playerUrlBase64`（播放器入口，部分线路还另有 `window.encodedStr`
+ * 加密串，`vxt` 就没有）交给页内 JS 拼成 `paps.html` 播放页，
+ * 还原地址必须执行页面里的解密脚本 —— 只能交给 WebView 承载，不在"静态可解析"范围内。
+ */
+private val SM_PLAY_PATH = "/play/sm.html"
+
+private val STEAM_PLAY_PATH = Regex("""/play/steam\d+\.html""")
+
+/**
+ * 播放页地址能否被 `StreamUrlResolver` 静态解析成可直连的 m3u8。
+ *
+ * ⚠️ **判据唯一来源**：`StreamSource.isDirectHls` 与线路准入判据
+ * （`ChannelAdmission.isDirectPath`）都调这里。各写一份就会出现
+ * "准入以为能播、解析器以为不能播"这种自相矛盾的分叉。
+ */
+fun isStaticallyResolvablePlayPage(pageUrl: String): Boolean =
+    pageUrl.contains(SM_PLAY_PATH) || STEAM_PLAY_PATH.containsMatchIn(pageUrl)
+
+/**
  * 该线路能否静态解析成 m3u8 直连播放。
  *
- * 实测：只有 `/play/sm.html` 这条链路能还原出 m3u8；
- * JRS 的 mgxl/pao 播放器用 XXTEA 加密，JRKAN 的 wen/pao 线路需要额外令牌，
- * 这些只能交给 WebView 承载源站页面。
+ * ⚠️ 它决定的是"要不要尝试直连"，不是"直连一定会成功"：
+ * 解析出的地址还会被实际拉一次清单校验（`#EXTM3U` 才算数），
+ * 失败才降级到 WebView。反过来说，**漏判**的代价是这条线路连试都不试
+ * —— 线上黑屏就是这么来的：唯一可直连的几条被名字过滤删光，
+ * 剩下的全是这个判据为 false 的网页线路。
  */
 val StreamSource.isDirectHls: Boolean
-    get() = pageUrl.contains("/play/sm.html")
+    get() = isStaticallyResolvablePlayPage(pageUrl)
