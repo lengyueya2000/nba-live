@@ -109,7 +109,7 @@
 | 03-P2-27 | 队徽回退字号不随容器缩放 | 已落地 | `logoFallbackFontSize`（Common.kt:80 + 使用 :117）；`ComponentPerfTest`（纯判据 3 组 × 3 fontScale + 源码调用点断言）；commit `532a7b0` |
 | 03-P2-28 | `surfaceContainer` 系列未定义 | 已落地 | `Theme.kt:238-244`（DarkColors 9 槽）、`:275-280`（LightColors）；`ThemeSlotTest`（10，含"不许退回 M3 默认中性色"反向断言）；commit `532a7b0` |
 | 03-P2-29 | 色板对象是 public | 已落地 | `internal object SportDark`（Theme.kt:47）、`internal object SportLight`（:66）+ 越界引用守卫；`ThemeSlotTest.色板对象必须收成 internal`/`色板对象不得被 theme 之外的生产代码引用`；commit `532a7b0` |
-| 03-P2-30 | 绕过主题的硬编码颜色 | **未落地**（部分） | 已落地那半：hero 胶囊底改为 `AccentContrast.HeroPillBackground`（`MatchListScreen.kt:366/422`，:419 注释）。**未落地那半**：队徽圆底仍是硬编码白 —— `Common.kt:152 .background(Color.White)`；浅色主题下压在 `SportLight.Card = #FFFFFF` 上对比度 **1.0:1**（审查给的修法是随主题取色或加描边，均未做） |
+| 03-P2-30 | 绕过主题的硬编码颜色 | 已落地（第十回合确认） | hero 胶囊底走 `AccentContrast.HeroPillBackground`（`MatchListScreen.kt:366/422`）；队徽圆底已收敛到主题 token `logoPlate()`（`Common.kt:159`，token 定义 `SportLight.LogoPlate=#B8C0D4` / `SportDark.LogoPlate=#FFFFFF`），`LogoPlateContrastTest`(7) 钉住对比度（浅色 **1.82:1**、深色 **16.83:1**），已无硬编码白圆底残留。commit `48a3f3a` |
 | 03-P2-31 | `AppPrefs` 用 `loaded` 短路 | 已落地 | 短路已删；改为 `attach(context)`（AppPrefs.kt:39）+ 未 attach 直接 `error(...)`（:72，PlayerPrefs.kt:82 同）；`NavHostGuardTest.AppPrefs 不得再用 loaded 短路`；commit `7828a6b` |
 | 03-P2-32 | 时间显示两套口径 | 已落地 | 三个页面统一 `hhmm()`：`MatchListScreen.kt:319/468`、`LiveNowScreen.kt:242`、`SearchScreen.kt:262`；`ScreenConsistencyGuardTest.screens 不得直接渲染源站 timeLabel`（全目录扫描）；commit `7fe2ead` |
 | 03-P2-33 | 全部 UI 文案硬编码 | 有据的取舍 | 审查在 `03-ui.md:474` 自己判定"**按项目现状，这不是缺陷**……不需要把全部文案搬进 strings.xml"；现状：`strings.xml` 确实仍只有 `app_name`（实测 3 行）。其"低成本子项"已落地：`dayLabel`/`groupByDay` 移到 `MatchFormat.kt:90/103` 并 `internal`，`DayLabelTest`（7）可测 |
