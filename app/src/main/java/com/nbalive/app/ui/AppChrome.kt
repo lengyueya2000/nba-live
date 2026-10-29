@@ -440,8 +440,6 @@ internal fun ListBranch(
     aspectMode: AspectMode,
     darkMode: Boolean,
     onSetFullscreen: (Boolean) -> Unit,
-    onAspectChange: (AspectMode) -> Unit,
-    onDarkModeChange: (Boolean) -> Unit,
 ) {
     // ⚠️ visibleMatches / counts **不需要**再包一层 remember（review/03-ui.md P2-9）：
     // MainViewModel 里它们已经是 data class 的 `val`（构造时求值一次），
@@ -498,8 +496,10 @@ internal fun ListBranch(
                 darkMode = darkMode,
                 // BuildConfig.VERSION_NAME：PackageManager.getPackageInfo(pkg, 0) 在 API 33+ 已废弃
                 versionName = BuildConfig.VERSION_NAME,
-                onAspectChange = onAspectChange,
-                onDarkModeChange = onDarkModeChange,
+                // 偏好写入的唯一链路（review/03-ui.md P2-17 写路径收口）：
+                // UI → VM 写入口 → PrefsStore（注入）→ 平台层实现。这里不碰 AppPrefs/PlayerPrefs。
+                onAspectChange = { mode -> viewModel.setAspectMode(mode) },
+                onDarkModeChange = { dark -> viewModel.setDarkMode(dark) },
             )
         }
     }

@@ -355,6 +355,27 @@ class MainViewModel(
     val aspectMode: StateFlow<AspectMode> = prefs.aspect
 
     /**
+     * 切换深色模式（**唯一的写入口**，review/03-ui.md P2-17 的写路径收口）。
+     *
+     * 链路：UI → [setDarkMode] → 注入的 [PrefsStore] → `AndroidPrefsStore`（平台层）
+     * → `AppPrefs`。界面因此既拿不到 `Context`，也不认识 `AppPrefs` / `PlayerPrefs`；
+     * 判据见 `PrefsBoundaryGuardTest` 与 `NavHostGuardTest`（两侧都查真实调用点）。
+     */
+    fun setDarkMode(dark: Boolean) {
+        prefs.setDarkMode(dark)
+    }
+
+    /**
+     * 切换画面模式（**唯一的写入口**）：链路同 [setDarkMode]。
+     *
+     * ⚠️ 两个消费页（「我的」的胶囊 / 播放页的胶囊）都必须调它 ——
+     * 只接一处时另一页点了没反应，而且没有编译期信号。
+     */
+    fun setAspectMode(mode: AspectMode) {
+        prefs.setAspect(mode)
+    }
+
+    /**
      * 写错误提示：顺带把 [PlayerUiState.errorId] 自增。
      *
      * 界面拿 errorId 当提示的 key——只拿文案当 key 时，同样的文案连着报两次，

@@ -117,6 +117,52 @@ class PrefsBoundaryGuardTest {
     }
 
     @Test
+    fun `写链路必须有真实消费点`() {
+        // 03-P2-17 **写路径收口**：这一轮之前 `PrefsStore.setDarkMode/setAspect` **只有实现、
+        // 没有任何生产调用点**（审计口径的「假安全感」）—— 开关能存下来靠的是
+        // MainActivity 直接传的回调。新链路：UI → viewModel 写入口 → PrefsStore
+        // → AndroidPrefsStore → AppPrefs/PlayerPrefs。下面两条就是这条链的两个接点。
+        val vmEntries = uiFiles().flatMap { vmWriteEntryViolations(it.name, it.readText()) }
+        assertTrue(
+            "UI 里没有消费 VM 的偏好写入口（`viewModel.setDarkMode(...)` / `viewModel.setAspectMode(...)`）：\n" +
+                "这条链断了就退回到「接口方法只有实现、没人调」—— 开关点了不落盘，" +
+                "而纯判据测试仍然全绿（03-P2-17 写路径收口）。",
+            vmEntries.isNotEmpty(),
+        )
+
+        val storeConsumption = productionFiles().flatMap { prefsStoreWriteViolations(it.name, it.readText()) }
+        assertTrue(
+            "`PrefsStore.setDarkMode/setAspect` 在 src/main 里没有**实现之外**的调用点：\n" +
+                "接口声明了却没人消费 = 本仓库最忌的「假安全感」。" +
+                "VM 的写方法必须真的调注入的 `prefs.setDarkMode(...)` / `prefs.setAspect(...)`。",
+            storeConsumption.isNotEmpty(),
+        )
+
+        // 判据自检（与生产判定走**同一个**函数）
+        assertTrue(
+            "真的消费 VM 写入口的样本必须命中",
+            vmWriteEntryViolations("X.kt", "onDarkModeChange = { dark -> viewModel.setDarkMode(dark) }").isNotEmpty(),
+        )
+        assertTrue(
+            "没消费 VM 写入口的样本必须不命中",
+            vmWriteEntryViolations("X.kt", "onDarkModeChange = { dark -> println(dark) }").isEmpty(),
+        )
+        assertTrue(
+            "注释里的 VM 写入口不算消费点",
+            vmWriteEntryViolations("X.kt", "// viewModel.setDarkMode(true)").isEmpty(),
+        )
+        assertTrue(
+            "`prefs.setDarkMode(...)` 样本必须命中",
+            prefsStoreWriteViolations("MainViewModel.kt", "fun setDarkMode(dark: Boolean) = prefs.setDarkMode(dark)")
+                .isNotEmpty(),
+        )
+        assertTrue(
+            "接口声明（没有 prefs. 接收者）不算消费点",
+            prefsStoreWriteViolations("Other.kt", "fun setDarkMode(dark: Boolean) {}").isEmpty(),
+        )
+    }
+
+    @Test
     fun `生产落盘点必须传普通值`() {
         val calls = productionFiles().flatMap { file ->
             plainSetterCalls(file.name, file.readText())
@@ -210,6 +256,21 @@ class PrefsBoundaryGuardTest {
             .toList()
     }
 
+    /** UI 里 VM 写入口的消费点（空 = 没人消费）。 */
+    private fun vmWriteEntryViolations(fileName: String, rawText: String): List<String> =
+        VM_WRITE_ENTRY.findAll(GuardSourceScan.stripNonCode(rawText))
+            .map { "$fileName: ${it.value.trim()}" }
+            .toList()
+
+    /** 注入的 `PrefsStore` 写方法的消费点（空 = 接口方法没人调）。 */
+    private fun prefsStoreWriteViolations(fileName: String, rawText: String): List<String> {
+        // 接口与实现所在地：定义不算消费
+        if (fileName == STORE_IMPL_FILE) return emptyList()
+        return PREFS_STORE_WRITE_CALL.findAll(GuardSourceScan.stripNonCode(rawText))
+            .map { "$fileName: ${it.value.trim()}" }
+            .toList()
+    }
+
     // ---------------------------------------------------------------
     // 文件定位
     // ---------------------------------------------------------------
@@ -259,5 +320,22 @@ class PrefsBoundaryGuardTest {
 
         /** UI 里就地决定 null 该怎么解释（P2-16 只允许一处）。 */
         val DARK_PREF_NULL_FALLBACK = Regex("""\bdarkPref\s*\?:""")
+
+        /** UI 里 VM 的偏好写入口（调用与方法引用都算）。 */
+        val VM_WRITE_ENTRY = Regex(
+            """\bviewModel\s*(?:\.\s*(?:setDarkMode|setAspectMode)\s*\(|::\s*(?:setDarkMode|setAspectMode)\b)""",
+        )
+
+        /**
+         * 注入的 `PrefsStore` 的写方法消费点。
+         *
+         * 接收者限定 `prefs` / `store`（`MainViewModel` 的构造形参就叫 `prefs`）——
+         * 刻意**不**写成"任意 `.setDarkMode(`"：那样会把 MainActivity 里
+         * `AppPrefs.setDarkMode(` 也算成"接口被消费"，恰好掩盖了这轮要消灭的零消费点。
+         */
+        val PREFS_STORE_WRITE_CALL = Regex("""\b(?:prefs|store)\s*\.\s*(?:setDarkMode|setAspect)\s*\(""")
+
+        /** 平台层存储实现所在文件（接口/实现定义不算消费点）。 */
+        const val STORE_IMPL_FILE = "PrefsStore.kt"
     }
 }

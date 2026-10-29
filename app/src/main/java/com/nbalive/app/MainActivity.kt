@@ -23,13 +23,11 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.ui.AndroidPrefsStore
-import com.nbalive.app.ui.AppPrefs
 import com.nbalive.app.ui.MainViewModel
 import com.nbalive.app.ui.NbaLiveApp
 import com.nbalive.app.ui.PipAspectReset
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlaybackHealth
-import com.nbalive.app.ui.PlayerPrefs
 import com.nbalive.app.ui.PrefsStore
 import com.nbalive.app.ui.resolveDarkMode
 import com.nbalive.app.ui.theme.NbaLiveTheme
@@ -79,14 +77,11 @@ class MainActivity : ComponentActivity() {
             val darkPref by vm.darkPref.collectAsStateWithLifecycle()
             NbaLiveTheme(darkTheme = resolveDarkMode(darkPref)) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    NbaLiveApp(
-                        viewModel = vm,
-                        // 偏好落盘是"平台层"的活：这两个 setter 已经**不收 Context**
-                        // （见 AppPrefs/PlayerPrefs 的 attach），Composable 只回调、不持有 Context
-                        // （review/03-ui.md P2-17）
-                        onDarkModeChange = { AppPrefs.setDarkMode(it) },
-                        onAspectChange = { PlayerPrefs.setAspect(it) },
-                    )
+                    // 偏好写入不需要平台层回调：链路是 UI → `viewModel.setDarkMode(...)`
+                    // / `viewModel.setAspectMode(...)` → 注入的 PrefsStore（本文件构造的
+                    // AndroidPrefsStore）→ AppPrefs/PlayerPrefs 落盘。
+                    // 这里只负责把存储交给 VM（review/03-ui.md P2-17 写路径收口）。
+                    NbaLiveApp(viewModel = vm)
                 }
             }
         }

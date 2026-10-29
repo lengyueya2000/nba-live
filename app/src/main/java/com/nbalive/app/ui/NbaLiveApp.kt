@@ -26,18 +26,7 @@ import com.nbalive.app.ui.screens.PlayerScreen
  *  - 根节点自己只留"读状态 → 摆骨架"。
  */
 @Composable
-fun NbaLiveApp(
-    viewModel: MainViewModel,
-    /**
-     * 深色模式**落盘**回调（review/03-ui.md P2-17）。
-     *
-     * 持久化需要 Context，而 Context 不该漏进 UI 层（也无法在纯 Compose 单测里验证），
-     * 所以由平台层 MainActivity 实现并在调用处注入；这里只传值。
-     */
-    onDarkModeChange: (Boolean) -> Unit,
-    /** 画面模式落盘回调，同 [onDarkModeChange] */
-    onAspectChange: (AspectMode) -> Unit,
-) {
+fun NbaLiveApp(viewModel: MainViewModel) {
     // ⚠️ 根节点只消费**一个**状态对象 + 一条进程级全局态（review/03-ui.md P2-15）：
     // 列表/详情/播放页的状态各自在 RouteHost 里收集，那些高频抖动
     // 不再推动根节点重组（根节点原来各自 collect 6~8 条 flow）。
@@ -96,7 +85,8 @@ fun NbaLiveApp(
                     viewModel = viewModel,
                     darkMode = darkMode,
                     onSearch = { searchOpen = true },
-                    onToggleTheme = { onDarkModeChange(!darkMode) },
+                    // 偏好写入的唯一链路（P2-17 写路径收口）：UI → VM 写入口 → PrefsStore
+                    onToggleTheme = { viewModel.setDarkMode(!darkMode) },
                     onRefresh = viewModel::refresh,
                     onBack = viewModel::back,
                 )
@@ -127,8 +117,6 @@ fun NbaLiveApp(
             darkMode = darkMode,
             onSetFullscreen = { fullscreen = it },
             onCloseSearch = { searchOpen = false },
-            onAspectChange = onAspectChange,
-            onDarkModeChange = onDarkModeChange,
         )
     }
 
@@ -173,8 +161,6 @@ private fun RouteHost(
     darkMode: Boolean,
     onSetFullscreen: (Boolean) -> Unit,
     onCloseSearch: () -> Unit,
-    onAspectChange: (AspectMode) -> Unit,
-    onDarkModeChange: (Boolean) -> Unit,
 ) {
     val listState by viewModel.listState.collectAsStateWithLifecycle()
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
@@ -263,8 +249,6 @@ private fun RouteHost(
             aspectMode = aspectMode,
             darkMode = darkMode,
             onSetFullscreen = onSetFullscreen,
-            onAspectChange = onAspectChange,
-            onDarkModeChange = onDarkModeChange,
         )
 
         Route.DETAIL -> when (
@@ -314,7 +298,6 @@ private fun RouteHost(
                 activity = activity,
                 playerLocked = playerLocked,
                 viewModel = viewModel,
-                onAspectChange = onAspectChange,
                 onSetFullscreen = onSetFullscreen,
                 // 锁/解锁都作用于当前这场
                 onToggleLock = { id -> lockedMatchId = if (playerLocked) null else id },
@@ -343,7 +326,6 @@ private fun PlayerBranch(
     activity: MainActivity?,
     playerLocked: Boolean,
     viewModel: MainViewModel,
-    onAspectChange: (AspectMode) -> Unit,
     onSetFullscreen: (Boolean) -> Unit,
     onToggleLock: (String?) -> Unit,
 ) {
@@ -371,7 +353,8 @@ private fun PlayerBranch(
         // 播放页不许再判一遍等级
         suspectHint = PlaybackHealth.showsSuspectHint(playbackLevel),
         aspectMode = aspectMode,
-        onAspectChange = onAspectChange,
+        // 播放页的胶囊同样走 VM 写入口（与「我的」页同一个函数，P2-17 写路径收口）
+        onAspectChange = { mode -> viewModel.setAspectMode(mode) },
         onReconnect = viewModel::reconnect,
         liveMatches = liveMatches,
         onLiveMatchClick = viewModel::playMatch,

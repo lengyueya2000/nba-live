@@ -252,39 +252,81 @@ class NavHostGuardTest {
     }
 
     @Test
-    fun `偏好落盘必须由平台层完成且回调真的接到界面上`() {
-        val activityCode = stripComments(mainActivity().readText())
+    fun `偏好写入必须走 VM 写入口 且生产只有一个落盘实现`() {
+        // ⚠️ 本判据在 03-P2-17 **写路径收口**时**重锚**，不是删掉：
+        // 旧判据要求 `MainActivity` 里出现 `AppPrefs.setDarkMode(` / `PlayerPrefs.setAspect(`、
+        // 且 UI 里出现 `onDarkModeChange = onDarkModeChange` 接线 —— 那是"平台层落盘"阶段的形态。
+        // 收口后写路径是：UI → `viewModel.setDarkMode(...)` → `PrefsStore`（注入）
+        // → `AndroidPrefsStore`（平台层）→ `AppPrefs/PlayerPrefs`。
+        // 新判据守住新链路的真实消费点，强度不低于旧的（旧判据对"写入口没人消费"
+        // 与"平台层又长出一个落盘点"这两种回归完全无感）：
+        //  ① UI 生产代码里必须真的调 VM 写入口（否则开关点了不落盘）；
+        //  ② `AppPrefs.setDarkMode(` / `PlayerPrefs.setAspect(` 在生产里**只**允许出现在
+        //     PrefsStore.kt 的平台层实现里（MainActivity 不再是落点，也不许再长出第二个）；
+        //  ③ `MainActivity` 仍负责构造并注入存储（否则 VM 退回内存实现 → 偏好静默不持久化）。
+        val uiCode = uiFiles().joinToString("\n") { stripComments(it.readText()) }
+        for (entry in VM_WRITE_ENTRIES) {
+            assertTrue(
+                "UI 里没有调用 VM 的偏好写入口（应出现形如 `viewModel.setDarkMode(...)` / " +
+                    "`viewModel.setAspectMode(...)` 的调用或方法引用）：开关点了不会落盘。" +
+                    "写路径必须是 UI → VM 写入口 → PrefsStore → 平台层（review/03-ui.md P2-17 收口）",
+                Regex(entry).containsMatchIn(uiCode),
+            )
+        }
+        // 画面模式有两个消费页（我的页 + 播放页）：只保留一处时另一页的胶囊会静默失效。
+        val aspectSites = Regex(VM_WRITE_ENTRY_ASPECT).findAll(uiCode).count()
         assertTrue(
-            "偏好落盘必须由平台层完成（否则开关点了不落盘）：" +
-                "MainActivity 里应出现 AppPrefs.setDarkMode( 与 PlayerPrefs.setAspect(",
-            activityCode.contains("AppPrefs.setDarkMode(") && activityCode.contains("PlayerPrefs.setAspect("),
-        )
-        assertTrue(
-            "MainActivity 必须把两个落盘回调传给 NbaLiveApp（onDarkModeChange= / onAspectChange=）",
-            activityCode.contains("onDarkModeChange =") && activityCode.contains("onAspectChange ="),
+            "画面模式的写入口至少要有两个消费点（我的页 + 播放页），实际 $aspectSites 处",
+            aspectSites >= 2,
         )
 
-        val uiCode = uiFiles().joinToString("\n") { stripComments(it.readText()) }
+        val storeFile = source(STORE_IMPL_FILE)
+        val landing = productionFiles()
+            .filter { it.name != storeFile.name }
+            .flatMap { storeBackendWriteViolations(it.name, it.readText()) }
         assertTrue(
-            "ProfileScreen 的深色开关必须接到参数上，不能传常量或空实现（P2-17）",
-            Regex("""onDarkModeChange\s*=\s*onDarkModeChange\b""").containsMatchIn(uiCode),
+            "偏好落盘的实现只允许在 ${storeFile.name}（平台层存储实现），这些地方也出现了：\n" +
+                landing.joinToString("\n").prependIndent("  ") +
+                "\nMainActivity 只该构造/注入存储，不该再直接写偏好（03-P2-17 写路径收口）。",
+            landing.isEmpty(),
         )
-        // ⚠️ 从"只看 NbaLiveApp.kt + 精确计数 == 2"改为"扫 ui/ 全目录 + 每个实参都必须是真实回调"：
-        // 03-P2-18 把 UI 拆成 AppChrome/AppEffects/SearchOverlay 后，回调会多一层透传，
-        // 精确计数会随**合法**重构波动（这正是审计点名的"正则只匹配当前写法"形态）；
-        // 而"每个消费点都不许传常量/空实现"才是 P2-17 要守的语义，也比计数更强
-        // （计数不变但把某一处改成 `{}` 时，旧断言抓不到，这条会红）。
-        val aspectArgs = Regex("""onAspectChange\s*=\s*([^\n,)]+)""").findAll(uiCode)
-            .map { it.groupValues[1].trim() }
-            .toList()
+        assertEquals(
+            "${storeFile.name} 必须保留两处落盘实现（AppPrefs / PlayerPrefs 的委托），" +
+                "否则新链路断在最后一环",
+            2,
+            STORE_BACKEND_WRITE.findAll(stripComments(storeFile.readText())).count(),
+        )
+
+        val activity = stripComments(mainActivity().readText())
         assertTrue(
-            "画面模式至少要有两个消费点（我的页 + 播放页）接到真实回调（P2-17），" +
-                "实际 ${aspectArgs.size} 处：$aspectArgs",
-            aspectArgs.size >= 2,
+            "MainActivity 必须构造并注入 AndroidPrefsStore（否则 VM 会退回 InMemoryPrefsStore，" +
+                "偏好静默不持久化）：期望同时出现 `AndroidPrefsStore(` 与 `prefs = prefs`",
+            activity.contains("AndroidPrefsStore(") && activity.contains("prefs = prefs"),
+        )
+
+        // 判据自检：违规样本必须命中、注释/定义不命中（与生产判定走**同一个**函数）
+        assertTrue(
+            "「UI 没调 VM 写入口」的样本被误判成合规（守卫会退化成摆设）",
+            vmWriteEntryViolations("X.kt", "onDarkModeChange = { dark -> println(dark) }").isEmpty(),
         )
         assertTrue(
-            "以下 onAspectChange 的实参不是真实回调（传常量/空实现 = 开关点了没反应，P2-17）：$aspectArgs",
-            aspectArgs.all { it.contains("onAspectChange") },
+            "真的调了 VM 写入口的样本必须命中",
+            vmWriteEntryViolations("X.kt", "onDarkModeChange = { dark -> viewModel.setDarkMode(dark) }").isNotEmpty(),
+        )
+        assertTrue(
+            "注释里的 VM 写入口不算消费点",
+            vmWriteEntryViolations("X.kt", "// viewModel.setDarkMode(true)").isEmpty(),
+        )
+        assertTrue(
+            "平台层之外的落盘实现必须被抓到",
+            storeBackendWriteViolations("MainActivity.kt", "AppPrefs.setDarkMode(it)").isNotEmpty(),
+        )
+        assertTrue(
+            "存储实现文件自身不算「平台层之外的落点」",
+            storeBackendWriteViolations(
+                STORE_IMPL_FILE,
+                "override fun setDarkMode(dark: Boolean) = AppPrefs.setDarkMode(dark)",
+            ).isEmpty(),
         )
     }
 
@@ -397,6 +439,21 @@ class NavHostGuardTest {
     /** `com/nbalive/app` 下全部生产 kt（含 `MainActivity.kt` 这类平台层文件）。 */
     private fun productionFiles(): List<File> =
         productionRoot().walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+
+    /** UI 里 VM 写入口的消费点（方法调用或方法引用都算；空 = 没人消费）。 */
+    private fun vmWriteEntryViolations(fileName: String, rawText: String): List<String> =
+        VM_WRITE_ENTRY.findAll(stripComments(rawText)).map { "$fileName: ${it.value.trim()}" }.toList()
+
+    /**
+     * 偏好落盘的**实现**调用（`AppPrefs.setDarkMode(` / `PlayerPrefs.setAspect(`）。
+     *
+     * 允许的只有平台层存储实现（[STORE_IMPL_FILE]）—— 别处出现就是在 MainActivity
+     * 或 UI 层又长出一个落盘点（空 = 达标）。
+     */
+    private fun storeBackendWriteViolations(fileName: String, rawText: String): List<String> {
+        if (fileName == STORE_IMPL_FILE) return emptyList()
+        return STORE_BACKEND_WRITE.findAll(stripComments(rawText)).map { "$fileName: ${it.value.trim()}" }.toList()
+    }
 
     /**
      * 偏好 setter 的签名/调用里出现 `Context` 的违规说明（空 = 达标）。
@@ -527,5 +584,32 @@ class NavHostGuardTest {
             "AppEffects.kt",
             "AppBackHandling.kt",
         )
+
+        /**
+         * UI 里 VM 的偏好写入口（调用与方法引用都算）。
+         *
+         * 03-P2-17 写路径收口后，UI 只能通过它写偏好 ——
+         * 点开关却没人调这个入口，就等于"开关点了不落盘"且没有编译期信号。
+         */
+        val VM_WRITE_ENTRY = Regex(
+            """\bviewModel\s*(?:\.\s*(?:setDarkMode|setAspectMode)\s*\(|::\s*(?:setDarkMode|setAspectMode)\b)""",
+        )
+
+        /** 逐条断言的写入口（失败时能指出缺哪个） */
+        val VM_WRITE_ENTRIES = listOf(
+            """\bviewModel\s*(?:\.\s*setDarkMode\s*\(|::\s*setDarkMode\b)""",
+            """\bviewModel\s*(?:\.\s*setAspectMode\s*\(|::\s*setAspectMode\b)""",
+        )
+
+        /** 画面模式的 VM 写入口（用于"两个消费页"计数） */
+        const val VM_WRITE_ENTRY_ASPECT =
+            """\bviewModel\s*(?:\.\s*setAspectMode\s*\(|::\s*setAspectMode\b)"""
+
+        /** 平台层存储的落盘实现（`AppPrefs.setDarkMode(` / `PlayerPrefs.setAspect(`） */
+        val STORE_BACKEND_WRITE =
+            Regex("""\b(?:AppPrefs\s*\.\s*setDarkMode|PlayerPrefs\s*\.\s*setAspect)\s*\(""")
+
+        /** 唯一允许出现落盘实现的文件（平台层存储实现） */
+        const val STORE_IMPL_FILE = "PrefsStore.kt"
     }
 }
