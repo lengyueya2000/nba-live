@@ -22,6 +22,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nbalive.app.data.remote.safeLogWarn
+import com.nbalive.app.ui.AndroidPrefsStore
 import com.nbalive.app.ui.AppPrefs
 import com.nbalive.app.ui.MainViewModel
 import com.nbalive.app.ui.NbaLiveApp
@@ -29,6 +30,7 @@ import com.nbalive.app.ui.PipAspectReset
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.PlayerPrefs
+import com.nbalive.app.ui.PrefsStore
 import com.nbalive.app.ui.resolveDarkMode
 import com.nbalive.app.ui.theme.NbaLiveTheme
 import kotlin.math.min
@@ -46,35 +48,44 @@ class MainActivity : ComponentActivity() {
         // 不保证回调 onPictureInPictureModeChanged(false)，进程还活着的话，
         // 下一次进播放页会直接渲染成"只有视频、无任何控件"的假死界面。
         PipState.inPip.value = false
-        PlayerPrefs.init(applicationContext)
-        AppPrefs.init(applicationContext)
+        // 偏好存储（review/03-ui.md P2-17 的剩余部分）：
+        // `Context` 只在**平台层**出现这一次（交给 Android 实现自己持有），
+        // 之后 UI 与 VM 见到的都是无 Context 的读/写。
+        val prefs: PrefsStore = AndroidPrefsStore(applicationContext)
+        prefs.init()
         enableEdgeToEdge()
         setContent {
+            // ⚠️ 必须显式注入**接了 SavedStateRegistry 的** SavedStateHandle
+            // （review/03-ui.md P2-2）：MainViewModel 的 savedStateHandle 有默认值
+            // （为了不强迫既有测试改构造调用），所以无参 `viewModel()` 拿到的是
+            // 那个默认 handle —— 导航状态照旧不持久化，而所有单测仍然全绿。
+            // 这是本轮最容易"静默降级"的地方；NavRestoreTest 扫源码钉住了这里。
+            // 同一个工厂里把偏好存储也注进去：VM 依赖的是 PrefsStore 接口，
+            // 所以它的单测注入内存实现就能跑（不需要 Application，见 PrefsStore 的 KDoc）。
+            val vm: MainViewModel = viewModel(
+                factory = viewModelFactory {
+                    initializer {
+                        MainViewModel(
+                            prefs = prefs,
+                            savedStateHandle = createSavedStateHandle(),
+                        )
+                    }
+                },
+            )
             // 深色模式：本应用设计是深色优先 —— 没手动设置过（null）就是深色。
             // ⚠️「null 到底怎么解释」只有**一处**实现：AppPrefs.resolveDarkMode（有单测）。
             // 这里与 NbaLiveApp 必须调用同一个函数，否则将来规则一变、漏改一处，
             // 就会出现「主题是浅色、状态栏图标按深色画」的错配（review/03-ui.md P2-16）。
-            val darkPref by AppPrefs.darkMode.collectAsStateWithLifecycle()
+            val darkPref by vm.darkPref.collectAsStateWithLifecycle()
             NbaLiveTheme(darkTheme = resolveDarkMode(darkPref)) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    // ⚠️ 必须显式注入**接了 SavedStateRegistry 的** SavedStateHandle
-                    // （review/03-ui.md P2-2）：MainViewModel 的 savedStateHandle 有默认值
-                    // （为了不强迫既有测试改构造调用），所以无参 `viewModel()` 拿到的是
-                    // 那个默认 handle —— 导航状态照旧不持久化，而所有单测仍然全绿。
-                    // 这是本轮最容易"静默降级"的地方；NavRestoreTest 扫源码钉住了这里。
-                    val vm: MainViewModel = viewModel(
-                        factory = viewModelFactory {
-                            initializer {
-                                MainViewModel(savedStateHandle = createSavedStateHandle())
-                            }
-                        },
-                    )
                     NbaLiveApp(
                         viewModel = vm,
-                        // 偏好落盘是"平台层"的活：需要 Context 的事情留在 Activity，
-                        // Composable 只回调、不持有 Context（review/03-ui.md P2-17）
-                        onDarkModeChange = { AppPrefs.setDarkMode(applicationContext, it) },
-                        onAspectChange = { PlayerPrefs.setAspect(applicationContext, it) },
+                        // 偏好落盘是"平台层"的活：这两个 setter 已经**不收 Context**
+                        // （见 AppPrefs/PlayerPrefs 的 attach），Composable 只回调、不持有 Context
+                        // （review/03-ui.md P2-17）
+                        onDarkModeChange = { AppPrefs.setDarkMode(it) },
+                        onAspectChange = { PlayerPrefs.setAspect(it) },
                     )
                 }
             }

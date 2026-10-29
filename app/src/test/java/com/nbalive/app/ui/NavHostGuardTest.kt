@@ -198,18 +198,57 @@ class NavHostGuardTest {
 
     @Test
     fun `Composable 不得把 Context 传给偏好写入`() {
-        // ⚠️ 从"只看 NbaLiveApp.kt"扩到 **ui/ 全目录**：03-P2-18 把 UI 拆成
-        // AppChrome/AppEffects/SearchOverlay 等文件后，只扫一个文件会让回归躲到新文件里
-        //（"扫的文件变了但判据没变"就是假安全感）。
-        val code = uiFiles().joinToString("\n") { stripComments(it.readText()) }
-        for (call in listOf("AppPrefs.setDarkMode(", "PlayerPrefs.setAspect(")) {
-            assertFalse(
-                "Composable 里直接调 $call 写 SharedPreferences：把 Android Context 这层依赖" +
-                    "漏进了 UI（review/03-ui.md P2-17），也无法在纯 Compose 单测里验证。\n" +
-                    "落盘应由平台层（MainActivity）负责，UI 只回调。",
-                code.contains(call),
-            )
+        // ⚠️ 判据从「ui/ 全目录 contains(AppPrefs.setDarkMode(…)」**收紧**为下面两条。
+        //
+        // 为什么必须改（不是因为红了才改 —— 旧的名字判据现在既漏又假）：
+        // P2-17 修完后 setter **本身不再收 Context**（Context 只由平台层 attach 一次，
+        // 见 AppPrefs/PlayerPrefs 的 attach），于是「setter 名字出现」不再等于
+        // 「把 Context 传进 UI」。当前 ui/ 里唯一的出现处是 PrefsStore.kt:96/98 的
+        // AndroidPrefsStore —— **平台层存储实现**（只有 MainActivity 构造它），
+        // 调用时传的是普通 Boolean / AspectMode，没有任何 Context 进入 UI。
+        // 旧判据漏的是「签名改成无 Context、调用点却仍传 context」，
+        // 假的是「平台层存储实现里的一次普通值调用」。
+        // 现在守住真正要守的两件事：
+        //  ① 任何生产调用点/签名都不得再出现 Context（那才是 Context 漏进 UI）；
+        //  ② UI **组合项**文件不得直接引用偏好单例（读/写都该走 VM 暴露的状态）。
+        val withContext = productionFiles().flatMap { file ->
+            setterContextViolations(file.name, file.readText())
         }
+        assertTrue(
+            "以下偏好写入的签名/调用里出现了 Context：\n" +
+                withContext.joinToString("\n").prependIndent("  ") +
+                "\nContext 只允许在平台层 attach 一次（AppPrefs/PlayerPrefs 的 attach），" +
+                "之后 setter 收的必须是普通值（review/03-ui.md P2-17）。",
+            withContext.isEmpty(),
+        )
+
+        val uiRefs = COMPOSABLE_FILES.flatMap { name ->
+            val file = GuardSourceScan.uniqueFile(uiFiles(), name)
+            PREF_SINGLETON_REF.findAll(stripComments(file.readText()))
+                .map { "$name: ${it.value.trim()}" }
+                .toList()
+        }
+        assertTrue(
+            "以下 UI 组合项文件直接引用了偏好单例：\n" +
+                uiRefs.joinToString("\n").prependIndent("  ") +
+                "\n界面只该读 MainViewModel 暴露的状态（它由注入的 PrefsStore 提供）；" +
+                "同向但更宽的判据见 PrefsBoundaryGuardTest（扫 ui/ 全目录）。",
+            uiRefs.isEmpty(),
+        )
+
+        // 判据自检：违规样本必须命中、注释不许命中（否则这又是一条摆设守卫）。
+        assertTrue(
+            "「调用点传 Context」的样本没被抓到 —— 旧判据按 setter 名字匹配时这条是漏的",
+            setterContextViolations("X.kt", "onDarkModeChange = { AppPrefs.setDarkMode(context, it) }").isNotEmpty(),
+        )
+        assertTrue(
+            "签名带 Context 的样本没被抓到",
+            setterContextViolations("X.kt", "fun setDarkMode(context: Context, dark: Boolean) {}").isNotEmpty(),
+        )
+        assertTrue(
+            "注释里的 Context 不该误报",
+            setterContextViolations("X.kt", "// AppPrefs.setDarkMode(context, it)").isEmpty(),
+        )
     }
 
     @Test
@@ -355,6 +394,22 @@ class NavHostGuardTest {
         return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
     }
 
+    /** `com/nbalive/app` 下全部生产 kt（含 `MainActivity.kt` 这类平台层文件）。 */
+    private fun productionFiles(): List<File> =
+        productionRoot().walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+
+    /**
+     * 偏好 setter 的签名/调用里出现 `Context` 的违规说明（空 = 达标）。
+     *
+     * ⚠️ **内部自己剔非代码**：生产路径与自检路径必须走同一个函数，
+     * 否则"注释里的 Context 不算命中"这条自检会变成"测试自己先剔了、判据其实没剔"
+     * （本仓库踩过：判据在测试里被复述而不是被验证）。
+     * 与 `PrefsBoundaryGuardTest` 同向：那里扫的是"UI 文件直接读偏好单例"，
+     * 这里锚在"任何生产调用点都不许把 Context 传进偏好写入"。
+     */
+    private fun setterContextViolations(fileName: String, rawText: String): List<String> =
+        SETTER_WITH_CONTEXT.findAll(stripComments(rawText)).map { "$fileName: ${it.value.trim()}" }.toList()
+
     private fun mainActivity() = source("MainActivity.kt")
     private fun nbaLiveApp() = source("NbaLiveApp.kt")
     private fun appPrefs() = source("AppPrefs.kt")
@@ -443,5 +498,34 @@ class NavHostGuardTest {
 
         /** AppPrefs 注释里那句与实现相反的谎话。 */
         val LYING_COMMENT = Regex("""null\s*=\s*跟随系统""")
+
+        /**
+         * 偏好 setter 的签名或调用里出现 `Context`。
+         *
+         * ⚠️ 用子串 `[Cc]ontext` 而不是 `\bContext\b`：`applicationContext` 里
+         * "Context" 前面是字母 `n`，词边界不成立 —— 带词边界的写法会漏掉
+         * 「调用点传 applicationContext」这个最常见形态（同款判据在
+         * PrefsBoundaryGuardTest 的自检里已经抓到过这个漏判）。
+         */
+        val SETTER_WITH_CONTEXT =
+            Regex("""\b(?:setDarkMode|setAspect)\s*\([^)]*[Cc]ontext[^)]*\)""")
+
+        /** 直接引用偏好单例（`AppPrefs.darkMode` / `PlayerPrefs.aspect`…）。 */
+        val PREF_SINGLETON_REF = Regex("""\b(?:AppPrefs|PlayerPrefs)\s*\.\s*\w""")
+
+        /**
+         * 组合 UI 的文件：不得直接引用偏好单例。
+         *
+         * `AppPrefs.kt` / `PlayerPrefs.kt` / `PrefsStore.kt` 是**偏好存储自己**，
+         * 不在其列（它们就是"偏好住的地方"）；`MainActivity.kt` 是平台层（也不在 ui/ 下）。
+         */
+        val COMPOSABLE_FILES = setOf(
+            "NbaLiveApp.kt",
+            "AppChrome.kt",
+            "AppUiState.kt",
+            "SearchOverlay.kt",
+            "AppEffects.kt",
+            "AppBackHandling.kt",
+        )
     }
 }

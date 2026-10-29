@@ -11,7 +11,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.MainActivity
 import com.nbalive.app.data.model.Match
-import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.ui.screens.MatchDetailScreen
 import com.nbalive.app.ui.screens.PlayerScreen
 
@@ -181,8 +180,11 @@ private fun RouteHost(
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     // liveMatches 是真需要的：state 里没有预过滤过的 LIVE 列表
+    // ⚠️ 过滤实现只有一处：[liveOnly]（review/audit-guards.md「未验证的怀疑 #5」）。
+    // 原来这里是就地写的 `filter { it.status == MatchStatus.LIVE }`，
+    // 测试侧又抄了一份逐字相同的 —— 生产加条件时测试不会红。
     val liveMatches = remember(listState.matches) {
-        listState.matches.filter { it.status == MatchStatus.LIVE }
+        liveOnly(listState.matches)
     }
 
     // 锁定（防误触）：只认解锁键解锁，所以返回键在锁定时不该退出播放页。

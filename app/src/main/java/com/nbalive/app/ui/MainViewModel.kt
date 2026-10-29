@@ -187,6 +187,16 @@ class MainViewModel(
      * `NavRestoreTest.生产必须注入真正可持久化的 SavedStateHandle` 钉住注入点。
      */
     private val savedStateHandle: SavedStateHandle = SavedStateHandle(),
+    /**
+     * 偏好存储（review/03-ui.md P2-17 的剩余部分）。
+     *
+     * ⚠️ 用**接口注入**而不是 `AndroidViewModel`：JVM 单测没有 `Application` 实例，
+     * 构造 Android 桩会抛 `Stub!`，`MainViewModelTest` / `NavRestoreTest` 会整批挂；
+     * 而且把 `Application` 塞进 VM 等于把 Context 依赖请回 UI 层。
+     * 生产由 `MainActivity` 注入 `AndroidPrefsStore`（自己持有 applicationContext），
+     * 测试/预览走默认的 [InMemoryPrefsStore]，一行 Android 代码都不用碰。
+     */
+    private val prefs: PrefsStore = InMemoryPrefsStore(),
 ) : ViewModel() {
 
     companion object {
@@ -328,6 +338,21 @@ class MainViewModel(
      * （[selectSignal]）——用户的选择要能再试一次。
      */
     private val autoTriedIndices = mutableSetOf<Int>()
+
+    /**
+     * 深色模式偏好（review/03-ui.md P2-17 的剩余部分）。
+     *
+     * ⚠️ 界面**只**从 VM 读它（不再直接 `AppPrefs.darkMode`）：存储以 [PrefsStore]
+     * 注入，所以 VM 与它的单测都不依赖 Android `Context`。
+     * `null` 怎么解释（深色优先）仍然只由 [resolveDarkMode] 一处完成（P2-16）。
+     */
+    val darkPref: StateFlow<Boolean?> = prefs.darkMode
+
+    /**
+     * 画面模式偏好。同上：界面只从 VM 读；写入是无 `Context` 的 setter 落盘
+     * （平台层负责，见 `MainActivity`）。
+     */
+    val aspectMode: StateFlow<AspectMode> = prefs.aspect
 
     /**
      * 写错误提示：顺带把 [PlayerUiState.errorId] 自增。

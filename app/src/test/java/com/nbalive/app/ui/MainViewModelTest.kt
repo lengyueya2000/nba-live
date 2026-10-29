@@ -39,9 +39,15 @@ import java.io.IOException
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModelTest {
 
-    /** 断言目标就是播放器"同时在播"面板实际消费的那份过滤结果。 */
+    /**
+     * 断言目标就是播放器"同时在播"面板实际消费的那份过滤结果。
+     *
+     * ⚠️ 这里**不再自己写** `filter { it.status == MatchStatus.LIVE }`
+     * （audit「未验证的怀疑 #5」）：生产与测试各写一份规则时，生产加条件
+     * （例如排除延期场次）测试不会红。现在两边调的是同一个 [liveOnly]。
+     */
     private fun liveIds(vm: MainViewModel): List<String> =
-        vm.listState.value.matches.filter { it.status == MatchStatus.LIVE }.map { it.id }
+        liveOnly(vm.listState.value.matches).map { it.id }
 
     private suspend fun TestScope.settle() {
         advanceTimeBy(1)

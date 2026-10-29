@@ -19,6 +19,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  *  - `darkPref` 给顶栏的深浅色图标（`null` 的解释仍由 [resolveDarkMode] 在根节点一处完成）；
  *  - `aspectMode` 透传给播放页/「我的」页（它们各自也只用这一个值）。
  *
+ * ⚠️ review/03-ui.md P2-17 的剩余部分：这两个偏好**从 VM 读**（`viewModel.darkPref` /
+ * `viewModel.aspectMode`），VM 又是从注入的 [PrefsStore] 拿的 ——
+ * UI 层不再 import `AppPrefs` / `PlayerPrefs`，也碰不到 `Context`。
+ *
  * 播放页的 `playerState` **不在这里**：它只在系统返回键的锁定判据、
  * 画中画接线和播放路由里用得到，所以收集发生在 [RouteHost] 与 [AppTopBar] 内部。
  */
@@ -34,8 +38,8 @@ internal data class AppUiState(
 internal fun rememberAppUiState(viewModel: MainViewModel): AppUiState {
     val route by viewModel.route.collectAsStateWithLifecycle()
     val nav by viewModel.nav.collectAsStateWithLifecycle()
-    val darkPref by AppPrefs.darkMode.collectAsStateWithLifecycle()
-    val aspectMode by PlayerPrefs.aspect.collectAsStateWithLifecycle()
+    val darkPref by viewModel.darkPref.collectAsStateWithLifecycle()
+    val aspectMode by viewModel.aspectMode.collectAsStateWithLifecycle()
     return AppUiState(
         route = route,
         nav = nav,
