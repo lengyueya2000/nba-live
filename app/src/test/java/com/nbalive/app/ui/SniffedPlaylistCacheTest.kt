@@ -66,7 +66,7 @@ class SniffedPlaylistCacheTest {
         c.put("p1", urlWithExpire(now / 1000 + 24 * 3600), null, now) // 一天后
         assertNotNull("上限内应命中", c.get("p1", now + SniffedPlaylistCache.MAX_TTL_MS - 1))
         assertNull(
-            "超过上限（30 分钟）必须失效，不能把地址留成半天",
+            "超过上限（60 分钟）必须失效，不能把地址留成半天",
             c.get("p1", now + SniffedPlaylistCache.MAX_TTL_MS),
         )
     }

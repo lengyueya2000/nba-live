@@ -522,3 +522,90 @@ chromium 自己也警告"may be blocked"）；而**同一场再次打开时，�
 - 生产改动：新增 `SniffedPlaylistCache.kt`，修改 `MainViewModel.kt`（字段 / play / onStreamSniffed / onPlaybackFailed）；
 - 全量 debug + release 各 **600 通过 / 0 失败 / 0 跳过**（87 suites）；
 - 版本 versionCode 24 / 1.2.20，APK 2,750,309 B，sha256 `210a4407…`。
+
+---
+
+## 九、2026-10-30 第十三回合：播放启动 4 项优化（用户「都做」）
+
+用户问"这方面还有优化的地方吗"，列了 A~G 后回复"都做"。E（静态解密 jsjiami 混淆的 paps 脚本）
+按上一回合结论不做；C（WebView 复用）本轮未做，见 9.5。
+
+### 9.1 A：直连失败退回网页后的**有界恢复**（修"永久卡住"）
+
+**现场证据**：14:13 那场，嗅探到的 m3u8 404 → ExoPlayer 报错 → 按设计退回网页；
+但同一播放页已被 `failedSniffPage` 禁止再升级，而页面确实发过媒体请求（`sawMediaRequest=true`），
+15 秒嗅探看门狗（原 25s）**永不触发** → 界面停在源站的「网络错误请试试刷新」上，
+**14:13 挂到 14:19 仍无任何状态变化**（logcat 无新事件），只能手动换线。
+
+**修法**：
+- `SniffRecoveryPolicy.shouldAdvance(elapsedSinceRevertMs, hasStream, stillOnFailedPage, resolving)`；
+  `GRACE_MS = 8_000L`（正常页面 2~3s 出流，8s 是 2~3 倍余量）；
+- `MainViewModel.startSniffRecovery(pageUrl)`：退回网页后 8 秒复查最新状态，命中判据则
+  `advanceAfterNoSignal(now, SniffRecoveryPolicy.advanceNote())`；
+- 换线处置从 `onPlaybackSuspect` 里抽成 `advanceAfterNoSignal`，两条路径共用同一套
+  `PlaybackAutoAdvance` 判据（每条线只试一次，全试完给明确提示）；
+- 计时取消点：`onStreamSniffed`（页面又发流，即使地址因防回环被忽略）、`play()`、`back()`、
+  `playMatch()`、`onPlaybackDead()`。
+
+### 9.2 B：嗅探缓存上限 30 → 60 分钟
+
+实测源站 `expire` 距嗅探约 4 小时；原 30 分钟上限会把"看一半退出、过半小时再回来"挡在门外。
+`MAX_TTL_MS` 改为 60 分钟，`SniffedPlaylistCacheTest` 的截断用例跟着新上限走。
+
+### 9.3 F：加载提示浮层（感知优化）
+
+`PlayerLoadingHintPolicy.shouldShow(hasWebFallback, hasStream, sinceLoadMs, hasErrorMessage, inPip)`：
+只在"网页兜底 + 没流 + 没报错 + 非小窗 + 未满 20 秒"时显示「正在连接源站播放页…」。
+纯文字、无 clickable（单击必须继续透传给 WebView 的源站播放器）。
+PlayerScreen 用 `LaunchedEffect(page)` 每 250ms 更新已加载时长。
+
+### 9.4 D：跳过播放页壳，直接加载真实玩家页
+
+链路（本机实测）：播放页壳（约 2KB）→ `pjs.js` → `demo.songzenet.com/paps.html?id=<encodedStr>`
+→ 混淆 JS → m3u8。壳页还会拉跨站 jquery 与 parser-blocking 的 `t.js`，实测 0.1~27s。
+
+`PlayerPageResolver.resolvePlayerUrl(pageHtml, baseUrl)`：
+- 正则取 `playerUrlBase64` → 手写 Base64 解码（minSdk 24 不能用 `java.util.Base64`，也不用
+  `android.util.Base64` 以保留 JVM 可测性）→ `https://demo.songzenet.com/paps.html?id=`；
+- 正则取 `encodedStr`，按 query 参数 URL 编码后拼接；
+- 缺字段/解码失败/前缀不是绝对地址 → 返回 null。
+
+WebSurface 接线：加载前用 `HttpClient.shared.get(url, referer, fastFail=true)`（`withTimeoutOrNull(2s)`）
+拉壳页并解析；成功则 `targetUrl = paps`，失败静默用原页；直接加载 paps 后 **6 秒内没有媒体请求**
+则 `targetUrl` 退回原页（源站改版兜底，只退一次）。
+
+**实机证据（debug 包，雷电 9）**：`chromium CONSOLE` 的 source 为
+`https://demo.songzenet.com/paps.html?id=E91AxX9XdnT2P4a9%2F…`（不再是 `play.sportsteam356.com/play/mgxl/`），
+随后 `ExoPlayerImpl Init` —— 跳过壳页后嗅探仍成功。
+
+### 9.5 C：WebView 复用（本轮未做，如实记录原因）
+
+P2-4 的防线有两道：① `key(webFallbackUrl)` 换线路时销毁重建 WebView；② VM 里
+`belongsToPage(referer, webFallbackUrl)`。实测媒体请求**经常没有 Referer**（嗅探回调拿到的 `ref` 为 null，
+因此走的是 fail-open 放行），所以②在真实流量上很弱；删掉①会让旧页在途 m3u8 有机会被当成新线路升级。
+要做 C 必须先在真机上证明"代次守卫"能可靠区分在途请求，本轮不动。
+
+### 9.6 G（队友 guard-fixups）：看门狗 25s→15s、45s→30s
+
+见其报告：聚焦 10 tests / 0 failures；**回退实验恰好 2 条新增边界用例变红**
+（"finish 后 14.9s 不报 15.1s 必须报"、"永不 finish 29.9s 不报 30.1s 必须报"），恢复后 SHA 逐字节一致。
+
+### 9.7 守卫与回退实验
+
+| 守卫 | 内容 | 回退动作 | 实测 |
+|---|---|---|---|
+| `SniffRecoveryPolicyTest`(7) | 8s 边界、出流/已切走/解析中不换线、`advanceNote` 与"无信号"区分 | — | 纯判据 |
+| `SniffRecoveryWiringTest`(3) | `onPlaybackFailed` 必须启动计时；到点必须用判据复查并复用 `advanceAfterNoSignal`；注释/字符串自检 | 注释 `startSniffRecovery(pageUrl)` | **1 红** |
+| `SniffRecoveryTest`(4) | 行为：到期换下一条、页面重新发流不换、离开播放页取消、单线路给明确提示 | — | 行为级 |
+| `PlayerLoadingHintPolicyTest`(9) | 显示/不显示 6 种状态 + 接线守卫 + 自检 | 移除 `PlayerLoadingHintPolicy.shouldShow(` 调用 | **1 红** |
+| `PlayerPageResolverTest`(7) | 解析成功、转义、缺字段、非法 base64、非绝对地址、与标准 Base64 一致 | — | 纯判据 |
+| `PlayerPageResolverWiringTest`(2) | WebSurface 必须消费解析器、有 targetUrl 回退、拉壳页；自检 | `resolvePlayerUrl(it, url)` 改成 `null` | **1 红** |
+| `WebSniffWatchdogTest`(+2) | 15s/30s 边界 | 常量改回 25s/45s | **恰好 2 红** |
+
+### 9.8 数字与边界
+
+- 新增守卫 **34 条**（A 14 + F 9 + D 9 + G 2；B 不新增用例、只改常量与既有断言文案）；
+- 全量 debug + release 各 **634 通过 / 0 失败 / 0 跳过**（93 suites）；
+- 版本 versionCode 25 / 1.2.21，APK 2,750,309 B，sha256 `9b6196e7…`；
+- **未解决**：源站页面/脚本本身慢（C、D 只能减少我们这一侧的等待，源站慢仍会慢）；
+  C 复用 WebView 未做；E 静态解密不做。

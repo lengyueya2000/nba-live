@@ -14,7 +14,13 @@
 纪律：先 TDD 写纯判据 RED 测试 → 生产代码 → 编译 → 全量测试 → 提交。
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
-## 最近三个回合的提交
+## 最近几个回合的提交
+### 2026-10-30 第十三回合（用户「都做」）：播放启动 4 项优化 + 防守卫
+全量 debug+release 各 **634/0/0**（93 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **34 条**（含队友 2 条）。已发版 **v1.2.21**（tag `v1.2.21` → `（本轮）`，APK `nba-live-1.2.21.apk` 2,750,309 B，sha256 `9b6196e7…`）。
+| 提交 | 内容 |
+|---|---|
+| `（本轮）` | **A. 直连失败退回网页后不再永久卡住**：实测嗅探到的 m3u8 404 → 退回网页 → 同页禁止再升级 + 页面发过媒体请求（25s 看门狗不触发）⇒ 界面停在源站「网络错误请试试刷新」上**挂了 5 分钟没动静**。新增 `SniffRecoveryPolicy`（8 秒宽限期，取值为正常出流 2~3s 的 2~3 倍）＋ `MainViewModel.startSniffRecovery` / `advanceAfterNoSignal`（与"嗅探超时"共用换线判据）；`onStreamSniffed`（页面又发流）、`play`、`back`、`playMatch` 都会取消计时。**B. 缓存上限 30→60 分钟**（实测源站 `expire` 还差约 4 小时，覆盖"看一半退出、过半小时再回来看"）。**F. 加载提示浮层**：网页兜底加载期间（黑屏 0.1~27s）叠一句非阻塞「正在连接源站播放页…」，`PlayerLoadingHintPolicy`（20 秒上限、出流/报错/小窗都不显示）。**D. 跳过播放页壳直接加载玩家页**：壳页含 `playerConfig.playerUrlBase64`（base64 的 `https://demo.songzenet.com/paps.html?id=`）与 `encodedStr`，新增 `PlayerPageResolver`（手写 base64 解码，minSdk24 不用 `java.util.Base64`）算出 paps 地址；WebSurface 加载前用 OkHttp 拉壳页（2s 超时、失败/解析不出就静默用原页），直接加载 paps 后 6 秒内无媒体请求再退回原页。**实机证据（debug）**：WebView 直接加载 `https://demo.songzenet.com/paps.html?id=…`，随后仍嗅探到 m3u8 → `ExoPlayerImpl Init`（说明跳过壳页没有破坏嗅探）。**G（队友 guard-fixups）**：`WebSniffWatchdog` 25s→15s、45s→30s，回退实验恰好 2 条边界用例变红。**C（WebView 复用）本轮未做**：P2-4 的 Referer 归属校验实测是 fail-open（媒体请求常无 Referer），删掉"按 URL 重建 WebView"这道保护会让旧页在途流可能被当成新线路升级，需单独一轮带 instrumentation 验证。**回退实验**：注释 `startSniffRecovery(pageUrl)` → 1 红；`resolvePlayerUrl` 改成 `null` → 1 红；移除提示判据调用 → 1 红（三条同批执行，恰好 3 红）。 |
+
 ### 2026-10-30 第十二回合（现场反馈）：**解析播放太慢** —— 复用已嗅探成功的 m3u8
 全量 debug+release 各 **600/0/0**（87 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **10 条**。已发版 **v1.2.20**（tag `v1.2.20` → `4889a3a`，APK `nba-live-1.2.20.apk` 2,750,309 B，sha256 `210a4407…`）。
 | 提交 | 内容 |

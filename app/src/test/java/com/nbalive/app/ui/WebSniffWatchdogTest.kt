@@ -43,18 +43,65 @@ class WebSniffWatchdogTest {
         )
     }
 
-    /** 页面已 finish：语义与旧实现一致（finish 之后 25 秒）。 */
+    /** 页面已 finish：从 finish 时刻起算 AFTER_FINISH_MS（2026-10-30 起为 **15 秒**）。 */
     @Test
-    fun `已 finish 的页面从 finish 时刻算 25 秒`() {
+    fun `已 finish 的页面从 finish 时刻算 15 秒`() {
         val start = 1_000L
         val finished = 20_000L
         assertFalse(
-            "finish 后不到 25 秒不该报（旧实现就是这个语义，不许变严）",
-            WebSniffWatchdog.shouldReport(start, finished, finished + 24_999L, false),
+            "finish 后不到 AFTER_FINISH_MS（现为 15s）不该报：这段是弱网/MSE 页面的余量",
+            WebSniffWatchdog.shouldReport(
+                start,
+                finished,
+                finished + WebSniffWatchdog.AFTER_FINISH_MS - 1,
+                false,
+            ),
         )
         assertTrue(
-            "finish 后满 25 秒必须报",
+            "finish 后满 AFTER_FINISH_MS（15s）必须报 —— 旧阈值 25s 让用户白等 10 秒",
             WebSniffWatchdog.shouldReport(start, finished, finished + WebSniffWatchdog.AFTER_FINISH_MS, false),
+        )
+    }
+
+    /**
+     * 边界①：finish 后 **14.9s 不报、15.1s 报**
+     * （落在 [WebSniffWatchdog.AFTER_FINISH_MS] = 15s 上）。
+     *
+     * ⚠️ 两个数字是**写死的毫秒**、不是从常量推出来的 —— 它守的正是"阈值到底是多少"：
+     * 常量改回 25s 时 15.1s 不再够格，这条必须**变红**（回退实验用它取证）。
+     * 14.9s 不报的依据：正常页面 finish 后 2~3s 就出 m3u8，弱网/MSE 页面实测 10s 内；
+     * 15s 是"给弱网留足余量"与"别让用户干等"的折中。
+     */
+    @Test
+    fun `finish 后 14点9 秒不报 15点1 秒必须报`() {
+        val start = 1_000L
+        val finished = 20_000L
+        assertFalse(
+            "finish 后 14.9s（< 15s）不该报：正常页面 2~3s 就出流，14.9s 已是弱网余量",
+            WebSniffWatchdog.shouldReport(start, finished, finished + 14_900L, false),
+        )
+        assertTrue(
+            "finish 后 15.1s（> 15s）必须报 —— 旧 25s 阈值下这里不报，用户要多等 10 秒",
+            WebSniffWatchdog.shouldReport(start, finished, finished + 15_100L, false),
+        )
+    }
+
+    /**
+     * 边界②：页面**永不 finish** 时 **29.9s 不报、30.1s 报**
+     * （落在 [WebSniffWatchdog.HARD_DEADLINE_MS] = 30s 上，从**加载开始**起算）。
+     *
+     * 同上：写死毫秒数，常量改回 45s 时这条必须**变红**。
+     */
+    @Test
+    fun `永不 finish 时 29点9 秒不报 30点1 秒必须报`() {
+        val start = 1_000L
+        assertFalse(
+            "从加载开始 29.9s（< 30s）不该报：导航跳转 + 弱网余量都在这条硬上限里",
+            WebSniffWatchdog.shouldReport(start, 0L, start + 29_900L, false),
+        )
+        assertTrue(
+            "从加载开始 30.1s（> 30s）必须报 —— 旧 45s 阈值下卡住的页面要多黑屏 15 秒",
+            WebSniffWatchdog.shouldReport(start, 0L, start + 30_100L, false),
         )
     }
 

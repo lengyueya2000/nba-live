@@ -14,6 +14,7 @@ import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.data.remote.safeMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -433,6 +434,20 @@ class MainViewModel(
     private var loadJob: Job? = null
     private var refreshJob: Job? = null
 
+    /**
+     * 「直连失败、退回网页」之后的宽限计时（2026-10-30 解析播放太慢）。
+     *
+     * 判据与取值依据见 [SniffRecoveryPolicy]。宽限期内页面重新产出可用的流就取消；
+     * 任何"重新开始播/换线/离开播放页"的动作也必须取消，否则旧计时会把新线路误判成死线。
+     */
+    private var sniffRecoveryJob: Job? = null
+
+    /** 取消上一条线的恢复计时。 */
+    private fun cancelSniffRecovery() {
+        sniffRecoveryJob?.cancel()
+        sniffRecoveryJob = null
+    }
+
     init {
         refresh()
     }
@@ -659,6 +674,8 @@ class MainViewModel(
      */
     fun playMatch(match: Match) {
         playJob?.cancel()
+        // 换场后，上一场“直连失败退回网页”的宽限计时不再有意义
+        cancelSniffRecovery()
         loadJob?.cancel()
         // 详情页那条拉线路的任务也要停：否则它晚回来会把**上一场**的线路
         // 写进当前详情页
@@ -743,6 +760,7 @@ class MainViewModel(
      */
     private fun play(index: Int) {
         playJob?.cancel()
+        cancelSniffRecovery()
         playJob = viewModelScope.launch {
             val state = _playerState.value
             if (state.signals.isEmpty()) {
@@ -890,6 +908,10 @@ class MainViewModel(
      * 只保留 WebView 作为直连失败时的最终兜底。
      */
     fun onStreamSniffed(m3u8Url: String, referer: String?) {
+        // ⚠️ 页面又开始发流了 = 它没有停在"直连失败的死页"上：
+        // 立刻取消宽限计时（哪怕这次地址因防回环被忽略），否则 8 秒后会把
+        // 一条其实恢复了的线路判死并换走。
+        cancelSniffRecovery()
         val state = _playerState.value
         // 只处理"正在网页播放"时的嗅探；已经在直连播或正在解析就忽略
         if (state.webFallbackUrl == null || state.streamUrl != null || state.resolving) return
@@ -994,6 +1016,16 @@ class MainViewModel(
         //
         // 判据里 `hasDirectStream = false` 是**写死的**：上面那行
         // `streamUrl != null` 已经提前返回，走到这里必然是"一条流都没有"。
+        advanceAfterNoSignal(state, "无信号")
+    }
+
+    /**
+     * 「这条线没有信号了」的统一处置：按 [PlaybackAutoAdvance] 判据换下一条 / 或给明确提示。
+     *
+     * @param note 拼进提示里的原因（"无信号" / "直连失败后网页也没有恢复"），
+     *   两种触发路径的文案必须能区分，否则用户不知道是嗅探超时还是直连挂了。
+     */
+    private fun advanceAfterNoSignal(state: PlayerUiState, note: String) {
         when (
             val decision = PlaybackAutoAdvance.decide(
                 signalCount = state.signals.size,
@@ -1009,7 +1041,7 @@ class MainViewModel(
                 // 记进失败账本：`play` 会跳过被拉黑的线路，避免又转回同一条死线
                 state.signals.getOrNull(current)?.let { failedSources.markFailed(it.pageUrl, nowMs()) }
                 _playerState.update {
-                    it.withError("线路 ${current + 1} 无信号，正在切换线路 ${decision.nextIndex + 1}")
+                    it.withError("线路 ${current + 1} $note，正在切换线路 ${decision.nextIndex + 1}")
                 }
                 selectSignal(decision.nextIndex)
             }
@@ -1019,6 +1051,31 @@ class MainViewModel(
                 }
             }
             PlaybackAutoAdvance.Decision.Wait -> Unit
+        }
+    }
+
+    /**
+     * 直连失败退回网页后开一个**有界**恢复计时（判据见 [SniffRecoveryPolicy]）。
+     *
+     * 到点时再读一次最新状态：只有"仍然没有流 + 还停在这个失败播放页 + 不在解析中"
+     * 才换线。期间页面重新发流（[onStreamSniffed]）、用户换线/返回（[play]/[back]）
+     * 都会取消这个计时。
+     */
+    private fun startSniffRecovery(failedPageUrl: String?) {
+        cancelSniffRecovery()
+        if (failedPageUrl == null) return
+        sniffRecoveryJob = viewModelScope.launch {
+            delay(SniffRecoveryPolicy.GRACE_MS)
+            val now = _playerState.value
+            if (SniffRecoveryPolicy.shouldAdvance(
+                    elapsedSinceRevertMs = SniffRecoveryPolicy.GRACE_MS,
+                    hasStream = now.streamUrl != null,
+                    stillOnFailedPage = now.webFallbackUrl == failedPageUrl,
+                    resolving = now.resolving,
+                )
+            ) {
+                advanceAfterNoSignal(now, SniffRecoveryPolicy.advanceNote())
+            }
         }
     }
 
@@ -1037,6 +1094,9 @@ class MainViewModel(
         // 已经在直连播了就不管：网页组件可能滞后于嗅探升级才回调
         if (state.streamUrl != null) return
         if (state.playbackDead) return
+        // 播放页主框架确认加载失败：这是"事实"，按现有设计不自动换线（用户手动重连/换线），
+        // 所以这条线的恢复计时也该停，别再叠加一次自动换线。
+        cancelSniffRecovery()
         _playerState.update { it.markPlaybackDead(true).markPlaybackSuspect(false) }
     }
 
@@ -1073,6 +1133,13 @@ class MainViewModel(
                     // 完全不知道发生了什么（实测：静默退回，没有任何提示）。
                 ).withError("直连播放失败，已退回网页播放")
             }
+            // ⚠️ 2026-10-30：退回网页**不能就此一直等**。
+            // 实测：嗅探到的 m3u8 返回 404 → 退回网页 → 页面自己也画"网络错误"，
+            // 而同页已禁止再升级、页面又确实发过媒体请求（25s 嗅探看门狗不会触发）
+            // —— 界面永久停在源站的错误页，用户只能手动换线（实测挂了 5 分钟没动静）。
+            // 现在给一个有界宽限：期间页面重新发流会取消计时（见 onStreamSniffed），
+            // 否则 [SniffRecoveryPolicy.GRACE_MS] 后按"无信号"判据换下一条。
+            startSniffRecovery(pageUrl)
             return
         }
         state.signals.getOrNull(state.selectedIndex)?.let { failedSources.markFailed(it.pageUrl, nowMs()) }
@@ -1097,6 +1164,9 @@ class MainViewModel(
                 // 才落地并写 _detailState —— 界面已经离开详情页了，
                 // 却还在被一个早该结束的请求改状态。
                 detailJob?.cancel()
+                // 离开播放页：这条线的"直连失败恢复计时"必须停，
+                // 否则计时到点会去换一条用户已经不看的天。
+                cancelSniffRecovery()
                 // ⚠️ 回到**进入播放页之前**的路由，不是无条件回 DETAIL。
                 // 从列表「立即观看」直接播放时，回 DETAIL 会掉进
                 // 用户从未见过的详情页（要再按一次返回才到列表）。

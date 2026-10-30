@@ -1,7 +1,11 @@
 package com.nbalive.app.ui
 
 /**
- * 网页线路「嗅探超时」看门狗（review/01-player.md 的 25 秒疑似判据）。
+ * 网页线路「嗅探超时」看门狗（review/01-player.md 的疑似判据）。
+ *
+ * 2026-10-30 收紧：finish 后 25s→**15s**、硬上限 45s→**30s**。
+ * 起因是用户反馈「网页线路解析播放太慢」——正常页面在 finish 后 2~3 秒就出流，
+ * 旧阈值让每条无信号线路多等 10~15 秒（详见 [AFTER_FINISH_MS] 的取值依据）。
  *
  * ## 它守的是什么
  *
@@ -30,7 +34,7 @@ package com.nbalive.app.ui
  * |---|---|
  * | 已看到媒体请求 | 不报（在播，别打扰） |
  * | 页面**永不** finish | 从 **加载开始** 起算超过 [HARD_DEADLINE_MS] 才报 |
- * | 页面已 finish | 从 **finish 时刻** 起算超过 [AFTER_FINISH_MS] 才报（语义与旧实现一致） |
+ * | 页面已 finish | 从 **finish 时刻** 起算超过 [AFTER_FINISH_MS] 才报（语义不变，阈值 15s） |
  *
  * 判据是纯函数，可直接单测（见 `WebSniffWatchdogTest`）；`WebSurface` 只负责
  * 轮询采样与执行，不再自己写任何阈值。
@@ -40,20 +44,31 @@ object WebSniffWatchdog {
     /**
      * 页面加载**完成后**留给源站播放器的时间。
      *
-     * 25 秒与旧实现一致（原为 `WebSurface` 里的字面量 `delay(25_000)`）——
-     * 这里改成常量不是改行为，而是把"多久算疑似"从 Compose 代码里挪到唯一判据里。
+     * **15 秒**（2026-10-30 由 25 秒收紧；原为 `WebSurface` 里的字面量 `delay(25_000)`）。
+     *
+     * 取值依据：
+     *  - 正常网页线路在页面 finish 后 **2~3 秒**内就会发出 m3u8 请求（线上实测），
+     *    25 秒里绝大部分时间只是纯等待 —— 用户反馈「解析播放太久」，这段是主要来源；
+     *  - 15 秒对**弱网 / MSE（blob:）播放页**仍有 5 倍以上余量：这类页面要先让 JS 建好
+     *    MSE 管线才发请求，比直连 m3u8 慢，但实测仍在 10 秒内；
+     *  - 阈值只决定「多久算疑似无信号」（出一句提示 + 允许自动换线），
+     *    **不影响已经在播的页面**：`sawMediaRequest` 一旦为 true 就永不报（见 [shouldReport]）。
      */
-    const val AFTER_FINISH_MS: Long = 25_000L
+    const val AFTER_FINISH_MS: Long = 15_000L
 
     /**
      * 从**加载开始**算的硬上限：页面永不 `onPageFinished` 时的兜底。
      *
-     * 45 秒 = 25 秒播放器预算 + 20 秒导航预算（源站播放页常有多跳重定向，
-     * 而 `pageFinishedAt` 与 `loadUrl` 之间还夹着这段导航时间）。
-     * 取值要点：必须**大于**正常路径的"导航 + 25 秒"，否则正常线路会被提前判疑似，
-     * 界面连着闪两次提示；又不能太大，否则真卡住的页面黑屏时间肉眼可见地长。
+     * **30 秒** = 15 秒播放器预算（[AFTER_FINISH_MS]）+ 15 秒导航预算
+     * （源站播放页常有多跳重定向，`pageFinishedAt` 与 `loadUrl` 之间还夹着这段导航时间）。
+     *
+     * 2026-10-30 由 45 秒收紧：否则「永不 finish」的页面（广告 / 坏 iframe）比正常路径
+     * 多黑屏 30 秒 —— 而这类页面恰恰是用户最容易放弃的那一类。
+     *
+     * 取值要点：必须**大于**正常路径的"导航 + [AFTER_FINISH_MS]"，否则正常线路会被提前
+     * 判疑似、界面连着闪两次提示；又不能太大，否则真卡住的页面黑屏时间肉眼可见地长。
      */
-    const val HARD_DEADLINE_MS: Long = 45_000L
+    const val HARD_DEADLINE_MS: Long = 30_000L
 
     /** 调用方的采样间隔（`WebSurface` 每 [POLL_MS] 读一次状态）。 */
     const val POLL_MS: Long = 1_000L
@@ -78,7 +93,7 @@ object WebSniffWatchdog {
         sawMediaRequest -> false
         // 永不 finish：兜底时限从加载开始算，否则这条判据在这类页面上永远不成立
         pageFinishedAt == 0L -> nowMs - loadStartedAt >= HARD_DEADLINE_MS
-        // 已 finish：语义与旧实现一致（finish 之后 25 秒）
+        // 已 finish：从 finish 时刻起算 15 秒（2026-10-30 由 25 秒收紧）
         else -> nowMs - pageFinishedAt >= AFTER_FINISH_MS
     }
 }

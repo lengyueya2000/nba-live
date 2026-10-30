@@ -115,6 +115,7 @@ import com.nbalive.app.ui.AudioFocusPolicy
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlayerControls
 import com.nbalive.app.ui.PlaybackHealth
+import com.nbalive.app.ui.PlayerLoadingHintPolicy
 import com.nbalive.app.ui.StalledPlayback
 import com.nbalive.app.ui.hhmm
 import com.nbalive.app.ui.ManualPipDecision
@@ -164,7 +165,7 @@ fun PlayerScreen(
      */
     onPlaybackDead: () -> Unit = {},
     /**
-     * 网页线路**疑似**播不出来（页面加载完成后 25 秒没看到任何媒体请求）。
+     * 网页线路**疑似**播不出来（页面加载完成后 15 秒没看到任何媒体请求）。
      *
      * ⚠️ 与 [onPlaybackDead] 分开是因为判据性质不同（P0-1）：
      * 这条是**推断**，只用于显示提示 + 停自动进小窗，**不允许**收窗或关任务。
@@ -422,6 +423,38 @@ fun PlayerScreen(
                             )
                         }
                     }
+                }
+            }
+
+            // 网页兜底加载期间的非阻塞提示（2026-10-30 感知优化）：
+            // 实测源站播放页要加载 0.1~27 秒，这期间界面是纯黑 —— 用户看不到任何
+            // "App 在工作"的信号，观感就是"点开就卡死"。判据见 PlayerLoadingHintPolicy。
+            // ⚠️ 只叠一行文字、不加 clickable：不能挡住 WebView（单击要透传给源站播放器）。
+            webFallbackUrl?.let { page ->
+                var sinceLoadMs by remember(page) { mutableStateOf(0L) }
+                LaunchedEffect(page) {
+                    val startedAt = android.os.SystemClock.elapsedRealtime()
+                    while (sinceLoadMs < PlayerLoadingHintPolicy.MAX_HINT_MS) {
+                        sinceLoadMs = android.os.SystemClock.elapsedRealtime() - startedAt
+                        kotlinx.coroutines.delay(250)
+                    }
+                }
+                if (PlayerLoadingHintPolicy.shouldShow(
+                        hasWebFallback = true,
+                        hasStream = streamUrl != null,
+                        sinceLoadMs = sinceLoadMs,
+                        hasErrorMessage = errorMessage != null,
+                        inPip = inPip,
+                    )
+                ) {
+                    Text(
+                        text = "正在连接源站播放页…",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(Space.sm),
+                    )
                 }
             }
 
@@ -892,7 +925,7 @@ fun PlayerScreen(
 
         // ---------- 疑似无信号（推断）提示 ----------
         // ⚠️ 有意与错误卡分开（P0-1）：嗅探超时只是**推断** —— 既不能收小窗、
-        // 也不能关任务，但**必须让用户看见**。否则现象是"页面加载完、25 秒过去，
+        // 也不能关任务，但**必须让用户看见**。否则现象是"页面加载完、15 秒过去，
         // 界面毫无反应"，用户只能干等（review/01-player.md:41 明确要求"用于显示提示"；
         // 旧代码只实现了后半"停自动进小窗"，提示从未接线 = 审计 B2 的假安全感）。
         // 有确认错误（errorMessage）时错误卡优先，两张卡不叠加。
@@ -1912,8 +1945,8 @@ private fun WebSurface(
     /**
      * 网页线路**疑似**播不出来时上报（时限内没嗅探到任何流）。
      *
-     * 时限有两条，都在 [WebSniffWatchdog]：页面已 finish 时是 finish 后 25 秒；
-     * 页面**永不** `onPageFinished` 时是从加载起算 45 秒（后者是"永久黑屏"的兜底）。
+     * 时限有两条，都在 [WebSniffWatchdog]：页面已 finish 时是 finish 后 15 秒；
+     * 页面**永不** `onPageFinished` 时是从加载起算 30 秒（后者是"永久黑屏"的兜底）。
      *
      * 这是**推断**：源站用 MSE/`blob:` 播放、m3u8 地址不带 `.m3u8` 字面量、
      * 弱网首帧超过时限，都会嗅探不到但画面其实正常。
@@ -1944,13 +1977,42 @@ private fun WebSurface(
     // 否则用户只看到一个动不了的广告页，以为 App 卡死。
     var blockedNavigation by remember(url) { mutableStateOf("") }
 
+    // ---------- 任务 D：跳过播放页壳，直接加载玩家页（2026-10-30「解析播放太慢」） ----------
+    // 播放页壳（约 2KB）会先拉跨站 jquery 与 parser-blocking 的 t.js，实测 0.1~27 秒；
+    // 真正的玩家页地址可以从壳页 HTML 里算出来（见 PlayerPageResolver）。
+    // 用 OkHttp 拉壳页（**不执行脚本**，通常几百毫秒内返回），算出 paps 地址后让 WebView 直接加载它。
+    //
+    // ⚠️ 任何失败都必须静默回退到原播放页：
+    //  - 拉不到 / 解析不出 → targetUrl 保持 url；
+    //  - 直接加载 paps 后 6 秒内一个媒体请求都没有 → 再退回原播放页（源站改版时的兜底）。
+    var targetUrl by remember(url) { mutableStateOf(url) }
+    var directPlayerTried by remember(url) { mutableStateOf(false) }
+    LaunchedEffect(url) {
+        if (directPlayerTried) return@LaunchedEffect
+        directPlayerTried = true
+        val html = kotlinx.coroutines.withTimeoutOrNull(2_000L) {
+            runCatching {
+                HttpClient.shared.get(url, HttpClient.shared.refererOf(url), fastFail = true)
+            }.getOrNull()
+        }
+        val direct = html?.let { PlayerPageResolver.resolvePlayerUrl(it, url) }
+        if (direct != null) targetUrl = direct
+    }
+    // 兜底：直接加载玩家页后迟迟没有任何媒体请求 → 可能源站改版/需要壳页里的额外脚本，
+    // 退回原播放页重来一次（只退一次，避免来回跳）。
+    LaunchedEffect(targetUrl) {
+        if (targetUrl == url) return@LaunchedEffect
+        delay(6_000)
+        if (!sawMediaRequest.get() && pageFinishedAt > 0L) targetUrl = url
+    }
+
     // 源站页面可能一片黑且永远不出流（比赛已结束、播放器 JS 没跑起来）：
 // 两条时限内没看到任何媒体请求，就给用户明确提示、并让上层自动换线，
 // 而不是干等黑屏。嗅探成功后本组件会被 VideoSurface 替换、协程自动取消，无需手动复位。
 //
 // ⚠️ 两条时限都定义在 [WebSniffWatchdog]（判据唯一来源）：
-//  - 页面已 finish：finish 之后 25 秒（旧实现就是这个语义）；
-//  - 页面**永不** finish：从 loadUrl 起算 45 秒（没有这条兜底时限时，
+//  - 页面已 finish：finish 之后 15 秒；
+//  - 页面**永不** finish：从 loadUrl 起算 30 秒（没有这条兜底时限时，
 //    这类页面会让看门狗彻底失效 —— 见下面的说明）。
     //
     // ⚠️ suppressHint 只抑制**用户可见的提示**，不能连判定一起跳过：
@@ -1967,7 +2029,7 @@ private fun WebSurface(
     // 判据被 onPageFinished 门控 —— 源站播放页被广告/坏 iframe 卡住永不 finish 时，
     // 看门狗永远不触发，既不提示也不自动换线，就是**永久黑屏**（实测纯黑 95 秒、
     // logcat 一条相关输出都没有）。现在两条时限并列：永不 finish 走"从加载起算的硬上限"，
-    // 已 finish 走"finish 后 25 秒"（语义与旧实现一致）。
+    // 已 finish 走"finish 后 15 秒"。
     LaunchedEffect(url, pageFinishedAt, suppressHint) {
         while (true) {
             val reported = WebSniffWatchdog.shouldReport(
@@ -2106,7 +2168,7 @@ private fun WebSurface(
                                 )
                             ) {
                                 // 子资源失败 / 重定向 / 加载中：都可能自愈。
-                                // 真出问题由 25 秒的「疑似」计时器兜住，不在这里抢判死亡。
+                                // 真出问题由 15 秒的「疑似」计时器兜住，不在这里抢判死亡。
                                 return
                             }
                             onPlaybackDeadState.value()
@@ -2149,17 +2211,17 @@ private fun WebSurface(
                             return true
                         }
                     }
-                    loadUrl(url)
-                    tag = url
+                    loadUrl(targetUrl)
+                    tag = targetUrl
                     webView = this
                 }
             },
             update = { view ->
                 // 注意不能比较 view.url：页面会自行跳转（sm.html -> 内层播放页），
                 // 那样每次重组都会重新 loadUrl，把正在播的流打断。用 tag 记住请求的 url。
-                if (view.tag != url) {
-                    view.tag = url
-                    view.loadUrl(url)
+                if (view.tag != targetUrl) {
+                    view.tag = targetUrl
+                    view.loadUrl(targetUrl)
                 }
             },
             onRelease = { view ->

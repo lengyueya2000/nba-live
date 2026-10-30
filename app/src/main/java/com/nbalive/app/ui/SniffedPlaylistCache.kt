@@ -97,8 +97,14 @@ class SniffedPlaylistCache(
          */
         const val DEFAULT_TTL_MS = 10 * 60 * 1000L
 
-        /** 上限 30 分钟：即使签名很长，也不把陈旧地址留成半天。 */
-        const val MAX_TTL_MS = 30 * 60 * 1000L
+        /**
+         * 上限 60 分钟：即使签名很长，也不把陈旧地址留成半天。
+         *
+         * 2026-10-30 从 30 分钟提到 60：实测源站签名的 `expire` 距嗅探时刻约 **4 小时**，
+         * 而用户"看一半退出、过半小时再回来看"是常见路径；30 分钟会把这种情况挡在门外。
+         * 60 分钟仍然远小于签名寿命，且直连失败会立刻 [invalidate]。
+         */
+        const val MAX_TTL_MS = 60 * 60 * 1000L
 
         private val EXPIRE = Regex("""[?&]expire=(\d+)""")
 

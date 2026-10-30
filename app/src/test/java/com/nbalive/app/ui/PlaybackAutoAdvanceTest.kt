@@ -93,31 +93,42 @@ class PlaybackAutoAdvanceTest {
 
     @Test
     fun `疑似上报必须真的消费自动换线判据 而不是只置一个标记`() {
-        val body = GuardSourceScan.functionBody(vmSource(), "fun onPlaybackSuspect(")
+        // 2026-10-30：换线处置被抽成唯一入口 `advanceAfterNoSignal(state, note)`，
+        // 让"疑似无信号"和"直连失败退回网页后没恢复"两条路径共用同一套判据。
+        // 所以判据守卫要**顺着调用链**检查两个函数体，而不是死盯某一个函数名 ——
+        // 只盯 onPlaybackSuspect 会在重构后误报，而放宽成"文件里出现过"又会漏判。
+        val suspectBody = GuardSourceScan.functionBody(vmSource(), "fun onPlaybackSuspect(")
+        val advanceBody = GuardSourceScan.functionBody(vmSource(), "fun advanceAfterNoSignal(")
         assertTrue(
-            "`onPlaybackSuspect` 里必须真的调用 PlaybackAutoAdvance.decide ——\n" +
+            "`onPlaybackSuspect` 必须把处置交给 advanceAfterNoSignal(...) ——\n" +
                 "只置 `playbackSuspect=true`（修复前的写法）会让用户对着黑屏干等：\n" +
                 "实测视频区 0% 非黑像素、无声音、控件正常。\n" +
-                "实际函数体：\n$body",
-            body.contains("PlaybackAutoAdvance.decide("),
+                "实际函数体：\n$suspectBody",
+            suspectBody.contains("advanceAfterNoSignal("),
+        )
+        assertTrue(
+            "`advanceAfterNoSignal` 里必须真的调用 PlaybackAutoAdvance.decide ——\n" +
+                "否则判据写好了没人用。实际函数体：\n$advanceBody",
+            advanceBody.contains("PlaybackAutoAdvance.decide("),
         )
         assertTrue(
             "判出 Advance 之后必须真的**换线路**（调用 selectSignal(）——\n" +
                 "只算不换等于没有修复。",
-            body.contains("selectSignal("),
+            advanceBody.contains("selectSignal("),
         )
         assertTrue(
             "全部线路都试完时必须走 Exhausted 分支并给用户一句提示，而不是继续黑屏。\n" +
                 "⚠️ 这里断言的是**代码符号**（`Decision.Exhausted` / `withError(`），不是提示文案 ——\n" +
                 "`GuardSourceScan.stripNonCode` 会把**字符串字面量**也剔掉，" +
                 "拿文案做断言会永远不成立（我第一版就是这么写错的，红了一次）。",
-            body.contains("PlaybackAutoAdvance.Decision.Exhausted") &&
-                Regex("""withError\(""").findAll(body).count() >= 2,
+            advanceBody.contains("PlaybackAutoAdvance.Decision.Exhausted") &&
+                Regex("""withError\(""").findAll(advanceBody).count() >= 2,
         )
         // 反向断言：不许在直连已就绪时也换线
         assertTrue(
             "疑似分支里必须保留 `streamUrl != null` 的提前返回（已在直连播就绝不换线）",
-            body.contains("state.streamUrl != null") || body.contains("streamUrl != null"),
+            suspectBody.contains("state.streamUrl != null") ||
+                suspectBody.contains("streamUrl != null"),
         )
     }
 
