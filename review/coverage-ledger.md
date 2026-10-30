@@ -346,6 +346,13 @@ fun admit(raw: List<RawChannel>): List<RawChannel> {
 主播线路"是源站事实，用一句空态说明即可，不值得为它增加列表隐藏逻辑（隐藏会让用户以为
 源站没有这场比赛）或第二套提示。**后续不要再把这条当成未完成项反复提。**
 
+**2026-10-30 11:54 用户决定：画质增强不做。** 评估依据（本机 `javap` + Maven 实测）：
+`ExoPlayer 1.9.2` 有 `setVideoEffects`，效果经 `PlaybackVideoGraphWrapper$ReflectiveSingleInputVideoGraphFactory`
+反射接入 `media3-effect`（`1.9.2` 在 Google Maven 可下载，AAR 322,393 B，含 `Contrast`、
+`LanczosResample`、`SeparableConvolution`、`GlShaderProgram`），**但无现成锐化/超分类效果**。
+即便实现，也只能提升观感锐度（源 720p 细节不可恢复），且只对直连 HLS 生效（网页线路无效），
+代价是 APK +0.2~0.3 MB、GPU 掉帧/发热、HLS 切档黑帧回归风险。结论：**不做，也不再提 AI 超分方案。**
+
 ---
 
 ## 六、2026-10-30 第十回合：护栏补齐 + 04-P2-7 收尾
