@@ -462,4 +462,63 @@ fun admit(raw: List<RawChannel>): List<RawChannel> {
 
 - 新增守卫 **2 类 9 条**（`PipExitPolicyTest` 3 + `PipExitWiringTest` 6）；
 - 生产改动 4 个文件 + 新增 `PipExitPolicy.kt`：`PipState.kt`、`MainActivity.kt`、`AppEffects.kt`、`NbaLiveApp.kt`；
-- 全量 debug + release 各 **590 通过 / 0 失败 / 0 跳过**（86 suites）；\n- 已发版 **v1.2.19**（`6e26e0b`，APK 2,733,929 B，sha256 `488aee92…`）。
+- 全量 debug + release 各 **590 通过 / 0 失败 / 0 跳过**（86 suites）；
+- 已发版 **v1.2.19**（`6e26e0b`，APK 2,733,929 B，sha256 `488aee92…`）。
+
+---
+
+## 八、2026-10-30 第十二回合：「解析播放太慢」—— 复用已嗅探成功的 m3u8
+
+### 8.1 现场与测量（先说一个测量坑）
+
+模拟器**时钟比宿主快 20.5 秒**（`adb shell date` vs 宿主 `Now`）。早先按宿主时钟给 tap 打卡、
+再拿 logcat 时间戳相减，得到的每段耗时都多算了 20 秒；后续所有数字都改用设备时钟 / logcat 自身时间戳。
+
+在雷电 9（Android 14 / 1280×720，debug 包）上的实测：
+
+| 阶段 | 观测 |
+|---|---|
+| tap → `loadSignals` 开始 | 与 tap 同时（预热进程） |
+| `loadSignals`（JRKAN 播放页展开） | 冷启动 **861ms**（真实请求）/ 命中 5 分钟详情缓存 **27~46ms** |
+| 播放页导航（WebView `loadUrl` → 页面脚本执行） | **0.1s ~ 27s**（同一场比赛不同次：+0.48s / +4.5s / +6.2s / +27s） |
+| 页面播放器发 m3u8 → 嗅探 → `ExoPlayerImpl Init` | 页面脚本执行后 **0.8~5.3s** |
+| 嗅探到的 m3u8 有效期 | `expire=1793358219` ≈ 当时 **+4 小时**（带 `sign`） |
+
+结论：**首次打开本来就慢，且慢在源站页面**（`document.write` 注入跨站 `t.js` 是 parser-blocking，
+chromium 自己也警告"may be blocked"）；而**同一场再次打开时，明明已经有可直连、还差几小时才过期的地址，
+却把整条 WebView 链路从头再走一遍** —— 这是可以消掉的那部分。
+
+### 8.2 修法
+
+- 新增 `SniffedPlaylistCache`（`ui/`）：
+  - 键 = **播放页 URL**（稳定；m3u8 每轮签名不同，不能按它做键）；
+  - 值 = `m3u8 + referer`；
+  - 有效期 = `min(m3u8 的 expire, now + 10min)`，并 clamp 到 **30min** 上限；解析不到 `expire` 用 10min；
+  - **墙钟**基准（`System.currentTimeMillis`）：`expire` 是绝对时间戳，用单调时钟会把 2026 年当成几亿毫秒后。
+- `MainViewModel.play()`：选中的线路不是「可静态解析」时，先查缓存 —— 命中就直接
+  `streamUrl = 缓存地址`（`sniffedStream = true`，等价于"刚嗅探成功"），**不再进 WebView**。
+- `MainViewModel.onStreamSniffed()`：嗅探成功时写入缓存。
+- `MainViewModel.onPlaybackFailed()`（嗅探升级的流失败）：**立刻 `invalidate`**。
+  否则下次点开同一场会拿刚刚 404 的地址再失败一遍，表现为"一直在解析、一直失败"。
+
+### 8.3 守卫与回退实验
+
+| 守卫 | 内容 | 回退动作 | 实测 |
+|---|---|---|---|
+| `SniffedPlaylistCacheTest`(8) | 无 expire 用默认 TTL；秒级/毫秒级 expire 解释；已过期不缓存；超长签名按上限截断；invalidate 立即失效；不同播放页互不影响；referer 随地址复用 | — | 纯判据，8 条均会在实现写错时红 |
+| `MainViewModelTest`("再次点开同一场时…") | 首次进 WebView → 嗅探 → 返回列表 → 再进：必须直接用缓存地址、`webFallbackUrl == null`、`sniffedStream == true` | 缓存分支改成 `if (false && !chosen.isDirectHls)` | **1 红** |
+| `MainViewModelTest`("直连失败后缓存作废…") | 嗅探成功 → `onPlaybackFailed` → 再进：必须回到 WebView、`streamUrl == null` | 注释掉 `pageUrl?.let(sniffedPlaylists::invalidate)` | **1 红** |
+
+### 8.4 边界（没有解决的）
+
+- **首次打开仍然慢**：源站页面 0.1~27s 的波动来自源站自身脚本/网络，本次没有动它
+  （阻断跨站脚本的尝试做过实验，收益不稳定且可能破坏源站播放器，已放弃）。
+- 真机验证只覆盖到"装机可启动、列表正常、无 FATAL"；**"缓存命中"这一步的真机脚本化验证不稳定**
+  （当前多条线路 404 + 模拟器返回键/导航脚本不可靠），因此**不声称真机实测命中** —— 命中语义由 10 条单测钉住。
+
+### 8.5 数字
+
+- 新增守卫 **10 条**（`SniffedPlaylistCacheTest` 8 + `MainViewModelTest` 2）；
+- 生产改动：新增 `SniffedPlaylistCache.kt`，修改 `MainViewModel.kt`（字段 / play / onStreamSniffed / onPlaybackFailed）；
+- 全量 debug + release 各 **600 通过 / 0 失败 / 0 跳过**（87 suites）；
+- 版本 versionCode 24 / 1.2.20，APK 2,750,309 B，sha256 `210a4407…`。

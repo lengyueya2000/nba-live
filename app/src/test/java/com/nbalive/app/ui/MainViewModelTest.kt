@@ -88,6 +88,78 @@ class MainViewModelTest {
         }
     }
 
+    // ---------- 2026-10-30「解析播放太慢」：嗅探成功的地址要复用 ----------
+
+    @Test
+    fun `再次点开同一场时 用上次嗅探到的 m3u8 直接起播`() = vmTest {
+        // 复现：过滤掉主播线路后，剩余的 JRKAN 线路只能走 WebView。
+        // 用户返回列表再点开同一场，App 会把「加载播放页 → 页面播放器发 m3u8 → 嗅探」
+        // 整条链路重走一遍（实测 0.1~27 秒），哪怕上一轮已经拿到过带签名的地址。
+        val watching = match("watching", "湖人", "勇士", MatchStatus.LIVE)
+        val vm = MainViewModel(
+            loadMatches = { Result.success(listOf(watching)) },
+            loadSignals = {
+                MatchRepository.Detail(signals = listOf(source("watching-s0", WEB_PAGE)))
+            },
+        )
+        settle()
+
+        vm.playMatch(watching)
+        waitForLoadSignals(vm)
+        settle()
+        assertEquals("首轮：这条线路只能网页承载", WEB_PAGE, vm.playerState.value.webFallbackUrl)
+
+        // 网页里的播放器真的发出 m3u8，被我们嗅探到并升级
+        val m3u8 = "http://cdn.example.com/live/a.m3u8?expire=" +
+            "${System.currentTimeMillis() / 1000 + 600}&sign=1"
+        vm.onStreamSniffed(m3u8, WEB_PAGE)
+        assertEquals(m3u8, vm.playerState.value.streamUrl)
+
+        // 用户返回列表，再点开同一场
+        vm.back()
+        settle()
+        vm.playMatch(watching)
+        waitForLoadSignals(vm)
+        settle()
+
+        assertEquals("第二次进场应直接用缓存地址起播", m3u8, vm.playerState.value.streamUrl)
+        assertNull("不应再回 WebView 重走一遍嗅探", vm.playerState.value.webFallbackUrl)
+        assertTrue(
+            "语义必须与嗅探升级一致：直连失败时仍要能退回这个播放页",
+            vm.playerState.value.sniffedStream,
+        )
+    }
+
+    @Test
+    fun `直连失败后缓存作废 下次回到网页重新嗅探`() = vmTest {
+        // 反面：缓存若不随失败作废，用户每次点开都拿同一条 404 地址重试，
+        // 表现为"一直在解析、一直失败"，比慢更糟。
+        val watching = match("watching", "湖人", "勇士", MatchStatus.LIVE)
+        val vm = MainViewModel(
+            loadMatches = { Result.success(listOf(watching)) },
+            loadSignals = {
+                MatchRepository.Detail(signals = listOf(source("watching-s0", WEB_PAGE)))
+            },
+        )
+        settle()
+
+        vm.playMatch(watching)
+        waitForLoadSignals(vm)
+        settle()
+        val m3u8 = "http://cdn.example.com/live/a.m3u8?expire=" +
+            "${System.currentTimeMillis() / 1000 + 600}&sign=1"
+        vm.onStreamSniffed(m3u8, WEB_PAGE)
+        vm.onPlaybackFailed()
+        settle()
+        assertEquals(WEB_PAGE, vm.playerState.value.webFallbackUrl)
+
+        vm.playMatch(watching)
+        waitForLoadSignals(vm)
+        settle()
+        assertNull("缓存已作废：不能拿刚 404 的地址再试一次", vm.playerState.value.streamUrl)
+        assertEquals("应回到网页重新嗅探", WEB_PAGE, vm.playerState.value.webFallbackUrl)
+    }
+
     private fun match(id: String, home: String, away: String, status: MatchStatus) = Match(
         id = id,
         league = League.NBA,

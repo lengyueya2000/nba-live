@@ -15,6 +15,12 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近三个回合的提交
+### 2026-10-30 第十二回合（现场反馈）：**解析播放太慢** —— 复用已嗅探成功的 m3u8
+全量 debug+release 各 **600/0/0**（87 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **10 条**。已发版 **v1.2.20**。
+| 提交 | 内容 |
+|---|---|
+| `（本轮）` | **现场**：「现在解析播放时间太久了」。**定位（雷电 9 / Android 14 / 1280×720；该模拟器时钟比宿主快 20.5 秒，早期把 tap→日志的间隔算大了 20 秒，已校正）**：过滤掉主播线路后（v1.2.17），剩余 JRKAN 线路全部是 `/play/pao\|wen\|mgxl\|wlive/` ⇒ 只能走 WebView。实测 tap→ExoPlayer Init：`loadSignals` 冷 861ms / 缓存 27~46ms；WebView 页面加载 **0.1~27 秒**（页面用 `document.write` 注入跨站 `t.js`，是 parser-blocking，源站页面快慢波动极大）；嗅探到 m3u8 后再 Init。**关键事实**：嗅探到的 m3u8 带 `expire` 签名（实测 `expire=1793358219`，距当时约 4 小时），**同一场再点开时却把整条 WebView 链路重走一遍**。**修法**：新增 `SniffedPlaylistCache`（pageUrl → m3u8+referer；有效期 `min(expire, now+10min)`、上限 30min、解析不到 expire 用 10min；**墙钟**为基准，签名是绝对时间戳）；`play()` 命中缓存直接 ExoPlayer 起播（`sniffedStream=true`，失败仍能退回该播放页），不再进 WebView；`onPlaybackFailed` 里**立刻 invalidate**（否则下次拿 404 旧地址重试）。**回退实验**：`if (false && !chosen.isDirectHls)` 关闭缓存分支 → **1 红**；注释掉 invalidate → **1 红**。**诚实边界**：只优化"再次打开同一场"（返回列表再进 / 画中画回 / 切回刚看过的比赛）；**首次打开仍要加载 WebView 页面**，那 0.1~27s 的波动没消除。真机侧：release 1.2.20 装机列表正常、无 `FATAL EXCEPTION`；**"缓存命中"这一步的真机脚本化验证不稳定（当前多条线路 404 + 模拟器返回键/导航脚本不可靠），未声称真机实测命中** —— 命中语义由 10 条单测钉住（`SniffedPlaylistCacheTest` 8 + `MainViewModelTest` 2）。 |
+
 ### 2026-10-30 第十一回合（现场 bug）：小窗里点「全屏」回来是竖屏
 全量 debug+release 各 **590/0/0**（86 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **2 类 9 条**。已发版 **v1.2.19**（tag `v1.2.19` → `6e26e0b`，APK `nba-live-1.2.19.apk` 2,733,929 B，sha256 `488aee92…`）。
 | 提交 | 内容 |

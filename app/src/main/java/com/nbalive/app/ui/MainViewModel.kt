@@ -320,8 +320,28 @@ class MainViewModel(
      */
     private val failedSources = SourceFailureBook()
 
+    /**
+     * 已经嗅探成功过的播放页 -> m3u8 的短期缓存（2026-10-30「解析播放太慢」）。
+     *
+     * 过滤掉主播线路后，剩下的 JRKAN 线路全部只能走 WebView：
+     * 加载播放页（外部脚本 parser-blocking，实测 0.1~27 秒）→ 页面里的播放器发 m3u8 请求
+     * → 嗅探 → 升级 ExoPlayer。再点开同一场时这条链路会**从头再走一遍**，
+     * 尽管上一次已经拿到过带签名的可直连地址（`expire` 往往在几小时后）。
+     *
+     * 规则与失效路径（直连失败必须作废）见 [SniffedPlaylistCache]。
+     */
+    private val sniffedPlaylists = SniffedPlaylistCache()
+
     /** 单调时钟（毫秒）：不受用户改系统时间影响，与 [SourceFailureBook] 共用。 */
     private fun nowMs(): Long = System.nanoTime() / 1_000_000L
+
+    /**
+     * 墙钟（毫秒）：给 [SniffedPlaylistCache] 用。
+     *
+     * 缓存有效期来自源站签名的**绝对时间戳**（`expire`），必须与墙钟同基准；
+     * 用单调时钟会把 2026 年的时间戳当成"几亿毫秒后"。
+     */
+    private fun wallNowMs(): Long = System.currentTimeMillis()
 
     /** 这条线现在还能不能被自动选中。 */
     private fun isSourceFailed(pageUrl: String): Boolean = failedSources.isFailed(pageUrl, nowMs())
@@ -747,6 +767,28 @@ class MainViewModel(
 
             // 候选顺序：用户选中的那条优先，其余可直连线路依次兜底。
             // 选中的是网页线路时不生成任何候选——尊重用户的选择。
+            //
+            // ⚠️ 但"网页线路"如果**上一次已经嗅探成功过**，就用缓存里的 m3u8 直接起播：
+            // 那条 WebView 链路（加载页面 → 页面播放器发 m3u8）实测 0.1~27 秒，
+            // 而缓存的地址是同一页面发出的、有效期往往还有几小时。
+            // 直连真的失败了会走 onPlaybackFailed → invalidate，下次回网页重新嗅探。
+            if (!chosen.isDirectHls) {
+                sniffedPlaylists.get(chosen.pageUrl, wallNowMs())?.let { hit ->
+                    _playerState.update {
+                        it.copy(
+                            resolving = false,
+                            selectedIndex = start,
+                            streamUrl = hit.m3u8Url,
+                            streamReferer = hit.referer,
+                            webFallbackUrl = null,
+                            // 与嗅探升级同语义：这条流失败时要退回**这个播放页**
+                            sniffedStream = true,
+                            failedSniffUrl = null,
+                        ).withError(null)
+                    }
+                    return@launch
+                }
+            }
             val ordered = buildList {
                 if (chosen.isDirectHls) {
                     if (chosenUsable) add(chosen)
@@ -876,6 +918,14 @@ class MainViewModel(
                 sniffedStream = true,
             ).withError(null)
         }
+        // 记住"这个播放页能解出真流"：下次点开同一场直接起播，不再走 WebView 那条
+        // 0.1~27 秒的链路（见 [SniffedPlaylistCache]）。直连失败时会被 invalidate。
+        sniffedPlaylists.put(
+            pageUrl = state.webFallbackUrl!!,
+            m3u8Url = m3u8Url,
+            referer = referer,
+            nowWallMs = wallNowMs(),
+        )
     }
 
     /**
@@ -1001,6 +1051,9 @@ class MainViewModel(
         // 嗅探升级的流失败：退回刚才还在播的 WebView，不拉黑线路、不再试同一地址
         if (state.sniffedStream) {
             val pageUrl = state.signals.getOrNull(state.selectedIndex)?.pageUrl
+            // ⚠️ 这份缓存必须立刻作废：它记的正是刚刚 404 的那条地址。
+            // 不作废的话，下次点开同一场会拿旧地址再失败一遍（"反复解析"）。
+            pageUrl?.let(sniffedPlaylists::invalidate)
             _playerState.update {
                 it.copy(
                     streamUrl = null,
