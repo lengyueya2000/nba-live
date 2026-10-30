@@ -43,6 +43,21 @@ object PipState {
     private val _videoSize = MutableStateFlow(VideoSize(0, 0))
     val videoSize = _videoSize.asStateFlow()
 
+    /**
+     * 退出小窗时的「回到全屏」请求计数。
+     *
+     * ⚠️ 为什么是**计数**而不是 Boolean 事件：
+     * 小窗期间 Activity 处于 PAUSED，`collectAsStateWithLifecycle` 会**停止收集**，
+     * 退出小窗那一刻写的值要等回到 STARTED 才被 Compose 看到。用 Boolean 时
+     * "写 true → 消费 → 复位 false" 的三个动作可能挤在同一段不可见时间里，
+     * Compose 只看到最终值 false，事件就丢了；计数只会单调增，永远不会被吞掉。
+     *
+     * 消费方：[com.nbalive.app.ui.AppEffects.PipExitFullscreenEffect]
+     * （判据来源：[PipExitPolicy.shouldExpandToFullscreen]，由 `MainActivity` 调用）
+     */
+    private val _expandRequests = MutableStateFlow(0)
+    val expandRequests = _expandRequests.asStateFlow()
+
     /** 视频尺寸数据类（宽、高，单位像素） */
     data class VideoSize(val width: Int, val height: Int)
 
@@ -56,6 +71,16 @@ object PipState {
     /** 设置视频宽高（一对，原子更新） */
     fun setVideoSize(width: Int, height: Int) {
         _videoSize.value = VideoSize(width, height)
+    }
+
+    /**
+     * 请求退出小窗后回到全屏。
+     *
+     * 只有 [PipExitPolicy.shouldExpandToFullscreen] 判定为真时才该调用
+     * （调用点：`MainActivity.onPictureInPictureModeChanged`）。
+     */
+    fun requestExpand() {
+        _expandRequests.value += 1
     }
 
     /**

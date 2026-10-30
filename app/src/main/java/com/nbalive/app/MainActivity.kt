@@ -26,6 +26,7 @@ import com.nbalive.app.ui.AndroidPrefsStore
 import com.nbalive.app.ui.MainViewModel
 import com.nbalive.app.ui.NbaLiveApp
 import com.nbalive.app.ui.PipAspectReset
+import com.nbalive.app.ui.PipExitPolicy
 import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.PrefsStore
@@ -252,6 +253,17 @@ class MainActivity : ComponentActivity() {
         if (isInPictureInPictureMode) return
         // 退出小窗后把开关复位：留在 true 会继续粘住系统行为
         syncAutoEnterEnabled()
+        // 退出小窗 = 用户点了系统的「全屏」（或小窗被收掉）。
+        // `fullscreen` 只是"进小窗前那一刻"的值：从竖屏播放页进的小窗，
+        // 退出时它还是 false，界面就回到竖屏页 —— 用户按的却是「全屏」。
+        // 判据抽在 PipExitPolicy（有单测），这里只负责发请求。
+        if (PipExitPolicy.shouldExpandToFullscreen(
+                onPlayer = PipState.playerActive.value,
+                finishing = isFinishing,
+            )
+        ) {
+            PipState.requestExpand()
+        }
     }
 
     /**

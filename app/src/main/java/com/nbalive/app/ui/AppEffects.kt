@@ -5,11 +5,16 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.MainActivity
 import kotlinx.coroutines.delay
 
@@ -191,6 +196,38 @@ internal fun FullscreenSystemEffect(enabled: Boolean, inPip: Boolean) {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 controller.show(WindowInsetsCompat.Type.systemBars())
             }
+        }
+    }
+}
+
+/**
+ * 退出小窗后回到全屏播放（2026-10-30 现场反馈的修复）。
+ *
+ * ## 问题
+ *
+ * 竖屏播放页 → 点「画中画」→ 小窗里点系统的「全屏」→ **回到竖屏播放页**。
+ *
+ * `fullscreen` 是进小窗前那一刻的值，竖屏页进小窗时是 false；
+ * 退出小窗没有任何一步把它改回 true —— 用户按的明明是「全屏」。
+ *
+ * ## 为什么用计数（[PipState.expandRequests]）而不是 Boolean
+ *
+ * 小窗期间 Activity 是 PAUSED，`collectAsStateWithLifecycle` 停止收集。
+ * "写 true → 消费 → 复位 false" 全发生在不可见时段时，复位的 false 会盖掉 true，
+ * Compose 永远看不到这次请求。计数只会单调增，回到 STARTED 时一定看得到最新值。
+ *
+ * `handled` 的初值取首次组合看到的值：进程重建后不会把历史请求再执行一遍。
+ */
+@Composable
+internal fun PipExitFullscreenEffect(onExpand: () -> Unit) {
+    val requests by PipState.expandRequests.collectAsStateWithLifecycle()
+    var handled by remember { mutableIntStateOf(requests) }
+    // 回调里用到最新的 route/fullscreen 写入器，别用启动那一刻捕获的旧 lambda
+    val currentOnExpand by rememberUpdatedState(onExpand)
+    LaunchedEffect(requests) {
+        if (requests > handled) {
+            handled = requests
+            currentOnExpand()
         }
     }
 }

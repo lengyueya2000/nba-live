@@ -398,3 +398,68 @@ fun admit(raw: List<RawChannel>): List<RawChannel> {
 - 全量 debug + release 各 **581 通过 / 0 失败 / 0 跳过**（84 suites）；
 - `:app:assembleDebug` / `:app:assembleRelease` 成功，versionCode 22 / 1.2.18；
 - release 包装机后列表正常加载（10 月 30 日 8 场）。
+
+---
+
+## 七、2026-10-30 第十一回合：小窗里点「全屏」回来是竖屏
+
+### 7.1 现场与复现
+
+用户报告：小窗回到首页之后，再点全屏是回到了竖屏状态，而不是全屏。
+
+复现（雷电 9 / Android 14 / 1280×720，debug 包，坐标法）：
+
+| 步骤 | 观测（`dumpsys window displays` / `uiautomator`） |
+|---|---|
+| 点比赛 → 播放页（列表点击默认全屏） | `cur=1280x720`，底部「退出全屏 / 画中画 / 锁定」 |
+| 按返回退出全屏（停在竖屏播放页） | `cur=720x1280`，「信号切换 · 共 7 条线路」可见 |
+| 点「画中画」 | 小窗 `Rect(294,1026-688,1248)`，`cur=720x1280` |
+| 点小窗（出现菜单）再点**系统「全屏」** | **`cur=720x1280`**，回到**竖屏播放页**，「信号切换」列表仍在 ❌ |
+
+对照组：从**全屏**进小窗再点「全屏」，回来是横屏（碰巧正确）——所以这个 bug 只在
+"竖屏播放页 → 小窗"这条路径上出现，容易漏测。
+
+### 7.2 根因
+
+`NbaLiveApp` 的 `fullscreen` 是 `rememberSaveable`，语义是"当前是不是全屏播放布局"，
+但小窗期间它只被**保存**、不被**恢复**：退出小窗时没有任何一步把它置回 true。
+从全屏进小窗它本来就是 true，所以看起来正常；从竖屏页进小窗它是 false，
+系统「全屏」按钮只是把 Activity 拉回前台，并不会替应用改状态。
+
+### 7.3 修法（判据 / 事件 / 消费三点接线）
+
+- 判据：`PipExitPolicy.shouldExpandToFullscreen(onPlayer, finishing) = onPlayer && !finishing`
+  （`finishing` = 用户点 X 收窗，不是「全屏」，不请求横屏）；
+- 事件：`MainActivity.onPictureInPictureModeChanged` 的退出分支（`if (isInPictureInPictureMode) return`
+  之后）调判据，命中则 `PipState.requestExpand()`；
+- 通道：`PipState.expandRequests` 是**递增计数**，不是 Boolean。小窗期间 Activity 处于 PAUSED，
+  `collectAsStateWithLifecycle` 停止收集；Boolean 的"写 true → 消费 → 复位 false"若全发生在
+  不可见时段，Compose 只能看到最终值 false，事件被吞。计数单调增，回到 STARTED 一定收到；
+- 消费：`AppEffects.PipExitFullscreenEffect` 用 lifecycle-aware 收集，`handled` 初值取首次组合的值
+  （进程重建不重放历史请求），有新请求时回调 `fullscreen = true`；
+- 挂载：`NbaLiveApp` 在 `FullscreenSystemEffect` 之后调用该 effect。
+
+### 7.4 守卫与回退实验（每条都实测会红）
+
+| 守卫 | 位置 | 回退动作 | 实测 |
+|---|---|---|---|
+| 判据语义 | `PipExitPolicyTest`(3) | `onPlayer && !finishing` → `false` | **1 红**（"在播放页退出小窗要回到全屏"） |
+| 回调发请求 | `PipExitWiringTest`("退出小窗的回调里…") | `PipState.requestExpand()` 注释掉 | **1 红** |
+| 根组件挂载 | 同上（"根组件要挂载这个 effect"） | `NbaLiveApp` 的 effect 调用注释掉 | **1 红** |
+| 真的执行全屏 | 同上（"effect 要真的消费请求…"） | `currentOnExpand()` → `Unit` | **1 红** |
+| 计数自增 | 同上（"计数请求真的能自增"） | 恒成立，属"防消费端空转"的接线检查 | — |
+
+（前两条在同一次回退里一起做，得到 **恰好 2 红**，且失败信息各自指向对应断言。）
+
+### 7.5 实机验收
+
+同一套步骤，换成修后的 debug 包：点系统「全屏」后按 250ms 采样
+`720x1280 → 1280x720 → … → 1280x720`（第一次采样仍是旧尺寸，之后稳定横屏）；
+`uiautomator` 只剩视频与「退出全屏 / 画中画 / 锁定」按钮，「信号切换」列表消失；
+`logcat -s AndroidRuntime:E` 无 `FATAL EXCEPTION`。
+
+### 7.6 数字
+
+- 新增守卫 **2 类 9 条**（`PipExitPolicyTest` 3 + `PipExitWiringTest` 6）；
+- 生产改动 4 个文件 + 新增 `PipExitPolicy.kt`：`PipState.kt`、`MainActivity.kt`、`AppEffects.kt`、`NbaLiveApp.kt`；
+- 全量 debug + release 各 **590 通过 / 0 失败 / 0 跳过**（86 suites）。

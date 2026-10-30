@@ -69,6 +69,10 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     // ⚠️ 必须把 inPip 传进去（P2-7）：进小窗时 enabled 从 true 变 false，
     // 但方向不能复位 —— 否则小窗窗口跟着设备方向乱转。
     FullscreenSystemEffect(enabled = fullscreen && !inPip, inPip = inPip)
+    // 退出小窗（系统的「全屏」按钮）后必须回到全屏播放：
+    // `fullscreen` 只是进小窗前那一刻的值，从竖屏播放页进的小窗退出时它是 false，
+    // 界面就回到竖屏页 —— 用户按的却是「全屏」。判据见 PipExitPolicy。
+    PipExitFullscreenEffect { fullscreen = true }
     // 列表状态随时间老化（P1-1）：进详情页/播放页就停
     AppListStatusAgeEffect(route = route, tab = tab) { viewModel.ageListStatuses() }
     // 离开播放页自动退出全屏，避免下次进来是横屏

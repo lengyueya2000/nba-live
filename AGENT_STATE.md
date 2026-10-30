@@ -3,8 +3,8 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **570 通过 / 0 失败 / 0 跳过**，
-  debug 与 release 两个变体同数，80 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **590 通过 / 0 失败 / 0 跳过**，
+  debug 与 release 两个变体同数，86 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
 - 测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在 Gradle 锁内拷走再计数**；XML 带 BOM，用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 读）
@@ -14,7 +14,13 @@
 纪律：先 TDD 写纯判据 RED 测试 → 生产代码 → 编译 → 全量测试 → 提交。
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
-## 最近两个回合的提交
+## 最近三个回合的提交
+### 2026-10-30 第十一回合（现场 bug）：小窗里点「全屏」回来是竖屏
+全量 debug+release 各 **590/0/0**（86 suites）+ `assembleDebug` 成功。新增守卫 **2 类 9 条**。
+| 提交 | 内容 |
+|---|---|
+| `（本轮）` | **现场报告**：竖屏播放页 → 点「画中画」→ 小窗里点系统的「全屏」→ **回到 720×1280 竖屏播放页**（信号列表还在），不是全屏。**复现**（雷电 9 / Android 14 / 1280×720，debug 包）：`dumpsys window displays` 退出小窗前 `cur=720x1280`，点系统「全屏」后仍是 `720x1280`，`uiautomator` 里「信号切换」列表仍在。**根因**：`fullscreen` 是 `rememberSaveable`，记录的是**进小窗前那一刻**的状态 —— 从竖屏页进的小窗它是 false，退出小窗时**没有任何一步**把它改回 true（从全屏进的小窗碰巧是 true 所以曾"看起来正常"）。**修法**：判据抽成 `PipExitPolicy.shouldExpandToFullscreen(onPlayer, finishing)`（有单测）；`MainActivity.onPictureInPictureModeChanged` 的**退出分支**（`if (isInPictureInPictureMode) return` 之后）调判据并 `PipState.requestExpand()`；`PipState.expandRequests` 用**计数**而不是 Boolean（小窗期间 Activity 是 PAUSED，`collectAsStateWithLifecycle` 停止收集，Boolean 的"写 true→消费→复位 false"可能全发生在不可见时段、事件被吞）；`AppEffects.PipExitFullscreenEffect` 用 lifecycle-aware 收集并在新请求时 `fullscreen = true`；`NbaLiveApp` 挂载该 effect。**回退实验**：判据改成恒 `false` → 1 红；注释掉 `requestExpand()` 与 `NbaLiveApp` 的 effect 调用 → **2 红**（各一条）；把 `currentOnExpand()` 改成 `Unit` → 1 红。**实机验证**（debug 包）：同样的"竖屏页→画中画→系统全屏"步骤，退出后按 250ms 采样 `720x1280 → 1280x720`（第一帧仍为旧尺寸）后**稳定 1280×720**，界面只剩视频 + 「退出全屏/画中画」按钮，无 `FATAL EXCEPTION`。 |
+
 ### 2026-10-30 第十回合（goal round 9）：**95 条清单全部收口** —— 04-P2-7 落地 + 6 条缺护栏补齐
 1 个提交（`7648f66`）+ 发版 **v1.2.18**。全量 debug+release 各 **581/0/0**（84 suites）+ `assembleDebug`/`assembleRelease` 成功。
 | 提交 | 内容 |
