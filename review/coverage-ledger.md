@@ -462,4 +462,4 @@ fun admit(raw: List<RawChannel>): List<RawChannel> {
 
 - 新增守卫 **2 类 9 条**（`PipExitPolicyTest` 3 + `PipExitWiringTest` 6）；
 - 生产改动 4 个文件 + 新增 `PipExitPolicy.kt`：`PipState.kt`、`MainActivity.kt`、`AppEffects.kt`、`NbaLiveApp.kt`；
-- 全量 debug + release 各 **590 通过 / 0 失败 / 0 跳过**（86 suites）。
+- 全量 debug + release 各 **590 通过 / 0 失败 / 0 跳过**（86 suites）；\n- 已发版 **v1.2.19**（`6e26e0b`，APK 2,733,929 B，sha256 `488aee92…`）。
