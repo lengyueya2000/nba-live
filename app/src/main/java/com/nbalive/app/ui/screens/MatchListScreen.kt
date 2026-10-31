@@ -28,8 +28,10 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.SportsBasketball
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -48,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.remote.EspnScoreboard
 import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.FullScreenErrorState
 import com.nbalive.app.ui.components.LeagueChip
@@ -60,6 +63,7 @@ import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.ui.ListNotice
 import com.nbalive.app.ui.ListNoticePolicy
 import com.nbalive.app.ui.DAY_LABEL_TICK_MS
+import com.nbalive.app.ui.TeamNameBridge
 import com.nbalive.app.ui.dayLabel
 import com.nbalive.app.ui.groupByDay
 import com.nbalive.app.ui.hhmm
@@ -78,6 +82,7 @@ import kotlinx.coroutines.delay
 // （review/03-ui.md P2-33）：那是"展示格式化"的收敛点，且移出去才能被单测覆盖。
 // 这里原来有一份与它等价的私有实现。
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MatchListScreen(
     matches: List<Match>,
@@ -97,32 +102,49 @@ fun MatchListScreen(
      * 无法区分"源挂了"和"今天真没比赛"，线上问题也就没法被准确反馈。
      */
     partialError: String? = null,
+    /**
+     * 比分快照：`match.id` → 那一场的比分（2026-10-31 用户需求）。
+     *
+     * ⚠️ CBA 没有数据（ESPN 的 CBA 端点返回 400，见 `ScoreboardRepository`），
+     * 查不到就**不画**比分区块 —— 不显示 `0 - 0`、也不显示空白占位。
+     */
+    scores: Map<String, EspnScoreboard.GameScore> = emptyMap(),
 ) {
-    Column(modifier = modifier.fillMaxSize()) {
-        LeagueSelector(
-            selected = selectedLeague,
-            counts = counts,
-            onSelect = onLeagueSelected,
-        )
-        when {
-            // 首载：还没有任何数据，整屏 loading
-            loading -> LoadingState()
-            // 刷新失败：给出错误 + 重试（但已有列表还在下面，不清空）
-            error != null && matches.isEmpty() -> ErrorState(error = error, onRetry = onRetry)
-            matches.isEmpty() -> EmptyState()
-            else -> {
-                // 刷新中：保留旧列表，只在顶部挂一条细进度条。
-                // 原来刷新时整屏换成转圈，已有卡片全消失、滚动位置也丢。
-                if (refreshing) RefreshingBar()
-                // 有旧数据：错误提示要看得见（还能点重试）；
-                // 没有整次错误但某个源缺了数据时，也要让用户知道少了什么
-                // —— 规则见 ListNoticePolicy（纯判据，有单测）。
-                when (val notice = ListNoticePolicy.of(error, partialError)) {
-                    is ListNotice.Failed -> ErrorBanner(message = notice.message, onRetry = onRetry)
-                    is ListNotice.Partial -> PartialBanner(message = notice.message)
-                    ListNotice.None -> Unit
+    // 下拉刷新（2026-10-31 用户需求）：
+    // 之前只有右上角那个小按钮，看球时单手够不到、也不知道能拉。
+    // ⚠️ isRefreshing 只在**已有数据**时为 true：首载（整屏 loading）时下拉指示器
+    // 会和整屏转圈叠在一起，观感像卡住。
+    PullToRefreshBox(
+        isRefreshing = refreshing && matches.isNotEmpty(),
+        onRefresh = onRetry,
+        modifier = modifier.fillMaxSize(),
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            LeagueSelector(
+                selected = selectedLeague,
+                counts = counts,
+                onSelect = onLeagueSelected,
+            )
+            when {
+                // 首载：还没有任何数据，整屏 loading
+                loading -> LoadingState()
+                // 刷新失败：给出错误 + 重试（但已有列表还在下面，不清空）
+                error != null && matches.isEmpty() -> ErrorState(error = error, onRetry = onRetry)
+                matches.isEmpty() -> EmptyState()
+                else -> {
+                    // 刷新中：保留旧列表，只在顶部挂一条细进度条。
+                    // 原来刷新时整屏换成转圈，已有卡片全消失、滚动位置也丢。
+                    if (refreshing) RefreshingBar()
+                    // 有旧数据：错误提示要看得见（还能点重试）；
+                    // 没有整次错误但某个源缺了数据时，也要让用户知道少了什么
+                    // —— 规则见 ListNoticePolicy（纯判据，有单测）。
+                    when (val notice = ListNoticePolicy.of(error, partialError)) {
+                        is ListNotice.Failed -> ErrorBanner(message = notice.message, onRetry = onRetry)
+                        is ListNotice.Partial -> PartialBanner(message = notice.message)
+                        ListNotice.None -> Unit
+                    }
+                    MatchGrid(matches = matches, onMatchClick = onMatchClick, scores = scores)
                 }
-                MatchGrid(matches = matches, onMatchClick = onMatchClick)
             }
         }
     }
@@ -195,7 +217,11 @@ private fun LeagueSelector(
 }
 
 @Composable
-private fun MatchGrid(matches: List<Match>, onMatchClick: (Match) -> Unit) {
+private fun MatchGrid(
+    matches: List<Match>,
+    onMatchClick: (Match) -> Unit,
+    scores: Map<String, EspnScoreboard.GameScore> = emptyMap(),
+) {
     val liveMatch = matches.firstOrNull { it.status == MatchStatus.LIVE }
     // 直播中的比赛已用全宽 hero 卡呈现，网格里不再重复
     val gridMatches = if (liveMatch != null) matches.filter { it.id != liveMatch.id } else matches
@@ -230,7 +256,11 @@ private fun MatchGrid(matches: List<Match>, onMatchClick: (Match) -> Unit) {
         // 直播中的赛事：横贯全宽的 hero 卡
         if (liveMatch != null) {
             item(span = { GridItemSpan(maxLineSpan) }, key = "hero-${liveMatch.id}") {
-                LiveHeroCard(match = liveMatch, onClick = { onMatchClick(liveMatch) })
+                LiveHeroCard(
+                    match = liveMatch,
+                    onClick = { onMatchClick(liveMatch) },
+                    score = scores[liveMatch.id],
+                )
             }
         }
 
@@ -243,7 +273,11 @@ private fun MatchGrid(matches: List<Match>, onMatchClick: (Match) -> Unit) {
                 )
             }
             items(group.matches, key = { it.id }) { match ->
-                MatchCard(match = match, onClick = { onMatchClick(match) })
+                MatchCard(
+                    match = match,
+                    onClick = { onMatchClick(match) },
+                    score = scores[match.id],
+                )
             }
         }
     }
@@ -284,7 +318,16 @@ private fun DayHeader(label: String, count: Int, liveCount: Int) {
 
 /** 直播中的大卡（设计稿 hero：红橙渐变 + 大字对阵 + 立即观看） */
 @Composable
-private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
+private fun LiveHeroCard(
+    match: Match,
+    onClick: () -> Unit,
+    /**
+     * 这一场的比分（2026-10-31 用户需求）。
+     *
+     * ⚠️ null = 没有数据（CBA 永远没有：ESPN 的 CBA 端点返回 400）。那时整块不渲染。
+     */
+    score: EspnScoreboard.GameScore? = null,
+) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -337,6 +380,33 @@ private fun LiveHeroCard(match: Match, onClick: () -> Unit) {
                     modifier = Modifier.padding(horizontal = Space.sm),
                 )
                 HeroTeam(name = match.awayTeam, logo = match.awayLogo, modifier = Modifier.weight(1f))
+            }
+
+            // 比分（有数据才画）。hero 卡整卡是白字：这里用 OnAccent 保证对比度
+            // （AccentContrast 那套色就是为"渐变底上的文字"准备的，有专门单测）。
+            score?.let { g ->
+                val pair = TeamNameBridge.displayableScore(g)
+                val label = TeamNameBridge.statusLabel(g)
+                if (pair != null) {
+                    Spacer(Modifier.height(Space.sm))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "${pair.first} : ${pair.second}",
+                            color = AccentContrast.OnAccent,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                        )
+                        if (label != null) {
+                            Spacer(Modifier.width(Space.sm))
+                            Text(
+                                text = label,
+                                color = AccentContrast.OnAccent,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
             }
 
             Spacer(Modifier.height(Space.lg))
@@ -436,7 +506,17 @@ private fun HeroPill(
 
 /** 双列网格里的赛事卡（设计稿 .mcard） */
 @Composable
-private fun MatchCard(match: Match, onClick: () -> Unit) {
+private fun MatchCard(
+    match: Match,
+    onClick: () -> Unit,
+    /**
+     * 这一场的比分（2026-10-31 用户需求）。
+     *
+     * ⚠️ null = 没有数据（CBA 永远没有：ESPN 的 CBA 端点返回 400；NBA 未开赛/认不出队名也没有）。
+     * 那时**整块不渲染** —— 不画 `0 - 0`、也不留空白占位。
+     */
+    score: EspnScoreboard.GameScore? = null,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -493,6 +573,37 @@ private fun MatchCard(match: Match, onClick: () -> Unit) {
                 modifier = Modifier.padding(top = 16.dp),
             )
             GridTeam(name = match.awayTeam, logo = match.awayLogo, modifier = Modifier.weight(1f))
+        }
+
+        // 比分（有数据才画）：主客顺序与上方队名**一致**（左主右客），
+        // 与 ESPN 的 home/away 对应关系由 TeamNameBridge.findGame 保证。
+        score?.let { g ->
+            val pair = TeamNameBridge.displayableScore(g)
+            val label = TeamNameBridge.statusLabel(g)
+            if (pair != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = Space.md, end = Space.md, top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${pair.first} : ${pair.second}",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                    if (label != null) {
+                        Spacer(Modifier.width(Space.sm))
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
         }
 
         Row(

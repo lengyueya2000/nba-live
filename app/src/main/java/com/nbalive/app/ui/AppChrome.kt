@@ -62,6 +62,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.BuildConfig
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.Provider
+import com.nbalive.app.data.remote.EspnScoreboard
+import androidx.compose.ui.platform.LocalUriHandler
 import com.nbalive.app.ui.components.LiveDotPhase
 import com.nbalive.app.ui.components.SquareIconButton
 import com.nbalive.app.ui.screens.LiveNowScreen
@@ -441,6 +443,16 @@ internal fun ListBranch(
     aspectMode: AspectMode,
     darkMode: Boolean,
     enabledProviders: Set<Provider>,
+    /**
+     * 比分快照：`match.id` → 比分（2026-10-31 用户需求）。
+     *
+     * 由 `RouteHost` 从 VM 收集后传进来；CBA 永远为空（ESPN 无 CBA 数据）。
+     */
+    scores: Map<String, EspnScoreboard.GameScore>,
+    /** 检查更新状态（2026-10-31 用户需求）；null = 还没查过 */
+    updateState: UpdateCheckPolicy.Decision?,
+    /** 是否正在检查更新 */
+    checkingUpdate: Boolean,
     onSetFullscreen: (Boolean) -> Unit,
 ) {
     // ⚠️ visibleMatches / counts **不需要**再包一层 remember（review/03-ui.md P2-9）：
@@ -450,6 +462,9 @@ internal fun ListBranch(
     // 还会让后来者以为"这里必须 remember，否则会分配"。
     val visibleMatches = listState.visibleMatches
     val leagueCounts = listState.counts
+    // 打开外链（下载新版 APK）：LocalUriHandler 由宿主 Activity 提供，
+    // 比手搓 Intent 少一处 Context 依赖（列表页是纯 UI，不该认识 Activity）。
+    val uriHandler = LocalUriHandler.current
 
     // ⚠️ 列表/直播页的红点共用**一个**呼吸相位（review/03-ui.md P2-13）：
     // 原来每颗 LiveDot 各自 rememberInfiniteTransition，
@@ -475,6 +490,8 @@ internal fun ListBranch(
                     viewModel.playMatch(m)
                 },
                 onRetry = viewModel::refresh,
+                // 比分（2026-10-31 用户需求）：按 match.id 查，改一场只重画那一张卡
+                scores = scores,
             )
 
             // 直播页：只列正在直播的，点一下直接看。
@@ -501,6 +518,14 @@ internal fun ListBranch(
                 // 数据源开关（2026-10-31 用户需求）：关掉的源在数据层就不发请求
                 enabledProviders = enabledProviders,
                 onProviderToggle = viewModel::setProviderEnabled,
+                // 检查更新（2026-10-31 用户需求）：
+                // ⚠️ 只在用户点的时候才发请求；失败静默（GitHub 国内常不通）。
+                onCheckUpdate = viewModel::checkForUpdate,
+                updateState = updateState,
+                checkingUpdate = checkingUpdate,
+                // 用系统浏览器打开 release 页（LocalUriHandler 是 Compose 的标准做法，
+                // 比手搓 Intent 少一处 Context 依赖，也不会因为缺 Activity 而崩）。
+                onOpenUrl = { url -> runCatching { uriHandler.openUri(url) } },
                 // 偏好写入的唯一链路（review/03-ui.md P2-17 写路径收口）：
                 // UI → VM 写入口 → PrefsStore（注入）→ 平台层实现。这里不碰 AppPrefs/PlayerPrefs。
                 onAspectChange = { mode -> viewModel.setAspectMode(mode) },

@@ -1,4 +1,4 @@
-package com.nbalive.app.ui.screens
+﻿package com.nbalive.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,8 +22,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -57,6 +59,7 @@ import com.nbalive.app.ui.theme.Space
  * 和"赛事"页的分工：赛事页是当天全量（含未开赛/已结束），
  * 这一页是"现在能看的"，进来就能点。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveNowScreen(
     /**
@@ -77,7 +80,15 @@ fun LiveNowScreen(
 ) {
     val live = liveMatches
 
-    Column(modifier = modifier.fillMaxSize()) {
+    // 下拉刷新（2026-10-31 用户需求）：与赛事列表页同一套手势。
+    // ⚠️ isRefreshing 只在**已有数据**时为 true：首载时下拉指示器会和
+    // "正在加载赛事…"叠在一起，观感像卡住。
+    PullToRefreshBox(
+        isRefreshing = refreshing && live.isNotEmpty(),
+        onRefresh = onRetry,
+        modifier = modifier.fillMaxSize(),
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -144,6 +155,7 @@ fun LiveNowScreen(
                     }
                 }
             }
+        }
         }
     }
 }

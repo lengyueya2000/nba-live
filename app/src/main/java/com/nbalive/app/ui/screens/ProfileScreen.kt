@@ -21,6 +21,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -34,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.SourceTogglePolicy
+import com.nbalive.app.ui.UpdateCheckPolicy
 import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.components.InfoRow
 import com.nbalive.app.ui.theme.Radius
@@ -59,6 +63,19 @@ fun ProfileScreen(
     enabledProviders: Set<Provider>,
     /** 切换某个源；判据（至少留一个）由 SourceTogglePolicy 决定，界面只负责置灰 */
     onProviderToggle: (Provider, Boolean) -> Unit,
+    /**
+     * 点「检查更新」（2026-10-31 用户需求）。
+     *
+     * ⚠️ 只有**用户主动点**才发起请求：启动就查会让冷启动多一个大概率失败的往返
+     * （GitHub 在国内经常不通），而失败时我们又不该弹任何东西。
+     */
+    onCheckUpdate: () -> Unit = {},
+    /** 检查结果；null = 还没查过 */
+    updateState: UpdateCheckPolicy.Decision? = null,
+    /** 是否正在检查（按钮显示进度、防连点） */
+    checkingUpdate: Boolean = false,
+    /** 打开外链（下载新版 APK 的 release 页）；用系统浏览器，不在 App 内下载 */
+    onOpenUrl: (String) -> Unit = {},
     onAspectChange: (AspectMode) -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -182,6 +199,73 @@ fun ProfileScreen(
             InfoRow(label = "支持联赛", value = "NBA / CBA")
             InfoRow(label = "播放内核", value = "Media3 ExoPlayer")
             InfoRow(label = "版本", value = versionName)
+            // 检查更新（2026-10-31 用户需求）：本 App 走 GitHub Releases 分发，
+            // 装完就再也不知道有没有新版 —— 这里给一个手动入口。
+            // ⚠️ 失败**静默**（GitHub 在国内经常不通）：只在用户点了之后把那一行
+            // 显示成「已是最新」或「有新版本 x.y.z」，不弹任何错误。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(Radius.btn))
+                    .clickable(enabled = !checkingUpdate, onClick = onCheckUpdate)
+                    .padding(vertical = Space.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(Space.sm))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "检查更新",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = when {
+                            checkingUpdate -> "正在检查…"
+                            updateState != null -> UpdateCheckPolicy.statusText(updateState)
+                            else -> "点一下看看有没有新版本"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (checkingUpdate) {
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(16.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            // 查到了新版本：给一个明确的下载入口（点开浏览器，不在 App 内下载）
+            (updateState as? UpdateCheckPolicy.Decision.Available)?.let { available ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Radius.btn))
+                        .clickable(onClick = { onOpenUrl(available.downloadUrl) })
+                        .padding(vertical = Space.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.OpenInNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(Space.sm))
+                    Text(
+                        text = "下载 ${available.latest}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
             Spacer(Modifier.height(Space.xs))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(

@@ -12,6 +12,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.MainActivity
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.Provider
+import com.nbalive.app.data.remote.EspnScoreboard
 import com.nbalive.app.ui.screens.MatchDetailScreen
 import com.nbalive.app.ui.screens.PlayerScreen
 
@@ -77,6 +78,9 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     PipExitFullscreenEffect { fullscreen = true }
     // 列表状态随时间老化（P1-1）：进详情页/播放页就停
     AppListStatusAgeEffect(route = route, tab = tab) { viewModel.ageListStatuses() }
+    // 比分定时刷新（2026-10-31 用户需求）：与状态老化同一个可见性判据 ——
+    // 只在列表标签可见时跑，进播放页/「我的」页就停。
+    AppScoresRefreshEffect(route = route, tab = tab) { viewModel.refreshScores() }
     // 离开播放页自动退出全屏，避免下次进来是横屏
     // （解除锁定在 RouteHost 里做 —— 锁状态住在那里，见 P2-18 的职责划分）
     AppLeavePlayerEffect(route = route) { fullscreen = false }
@@ -174,6 +178,13 @@ private fun RouteHost(
     val listState by viewModel.listState.collectAsStateWithLifecycle()
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
+    // 比分（2026-10-31 用户需求）：**在这里收集**，不在根节点 ——
+    // 它 45 秒变一次，放根节点会让 Scaffold/顶栏/底栏跟着重组（P2-15，有守卫）。
+    val scores by viewModel.scores.collectAsStateWithLifecycle()
+    // 检查更新（2026-10-31 用户需求）：只在用户点过「我的」页那一行之后才有值，
+    // 同样不放进根节点（判据同 P2-15）。
+    val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+    val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
     // liveMatches 是真需要的：state 里没有预过滤过的 LIVE 列表
     // ⚠️ 过滤实现只有一处：[liveOnly]（review/audit-guards.md「未验证的怀疑 #5」）。
     // 原来这里是就地写的 `filter { it.status == MatchStatus.LIVE }`，
@@ -259,6 +270,9 @@ private fun RouteHost(
             darkMode = darkMode,
             // 数据源开关（2026-10-31 用户需求）：「我的」页要读它
             enabledProviders = enabledProviders,
+            scores = scores,
+            updateState = updateState,
+            checkingUpdate = checkingUpdate,
             onSetFullscreen = onSetFullscreen,
         )
 

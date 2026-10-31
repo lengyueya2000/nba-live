@@ -4,12 +4,18 @@ import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.nbalive.app.BuildConfig
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
+import com.nbalive.app.data.remote.EspnScoreboard
+import com.nbalive.app.data.remote.FetchResult
+import com.nbalive.app.data.remote.HttpClient
+import com.nbalive.app.data.remote.debugLog
 import com.nbalive.app.data.repository.MatchRepository
+import com.nbalive.app.data.repository.ScoreboardRepository
 import com.nbalive.app.data.remote.StreamUrlResolver
 import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.data.remote.safeMessage
@@ -203,6 +209,15 @@ class MainViewModel(
 
     companion object {
         /**
+         * 检查更新用的仓库坐标（2026-10-31）。
+         *
+         * ⚠️ 只在这里写一次：写两处时改一处漏一处，"检查更新"会去问一个不存在的仓库，
+         * 表现为永远「已是最新」且没有任何报错。
+         */
+        private const val REPO_OWNER = "lengyueya2000"
+        private const val REPO_NAME = "nba-live"
+
+        /**
          * 一次故障切换最多尝试几条直连线路。
          *
          * 每条直连线路的解析代价 = 最多 4 跳 + 最多 5 个候选 ≈ 9 次 HTTP 请求。
@@ -304,6 +319,54 @@ class MainViewModel(
 
     private val _listState = MutableStateFlow(MatchListUiState())
     val listState: StateFlow<MatchListUiState> = _listState.asStateFlow()
+
+    // ---------- 比赛比分（2026-10-31 用户需求） ----------
+
+    private val scoreboard = ScoreboardRepository()
+
+    /**
+     * 比分快照：`matchId` → 那一场的比分。
+     *
+     * ⚠️ 用 **id 映射**而不是"塞进 Match"：Match 是数据层的不可变模型，
+     * 往里加 `score` 字段会让"列表数据"与"实时比分"混成一个状态，
+     * 而两者刷新节奏完全不同（列表 5 分钟、比分 20 秒）。
+     *
+     * 只有 NBA 有数据（ESPN 的 CBA 端点返回 400），CBA 场次查不到 → 界面不画比分区块。
+     */
+    private val _scores = MutableStateFlow<Map<String, EspnScoreboard.GameScore>>(emptyMap())
+    val scores: StateFlow<Map<String, EspnScoreboard.GameScore>> = _scores.asStateFlow()
+
+    /**
+     * 刷新比分。
+     *
+     * 由界面在列表可见时定时调用（与 [ageListStatuses] 同一个节奏位）。
+     * **失败静默**：比分是锦上添花，拿不到就少一行，绝不能影响列表。
+     */
+    fun refreshScores() {
+        if (_scoresJobActive) return
+        _scoresJobActive = true
+        viewModelScope.launch {
+            try {
+                val snapshot = scoreboard.load(prefs.enabledProviders.value)
+                if (snapshot.isEmpty()) {
+                    debugLog("Scores", "ESPN 比分板为空（源站列表里没有对得上的场次，或网络失败）")
+                    return@launch
+                }
+                val map = _listState.value.matches.mapNotNull { m ->
+                    scoreboard.scoreFor(snapshot, m)?.let { m.id to it }
+                }.toMap()
+                // 只打**数量**，不打球队名/比分：这条日志在 debug 包里可读，
+                // 而"哪几场对上了"对排障够用，具体比分没有排障价值。
+                debugLog("Scores", "ESPN 比分板 ${snapshot.games.size} 场，匹配上 ${map.size} 场")
+                _scores.value = map
+            } finally {
+                _scoresJobActive = false
+            }
+        }
+    }
+
+    /** 比分刷新是否在飞（防重叠：20 秒一次，网络慢时会叠）。 */
+    private var _scoresJobActive = false
 
     private val _detailState = MutableStateFlow(MatchDetailUiState())
     val detailState: StateFlow<MatchDetailUiState> = _detailState.asStateFlow()
@@ -425,6 +488,126 @@ class MainViewModel(
      */
     fun setAspectMode(mode: AspectMode) {
         prefs.setAspect(mode)
+    }
+
+    // ---------- 检查更新（2026-10-31 用户需求） ----------
+
+    /**
+     * 检查更新状态（「我的」页那一行）。
+     *
+     * `null` = 还没查过；[UpdateCheckPolicy.Decision.UpToDate] = 已是最新（或查不到）。
+     */
+    private val _updateState = MutableStateFlow<UpdateCheckPolicy.Decision?>(null)
+    val updateState: StateFlow<UpdateCheckPolicy.Decision?> = _updateState.asStateFlow()
+
+    /** 是否正在检查（防连点）。 */
+    private val _checkingUpdate = MutableStateFlow(false)
+    val checkingUpdate: StateFlow<Boolean> = _checkingUpdate.asStateFlow()
+
+    /**
+     * 检查更新（用户点「我的」页那一行时调用）。
+     *
+     * ## 静默失败的边界
+     *
+     * GitHub API 在国内经常不通（实测：模拟器可达，但很多网络环境不行）。
+     * 失败时**不弹任何错误**：用户看球不受影响，弹一句"检查更新失败"只是噪音。
+     * 只在用户**手动点**之后才写 [updateState]，让那一行显示「已是最新」——
+     * 至少他知道点了有反应。
+     *
+     * ## 为什么不自动检查
+     *
+     * 启动就请求 GitHub 会让每次冷启动多一个网络往返（且大概率失败）。
+     * 本仓库对"不轮询源站"的取舍同样适用于这里：用户没要求就不打扰。
+     */
+    fun checkForUpdate() {
+        if (_checkingUpdate.value) return
+        _checkingUpdate.value = true
+        viewModelScope.launch {
+            try {
+                val decision = runCatching { fetchLatestRelease() }.getOrNull()
+                    ?: UpdateCheckPolicy.Decision.UpToDate
+                _updateState.value = decision
+            } finally {
+                _checkingUpdate.value = false
+            }
+        }
+    }
+
+    /**
+     * 真的去问 GitHub。
+     *
+     * ⚠️ 用 `releases/latest` 而不是 `/releases`：后者返回数组、还可能含 draft/prerelease，
+     * 取第一个不等于"最新正式版"。
+     */
+    private suspend fun fetchLatestRelease(): UpdateCheckPolicy.Decision? {
+        val url = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
+        val body = when (val r = HttpClient.shared.fetch(url, null, fastFail = true)) {
+            is FetchResult.Ok -> r.body
+            else -> return null
+        }
+        // 手写取字段（本工程没有 JSON 库，见 EspnScoreboard 的同款理由）
+        val tag = jsonString(body, "tag_name")
+        val html = jsonString(body, "html_url").orEmpty()
+        val notes = jsonString(body, "body").orEmpty()
+        if (tag.isNullOrBlank()) return null
+        val downloadUrl = html.ifBlank {
+            UpdateCheckPolicy.fallbackReleaseUrl(REPO_OWNER, REPO_NAME, tag)
+        }
+        return UpdateCheckPolicy.decide(
+            remoteTag = tag,
+            localVersion = BuildConfig.VERSION_NAME,
+            downloadUrl = downloadUrl,
+            notes = notes,
+        )
+    }
+
+    /** 从 JSON 文本里取一个顶层字符串字段（找不到返回 null）。 */
+    private fun jsonString(json: String, key: String): String? {
+        val needle = "\"$key\""
+        var from = 0
+        while (true) {
+            val at = json.indexOf(needle, from)
+            if (at < 0) return null
+            var i = at + needle.length
+            while (i < json.length && json[i].isWhitespace()) i++
+            if (i < json.length && json[i] == ':') {
+                i++
+                while (i < json.length && json[i].isWhitespace()) i++
+                if (i < json.length && json[i] == '"') {
+                    i++
+                    val sb = StringBuilder()
+                    while (i < json.length) {
+                        val c = json[i]
+                        when {
+                            c == '\\' && i + 1 < json.length -> {
+                                val n = json[i + 1]
+                                sb.append(
+                                    when (n) {
+                                        'n' -> '\n'
+                                        't' -> '\t'
+                                        'r' -> '\r'
+                                        'u' -> {
+                                            val hex = json.substring(i + 2, minOf(i + 6, json.length))
+                                            i += 4
+                                            hex.toIntOrNull(16)?.toChar() ?: ' '
+                                        }
+                                        else -> n
+                                    },
+                                )
+                                i += 2
+                            }
+                            c == '"' -> return sb.toString()
+                            else -> {
+                                sb.append(c)
+                                i++
+                            }
+                        }
+                    }
+                    return null
+                }
+            }
+            from = at + needle.length
+        }
     }
 
     /**

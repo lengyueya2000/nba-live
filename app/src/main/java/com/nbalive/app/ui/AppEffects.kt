@@ -38,6 +38,42 @@ import kotlinx.coroutines.delay
 internal const val LIST_STATUS_AGE_INTERVAL_MS = 60_000L
 
 /**
+ * 比分的刷新间隔（2026-10-31 用户需求「比赛比分」）。
+ *
+ * ## 为什么是 45 秒
+ *
+ * ESPN 的比分板自己约 30 秒更新一次；比它慢太多会明显滞后（用户刚看到得分，
+ * 卡片还停在上一个比分），太快则纯属白打（拿到的是同一份数据）。
+ * 45 秒取两者之间。这是对 ESPN（公共 API，不是那个限流严格的源站）的请求：
+ * **一次查询覆盖全部场次**，不是每场一次。
+ *
+ * ⚠️ 只在**列表标签可见**时跑（见 [AppScoresRefreshEffect]）：
+ * 用户进播放页看球时后台不该还在轮询，切后台时组合被移出也会自然停。
+ */
+internal const val SCORES_REFRESH_INTERVAL_MS = 45_000L
+
+/**
+ * 比分的定时刷新（2026-10-31 用户需求「比赛比分」）。
+ *
+ * ⚠️ 与 [AppListStatusAgeEffect] 的取舍一致：**只在列表可见时跑**。
+ * 进详情页 / 播放页 / 「我的」页都会停 —— 比分只画在列表卡片上，
+ * 其它页面轮询它没有任何意义，只是白耗流量和电。
+ *
+ * ⚠️ 先 `onTick()` **再** `delay`：与状态老化同一个原因 ——
+ * 首次进列表要立刻有比分，而不是先干等 45 秒。
+ */
+@Composable
+internal fun AppScoresRefreshEffect(route: Route, tab: NavTab, onTick: () -> Unit) {
+    LaunchedEffect(route, tab) {
+        if (route != Route.LIST || tab == NavTab.PROFILE) return@LaunchedEffect
+        while (true) {
+            onTick()
+            delay(SCORES_REFRESH_INTERVAL_MS)
+        }
+    }
+}
+
+/**
  * 画中画 / 自动进小窗的接线（review/03-ui.md P2-6 的修法）。
  *
  * ## 为什么合并成一个 effect
