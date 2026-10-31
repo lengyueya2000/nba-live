@@ -609,3 +609,69 @@ P2-4 的防线有两道：① `key(webFallbackUrl)` 换线路时销毁重建 Web
 - 版本 versionCode 25 / 1.2.21，APK 2,750,309 B，sha256 `9b6196e7…`；代码提交 `0224ff8`，已发版 v1.2.21；
 - **未解决**：源站页面/脚本本身慢（C、D 只能减少我们这一侧的等待，源站慢仍会慢）；
   C 复用 WebView 未做；E 静态解密不做。
+## 十、2026-10-31 第十四回合：源站播放器报错后点「刷新」没反应
+
+### 10.1 现场
+
+用户截图：网页线路里源站播放器画着「网络错误 / 请试试 **刷新**」，点那个「刷新」**没有任何反应**。
+
+### 10.2 根因（读源码确认，不是猜）
+
+1. **那个按钮本身是死路**。xgplayer 3.0.23 的 `errorRetry` 只调 `player.retry()`；
+   `retry()` 的实现（`unpkg.byted-static.com/xgplayer/3.0.23/dist/index.min.js` 原文）是
+
+   ```
+   key:"retry",value:function(){ … var i=this.config.url, n=T.isMSE(e.media)?{url:i}:e.preProcessUrl(i);
+     e.src=n.url, …
+   ```
+
+   即把**同一个 `config.url`** 重新赋给 `<video>`。直播地址带时效签名，那个地址已经失效，
+   重赋一次还是同一个死地址 → 面板闪一下又回来，观感就是"点了没反应"。
+
+2. **源站不会自愈**。抓 `paps.html`（29,705 B）全文：`reload` 出现 **0** 次、`刷新` 出现 **0** 次，
+   错误文案全部来自 xgplayer 的 i18n（`MEDIA_ERR_NETWORK` / `REFRESH_TIPS` / `REFRESH`）。
+   页面里没有任何重新签名逻辑。
+
+3. **App 原来完全不知情**。这条路径三条感知通道全都不通：
+   - 没有 `onPlayerError`（那是 ExoPlayer 的）；
+   - 没有 `onReceivedError`（页面本身加载**成功**了，报错的是 `<video>` 的媒体加载）；
+   - 嗅探看门狗不触发（页面**确实**发过媒体请求，只是那条请求 404 → `sawMediaRequest=true`）。
+
+### 10.3 修法
+
+| 组件 | 作用 |
+|---|---|
+| `WebErrorProbeScript` | 每秒注入一次探测：查 xgplayer 的错误状态类 `xgplayer-is-error` 与面板节点 `xgplayer-error`；遍历同源 iframe（跨源 `catch` 跳过）；**只查结构不查文案** |
+| `WebPageDeadEndPolicy` | 确认期 1.5s（给播放器自愈余地）→ 显示恢复条；摆够 8s 没人点 → 自动换下一条 |
+| `PlayerScreen.WebSurface` | 轮询探测、渲染恢复条「重新加载 / 换线路」、把死胡同上报 |
+| `MainViewModel.onPageDeadEnd` | 复用 `PlaybackAutoAdvance` 判据换线（每条只试一次）；文案 `advanceNote()` 与嗅探超时那条路径区分 |
+
+**为什么按钮不叫「刷新」**：源站那个词是坏的，我们写同一个词会让用户以为还是那个坏按钮。
+「重新加载」做的是 `webView.reload()` —— 壳页会给出**新的** `encodedStr`，这是唯一能拿到新签名地址的办法。
+
+**为什么不立刻弹**：源站播放器自己会先做一次内部重试；1.5s 是留给这段自愈的。
+判据只认"页面自己报了错"这个**事实**，不认"我们嗅探不到"这种**推断** ——
+后者在 MSE / 只发分片的健康页面上也会成立，拿它当依据会误伤正在播的画面（P0-1 批评过的同一类错误）。
+
+### 10.4 守卫与回退实验
+
+| 守卫 | 内容 | 回退动作 | 实测 |
+|---|---|---|---|
+| `WebPageDeadEndPolicyTest`(14) | 确认期边界、出流/未报错不打扰、负计时、按钮文案、`advanceNote` 区分、自动兜底边界 | — | 纯判据 |
+| `WebErrorProbeScriptTest`(7) | 类名/面板节点/iframe/contentDocument/catch/返回常量/不查文案/宿主解读 | — | 纯判据 |
+| `WebPageDeadEndWiringTest`(6) | WebSurface 注入 + 消费判据 + 上报 + 渲染按钮；PlayerScreen/NbaLiveApp/ViewModel 三处接线；注释自检 | 探测脚本换成 `evaluateJavascript("")` + `NbaLiveApp` 回调置 `{}` + VM 改成 `Unit` | **3 红** |
+| `PageDeadEndTest`(4) | 行为：报错后换线、重复上报不连跳、直连在播不踢画面、单线路给明确提示 | 同上（VM 改成 `Unit`） | **3 红** |
+
+三条回退**同批执行**，合计**恰好 6 红**（3 接线 + 3 行为），恢复后 665/0/0。
+
+### 10.5 数字与边界
+
+- 新增守卫 **31 条**（判据 14 + 探测脚本 7 + 接线 6 + 行为 4）；
+- 全量 debug + release 各 **665 通过 / 0 失败 / 0 跳过**（97 suites）；`assembleDebug`/`assembleRelease` 成功；
+- 版本 versionCode 26 / 1.2.22；代码提交 `83b54bb`；
+- **诚实边界**：
+  1. 探测依赖源站播放器的 class 名（`xgplayer-is-error`）。源站换播放器版本时会失效 ——
+     届时改 `WebErrorProbeScript` 的两个常量即可，判据与 UI 不用动。
+  2. "`retry()` 是死路"这个结论来自**读 3.0.23 的源码 + paps.html 无 reload**，不是逐帧抓包证明
+     那个地址一定失效。但即便地址偶尔还有效，我们给的出口（重新加载 / 换线路）也不会更差。
+  3. 恢复条只在**网页承载**时出现；直连路径有 ExoPlayer 的真实错误回调，走的是原有换线逻辑。

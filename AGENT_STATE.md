@@ -3,8 +3,8 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **590 通过 / 0 失败 / 0 跳过**，
-  debug 与 release 两个变体同数，86 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **665 通过 / 0 失败 / 0 跳过**，
+  debug 与 release 两个变体同数，97 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
 - 测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在 Gradle 锁内拷走再计数**；XML 带 BOM，用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 读）
@@ -15,6 +15,12 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近几个回合的提交
+### 2026-10-31 第十四回合（现场 bug）：源站播放器报错后点「刷新」没反应
+全量 debug+release 各 **665/0/0**（97 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **31 条**。已发版 **v1.2.22**（tag `v1.2.22` → `83b54bb`）。
+| 提交 | 内容 |
+|---|---|
+| `83b54bb` | **现场**：用户反馈「在这个页面点刷新没有反应」，截图是源站播放器的「网络错误 / 请试试 刷新」。**根因（读源站与播放器源码确认，不是猜）**：xgplayer 3.0.23 的 `errorRetry` 只调 `player.retry()`，`retry()` 的实现是把**同一个 `config.url`** 重新赋给 `<video>`（`unpkg.byted-static.com/xgplayer/3.0.23/dist/index.min.js` 原文）；那个地址带时效签名、已经失效，重赋一次还是同一个死地址 → 面板闪一下又回来。抓 `paps.html` 全文：`reload` 出现 **0 次**、`刷新` 出现 0 次（错误文案全来自 xgplayer 的 i18n），源站**不会自愈**。而这条路径既没有 `onPlayerError`、也没有 `onReceivedError`（页面加载是成功的），嗅探看门狗也不触发（页面确实发过媒体请求，只是 404）⇒ App 原来完全不知情。**修法**：`WebErrorProbeScript` 每秒注入一次探测（查 xgplayer 的错误状态类 `xgplayer-is-error` + 面板节点 `xgplayer-error`，遍历同源 iframe、跨源 catch 跳过；**只查结构不查文案**，文案来自 i18n 会变）；`WebPageDeadEndPolicy` 确认期 1.5s 后显示**我们自己的**恢复条「重新加载 / 换线路」（刻意不叫「刷新」——源站那个词是坏的），摆够 8s 没人点就自动换下一条；`MainViewModel.onPageDeadEnd` 复用 `PlaybackAutoAdvance` 判据（每条只试一次），文案 `advanceNote()` 与嗅探超时那条路径区分开。页面自己恢复时立刻收掉恢复条。**回退实验**（三条同批）：探测脚本换成 `evaluateJavascript("")` + `NbaLiveApp` 回调置 `{}` + VM 里改成 `Unit` → **恰好 6 红**（3 接线 + 3 行为）。**实机**：debug 1.2.22 装机列表/播放正常、无 `FATAL EXCEPTION`。**诚实边界**：探测依赖源站播放器的 class 名（换播放器版本会失效，届时按 `WebErrorProbeScript` 的注释改常量即可）；`retry()` 是死路的结论来自读 3.0.23 的源码 + paps.html 无 reload，不是逐帧抓包。 |
+
 ### 2026-10-30 第十三回合（用户「都做」）：播放启动 4 项优化 + 防守卫
 全量 debug+release 各 **634/0/0**（93 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **34 条**（含队友 2 条）。已发版 **v1.2.21**（tag `v1.2.21` → `0224ff8`，APK `nba-live-1.2.21.apk` 2,750,309 B，sha256 `9b6196e7…`）。
 | 提交 | 内容 |
