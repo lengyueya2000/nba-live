@@ -1,4 +1,4 @@
-import java.util.Properties
+﻿import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -34,8 +34,8 @@ android {
         applicationId = "com.nbalive.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 26
-        versionName = "1.2.22"
+        versionCode = 27
+        versionName = "1.2.23"
         vectorDrawables { useSupportLibrary = true }
     }
 

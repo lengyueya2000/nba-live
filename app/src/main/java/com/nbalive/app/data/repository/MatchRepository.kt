@@ -526,7 +526,19 @@ class MatchRepository(
          */
         data object ParsedEmpty : SourceOutcome()
 
-        val failed: Boolean get() = this !is Ok
+        /**
+         * 用户把这个源关了（「我的」页开关，2026-10-31）。
+         *
+         * ⚠️ 与失败严格区分：它不是故障，**不许**出现在 `failedProviders` 里，
+         * 否则用户会看到"JRS 源暂时不可用"——而那是他自己关的。
+         */
+        data object Disabled : SourceOutcome()
+
+        /** 只有"真的出错"才算失败；[Disabled] 不算。 */
+        val failed: Boolean get() = this !is Ok && this !is Disabled
+
+        /** 这个源是否产生了场次（[Disabled] 与失败都是 false）。 */
+        val enabled: Boolean get() = this !is Disabled
     }
 
     /**
@@ -570,9 +582,16 @@ class MatchRepository(
         }
     }
 
-    /** 生产入口：带失败信息的加载。 */
-    suspend fun loadMatchesOutcome(): LoadOutcome =
-        loadMatchesWithOutcome { url, referer -> http.fetch(url, referer) }
+    /**
+     * 生产入口：带失败信息的加载。
+     *
+     * @param enabled 用户开着的数据源（「我的」页开关）。默认全开，
+     *   这样既有调用点与测试一行都不用改。
+     */
+    suspend fun loadMatchesOutcome(
+        enabled: Set<Provider> = Provider.entries.toSet(),
+    ): LoadOutcome =
+        loadMatchesWithOutcome(enabled = enabled) { url, referer -> http.fetch(url, referer) }
 
     /**
      * 带失败信息的列表加载。
@@ -580,10 +599,18 @@ class MatchRepository(
      * 与 [loadMatchesInternal] 的区别：**不因部分失败而抛异常**，
      * 而是把失败源如实报出来。两源全挂时也不抛，
      * 由调用方决定怎么呈现（[loadMatches] 为了兼容旧签名仍会抛）。
+     *
+     * @param enabled 用户开着的数据源（「我的」页开关，2026-10-31 需求）。
+     *   **关掉的源根本不发请求** —— 用户说的是"不解析"，不是"解析完再过滤"。
+     *   空集合按全开处理（防御：宁可多解析一个源，也不要给用户一个永远空列表）。
      */
     internal suspend fun loadMatchesWithOutcome(
+        enabled: Set<Provider> = Provider.entries.toSet(),
         fetch: suspend (String, String?) -> FetchResult,
     ): LoadOutcome = withContext(Dispatchers.IO) {
+        // ⚠️ 防御性归一：空集/全关不是"什么都不解析"，而是"用户配置读坏了"。
+        // 静默返回空列表会让用户以为源站今天没比赛，比多打一个源糟得多。
+        val active = enabled.ifEmpty { Provider.entries.toSet() }
         // ⚠️ 整体 deadline（review/02-data.md P2-3）：
         // 单源 3 次重试 × 35s callTimeout 已约 105s，再叠加状态校正的
         // 4 批 × 35s，最坏接近 3 分钟无出口。用户宁可看到
@@ -594,20 +621,24 @@ class MatchRepository(
         // 连已经拿到的部分数据也丢掉。
         val finished = withTimeoutOrNull(loadDeadlineMs) {
             supervisorScope {
-                val jrsDeferred = async { fetchJrsOutcome(fetch) }
-                val jrkanDeferred = async { fetchJrkanOutcome(fetch) }
+                val jrsDeferred = async {
+                    if (Provider.JRS in active) fetchJrsOutcome(fetch) else SourceOutcome.Disabled
+                }
+                val jrkanDeferred = async {
+                    if (Provider.JRKAN in active) fetchJrkanOutcome(fetch) else SourceOutcome.Disabled
+                }
                 jrsDeferred.await() to jrkanDeferred.await()
             }
         }
         if (finished == null) {
             Log.w("MatchRepo", "列表加载超过 ${loadDeadlineMs}ms 未完成，按超时返回")
+            val timeout = "网络超时（超过 ${loadDeadlineMs / 1000} 秒未响应）"
+            // ⚠️ 只报**开着**的源：把用户自己关掉的源说成"超时"是误导
+            val timedOut = Provider.entries.filter { it in active }
             return@withContext LoadOutcome(
                 matches = emptyList(),
-                failedProviders = listOf(Provider.JRS, Provider.JRKAN),
-                reasons = mapOf(
-                    Provider.JRS to "网络超时（超过 ${loadDeadlineMs / 1000} 秒未响应）",
-                    Provider.JRKAN to "网络超时（超过 ${loadDeadlineMs / 1000} 秒未响应）",
-                ),
+                failedProviders = timedOut,
+                reasons = timedOut.associateWith { timeout },
             )
         }
         val (jrs, jrkan) = finished
@@ -620,6 +651,7 @@ class MatchRepository(
                 is SourceOutcome.Unreachable ->
                     "网络连接失败${outcome.reason?.let { "（$it）" } ?: ""}"
                 SourceOutcome.ParsedEmpty -> "未解析到任何场次（源站可能已改版）"
+                SourceOutcome.Disabled -> ""
                 is SourceOutcome.Ok -> ""
             }
         }
@@ -908,6 +940,20 @@ class MatchRepository(
      */
     suspend fun loadSignals(match: Match): Detail =
         loadSignals(match) { url, referer -> http.fetch(url, referer) }
+
+    /**
+     * 数据源开关变化时清掉详情页缓存（2026-10-31「我的」页开关）。
+     *
+     * 为什么要清：`loadSignals` 会按开关过滤信号，而详情页 HTML 有 5 分钟 TTL 缓存。
+     * 不清的话"关掉 JRS → 立刻重进同一场"会命中缓存里的旧正文 —— 虽然过滤逻辑仍会
+     * 生效（过滤发生在解析结果上），但**JRS 的详情页请求本身**已经在缓存命中时被跳过了，
+     * 这部分是省下的；真正需要清的是"用户重新打开 JRS 后立刻要能看到它的线路"，
+     * 那也只需缓存未过期即可。所以这里清缓存是**为了语义清晰**：
+     * 开关是数据来源的变更，不该受上一次配置的缓存影响。
+     */
+    fun clearDetailCache() {
+        synchronized(detailCache) { detailCache.clear() }
+    }
 
     /**
      * 用户显式点「刷新线路」时，让该场详情页的 TTL 缓存失效。

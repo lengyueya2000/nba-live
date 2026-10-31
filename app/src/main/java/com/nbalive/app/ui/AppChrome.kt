@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.BuildConfig
 import com.nbalive.app.data.model.Match
+import com.nbalive.app.data.model.Provider
 import com.nbalive.app.ui.components.LiveDotPhase
 import com.nbalive.app.ui.components.SquareIconButton
 import com.nbalive.app.ui.screens.LiveNowScreen
@@ -439,6 +440,7 @@ internal fun ListBranch(
     liveMatches: List<Match>,
     aspectMode: AspectMode,
     darkMode: Boolean,
+    enabledProviders: Set<Provider>,
     onSetFullscreen: (Boolean) -> Unit,
 ) {
     // ⚠️ visibleMatches / counts **不需要**再包一层 remember（review/03-ui.md P2-9）：
@@ -496,6 +498,9 @@ internal fun ListBranch(
                 darkMode = darkMode,
                 // BuildConfig.VERSION_NAME：PackageManager.getPackageInfo(pkg, 0) 在 API 33+ 已废弃
                 versionName = BuildConfig.VERSION_NAME,
+                // 数据源开关（2026-10-31 用户需求）：关掉的源在数据层就不发请求
+                enabledProviders = enabledProviders,
+                onProviderToggle = viewModel::setProviderEnabled,
                 // 偏好写入的唯一链路（review/03-ui.md P2-17 写路径收口）：
                 // UI → VM 写入口 → PrefsStore（注入）→ 平台层实现。这里不碰 AppPrefs/PlayerPrefs。
                 onAspectChange = { mode -> viewModel.setAspectMode(mode) },

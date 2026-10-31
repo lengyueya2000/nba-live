@@ -11,6 +11,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nbalive.app.MainActivity
 import com.nbalive.app.data.model.Match
+import com.nbalive.app.data.model.Provider
 import com.nbalive.app.ui.screens.MatchDetailScreen
 import com.nbalive.app.ui.screens.PlayerScreen
 
@@ -43,6 +44,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
     // 两边各写一遍 `?: true` 时，将来规则一变、漏改一处就会出现
     // 「主题是浅色、状态栏图标按深色画」的错配。
     val darkMode = resolveDarkMode(ui.darkPref)
+    val enabledProviders = ui.enabledProviders
     val snackbarHostState = remember { SnackbarHostState() }
 
     // 搜索页：全屏覆盖层，不占用路由，返回键先关它
@@ -119,6 +121,7 @@ fun NbaLiveApp(viewModel: MainViewModel) {
             searchOpen = searchOpen,
             aspectMode = ui.aspectMode,
             darkMode = darkMode,
+            enabledProviders = enabledProviders,
             onSetFullscreen = { fullscreen = it },
             onCloseSearch = { searchOpen = false },
         )
@@ -163,6 +166,8 @@ private fun RouteHost(
     searchOpen: Boolean,
     aspectMode: AspectMode,
     darkMode: Boolean,
+    /** 数据源开关（2026-10-31 用户需求）：透传给「我的」页 */
+    enabledProviders: Set<Provider>,
     onSetFullscreen: (Boolean) -> Unit,
     onCloseSearch: () -> Unit,
 ) {
@@ -252,6 +257,8 @@ private fun RouteHost(
             liveMatches = liveMatches,
             aspectMode = aspectMode,
             darkMode = darkMode,
+            // 数据源开关（2026-10-31 用户需求）：「我的」页要读它
+            enabledProviders = enabledProviders,
             onSetFullscreen = onSetFullscreen,
         )
 

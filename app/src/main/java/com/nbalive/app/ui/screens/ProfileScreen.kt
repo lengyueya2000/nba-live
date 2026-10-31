@@ -31,7 +31,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import com.nbalive.app.data.model.Provider
 import com.nbalive.app.ui.AspectMode
+import com.nbalive.app.ui.SourceTogglePolicy
 import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.components.InfoRow
 import com.nbalive.app.ui.theme.Radius
@@ -53,6 +55,10 @@ fun ProfileScreen(
     aspectMode: AspectMode,
     darkMode: Boolean,
     versionName: String,
+    /** 现在参与解析的数据源（2026-10-31 用户需求：可以手动关掉某一个） */
+    enabledProviders: Set<Provider>,
+    /** 切换某个源；判据（至少留一个）由 SourceTogglePolicy 决定，界面只负责置灰 */
+    onProviderToggle: (Provider, Boolean) -> Unit,
     onAspectChange: (AspectMode) -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -92,6 +98,53 @@ fun ProfileScreen(
                 aspectMode = aspectMode,
                 onAspectChange = onAspectChange,
             )
+        }
+
+        // 数据源开关（2026-10-31 用户需求）：
+        // 「增加一个控制 jrs 和 jrkan 的开关，比如我可以选择不解析某一个播放源，就可以手动关掉」。
+        // ⚠️ 关掉的源在数据层就**不发请求**（不是解析完再过滤），
+        // 判据见 SourceTogglePolicy（至少留一个，否则永远空列表）。
+        SectionTitle("数据源")
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Space.lg)
+                .clip(RoundedCornerShape(Radius.card))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(Space.md),
+            verticalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            Text(
+                text = SourceTogglePolicy.summary(enabledProviders),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Provider.entries.forEach { provider ->
+                // canDisable 只负责**置灰**：真正写状态时 VM 还会再挡一次
+                // （两处各写一份实现时，任何一处漏了都会让用户进入"两个都关"的死状态）
+                val canDisable = SourceTogglePolicy.canDisable(enabledProviders, provider)
+                val checked = SourceTogglePolicy.isEnabled(enabledProviders, provider)
+                SwitchRow(
+                    title = "${provider.displayName} 源",
+                    subtitle = when {
+                        !checked -> "已关闭，不会请求这个源"
+                        canDisable -> "正在解析这个源的线路"
+                        else -> "正在解析 · 至少保留一个源"
+                    },
+                    checked = checked,
+                    onCheckedChange = { onProviderToggle(provider, it) },
+                    // 最后一个开着的源：开关置灰，避免用户点出一个永远空列表。
+                    // 关着的源永远可以点回来。
+                    enabled = !checked || canDisable,
+                )
+            }
+            if (enabledProviders.size == 1) {
+                Text(
+                    text = SourceTogglePolicy.lastOneHint(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         // 外观
@@ -166,6 +219,7 @@ private fun SwitchRow(
     onCheckedChange: (Boolean) -> Unit,
     leadingIcon: Boolean = false,
     darkMode: Boolean = false,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -205,6 +259,7 @@ private fun SwitchRow(
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedTrackColor = MaterialTheme.colorScheme.primary,
             ),

@@ -1,4 +1,4 @@
-package com.nbalive.app.data.repository
+﻿package com.nbalive.app.data.repository
 
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
@@ -168,7 +168,7 @@ class MatchRepositoryRetryTest {
         }
 
         // 第一次：列表状态校正会拉详情页（走生产管线）
-        repo.loadMatchesWithOutcome(fetch)
+        repo.loadMatchesWithOutcome(fetch = fetch)
         val afterFirst = detailFetches
 
         // 第二次：进播放页 loadSignals 拉**同一个**详情页

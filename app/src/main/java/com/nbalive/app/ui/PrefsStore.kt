@@ -1,6 +1,7 @@
 package com.nbalive.app.ui
 
 import android.content.Context
+import com.nbalive.app.data.model.Provider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,11 +36,21 @@ interface PrefsStore {
     /** 画面填充模式偏好 */
     val aspect: StateFlow<AspectMode>
 
+    /**
+     * 数据源开关：现在参与解析的源（2026-10-31 用户需求）。
+     *
+     * 默认全开（[SourceTogglePolicy.default]）；"至少留一个"的判据见 [SourceTogglePolicy]。
+     */
+    val enabledProviders: StateFlow<Set<Provider>>
+
     /** 写入深色模式。⚠️ **不带 `Context`** —— Context 只活在平台层实现里 */
     fun setDarkMode(dark: Boolean)
 
     /** 写入画面模式。⚠️ 同上，不带 `Context` */
     fun setAspect(mode: AspectMode)
+
+    /** 写入数据源开关。⚠️ 同上，不带 `Context` */
+    fun setProviderEnabled(enabled: Set<Provider>)
 
     /**
      * 从持久化里读一次。
@@ -59,6 +70,7 @@ interface PrefsStore {
 class InMemoryPrefsStore(
     initialDarkMode: Boolean? = null,
     initialAspect: AspectMode = AspectMode.FIT,
+    initialProviders: Set<Provider> = SourceTogglePolicy.ALL,
 ) : PrefsStore {
     private val _darkMode = MutableStateFlow(initialDarkMode)
     override val darkMode: StateFlow<Boolean?> = _darkMode.asStateFlow()
@@ -66,12 +78,20 @@ class InMemoryPrefsStore(
     private val _aspect = MutableStateFlow(initialAspect)
     override val aspect: StateFlow<AspectMode> = _aspect.asStateFlow()
 
+    private val _providers = MutableStateFlow(initialProviders.ifEmpty { SourceTogglePolicy.ALL })
+    override val enabledProviders: StateFlow<Set<Provider>> = _providers.asStateFlow()
+
     override fun setDarkMode(dark: Boolean) {
         _darkMode.value = dark
     }
 
     override fun setAspect(mode: AspectMode) {
         _aspect.value = mode
+    }
+
+    override fun setProviderEnabled(enabled: Set<Provider>) {
+        // 与生产实现同一份兜底：空集按全开处理（见 SourceTogglePolicy.fromStorage 的说明）
+        _providers.value = enabled.ifEmpty { SourceTogglePolicy.ALL }
     }
 
     /** 内存实现没有持久化，init 是空操作（保留幂等语义） */
@@ -93,12 +113,17 @@ internal class AndroidPrefsStore(context: Context) : PrefsStore {
 
     override val aspect: StateFlow<AspectMode> get() = PlayerPrefs.aspect
 
+    override val enabledProviders: StateFlow<Set<Provider>> get() = SourcePrefs.enabled
+
     override fun setDarkMode(dark: Boolean) = AppPrefs.setDarkMode(dark)
 
     override fun setAspect(mode: AspectMode) = PlayerPrefs.setAspect(mode)
 
+    override fun setProviderEnabled(enabled: Set<Provider>) = SourcePrefs.setEnabled(enabled)
+
     override fun init() {
         AppPrefs.attach(appContext)
         PlayerPrefs.attach(appContext)
+        SourcePrefs.attach(appContext)
     }
 }

@@ -3,6 +3,7 @@ package com.nbalive.app.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nbalive.app.data.model.Provider
 
 /**
  * 根节点消费的**一个**状态对象（review/03-ui.md P2-15）。
@@ -31,6 +32,14 @@ internal data class AppUiState(
     val nav: NavState,
     val darkPref: Boolean?,
     val aspectMode: AspectMode,
+    /**
+     * 数据源开关：现在参与解析的源（2026-10-31 用户需求）。
+     *
+     * ⚠️ 放在这里是因为「我的」页是根节点直接渲染的分支，
+     * 开关状态要跟着 `AppUiState` 一起送到 [com.nbalive.app.ui.screens.ProfileScreen]；
+     * 判据（至少留一个）仍只由 [SourceTogglePolicy] 一处决定。
+     */
+    val enabledProviders: Set<Provider>,
 )
 
 /** 收集根节点需要的状态；调用点在 `NbaLiveApp` 的第一行。 */
@@ -40,10 +49,12 @@ internal fun rememberAppUiState(viewModel: MainViewModel): AppUiState {
     val nav by viewModel.nav.collectAsStateWithLifecycle()
     val darkPref by viewModel.darkPref.collectAsStateWithLifecycle()
     val aspectMode by viewModel.aspectMode.collectAsStateWithLifecycle()
+    val enabledProviders by viewModel.enabledProviders.collectAsStateWithLifecycle()
     return AppUiState(
         route = route,
         nav = nav,
         darkPref = darkPref,
         aspectMode = aspectMode,
+        enabledProviders = enabledProviders,
     )
 }

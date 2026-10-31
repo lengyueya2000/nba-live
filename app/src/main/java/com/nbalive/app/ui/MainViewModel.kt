@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
+import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.repository.MatchRepository
@@ -163,8 +164,8 @@ class MainViewModel(
      * 生产默认走它：单源失败不再是只写一行 Log.w 的静默缺数据，
      * 调用方能把"JRS 源暂时不可用，仅显示部分场次"如实告诉用户。
      */
-    private val loadOutcome: suspend () -> MatchRepository.LoadOutcome = {
-        repository.loadMatchesOutcome()
+    private val loadOutcome: suspend (Set<Provider>) -> MatchRepository.LoadOutcome = { enabled ->
+        repository.loadMatchesOutcome(enabled)
     },
     /**
      * 信号加载入口。测试注入它以驱动"进场期间返回/抛异常"等时序，
@@ -376,6 +377,36 @@ class MainViewModel(
     val aspectMode: StateFlow<AspectMode> = prefs.aspect
 
     /**
+     * 数据源开关：现在参与解析的源（2026-10-31 用户需求）。
+     *
+     * 界面只从 VM 读；写入走 [setProviderEnabled]（判据 [SourceTogglePolicy]）。
+     */
+    val enabledProviders: StateFlow<Set<Provider>> = prefs.enabledProviders
+
+    /**
+     * 切换某个数据源（「我的」页开关）。
+     *
+     * ## 两条必须由 VM 兜住的约束
+     *
+     * 1. **最后一个源关不掉**（[SourceTogglePolicy.canDisable]）：两个都关 = 永远空列表。
+     *    界面会把开关置灰，但**这里也要挡一次** —— 界面置灰与状态写入分成两处实现，
+     *    任何一处漏了都会让用户进入那个死状态，而单测只测其中一处时照样全绿。
+     * 2. **切换后要重新拉列表**：不重拉的话用户关了 JRS 却还看着 JRS 的场次，
+     *    得手动刷新才生效 —— 那正是"开关点了没反应"的观感。
+     */
+    fun setProviderEnabled(provider: Provider, enabled: Boolean) {
+        val current = prefs.enabledProviders.value
+        val next = SourceTogglePolicy.toggle(current, provider, on = enabled)
+        if (next == current) return
+        prefs.setProviderEnabled(next)
+        // 开关改变 = 数据来源变了：详情页缓存里可能存着上一次配置下的正文，
+        // 不清会让"刚打开的源"在 5 分钟 TTL 内看不到新线路。
+        repository.clearDetailCache()
+        // 开关改变 = 数据来源变了，列表必须重拉（否则界面还挂着刚被关掉的源的场次）
+        refresh()
+    }
+
+    /**
      * 切换深色模式（**唯一的写入口**，review/03-ui.md P2-17 的写路径收口）。
      *
      * 链路：UI → [setDarkMode] → 注入的 [PrefsStore] → `AndroidPrefsStore`（平台层）
@@ -495,7 +526,9 @@ class MainViewModel(
                             }
                         }
                 } else {
-                    val outcome = loadOutcome()
+                    // ⚠️ 把**当前**开关状态传下去：关掉的源在数据层就不发请求
+                    // （用户说的是"不解析"，不是"解析完再过滤"）
+                    val outcome = loadOutcome(prefs.enabledProviders.value)
                     _listState.update {
                         it.copy(
                             loading = false,
@@ -565,6 +598,23 @@ class MainViewModel(
     // ---------- 详情 ----------
 
     /**
+     * 按「我的」页的数据源开关过滤线路（2026-10-31 用户需求）。
+     *
+     * ## 为什么数据层已经跳过请求了，这里还要过滤
+     *
+     * 两处防的是不同的事：
+     *  - 列表层（`loadMatchesWithOutcome(enabled=…)`）跳过**源站列表请求** —— 省流量、不打扰源站；
+     *  - 这里过滤**线路**：`loadSignals` 拿到的线路是"这场比赛的线路"，
+     *    而合并后的 `Match.sources` 可能同时带两个源的线路（列表是上一次配置下合并的，
+     *    或者用户中途改了开关）。不过滤的话，关掉 JRS 之后播放页里仍会列出 JRS 线路，
+     *    点下去照样能播 —— 开关等于没生效。
+     */
+    private fun allowedSignals(signals: List<StreamSource>): List<StreamSource> {
+        val enabled = prefs.enabledProviders.value
+        return signals.filter { SourceTogglePolicy.isEnabled(enabled, it.provider) }
+    }
+
+    /**
      * 详情页「更多 -> 刷新线路」：重新拉一次该场次的信号列表。
      * 源站偶尔会补线路，重进页面不一定能刷新到，给个显式入口。
      */
@@ -605,7 +655,7 @@ class MainViewModel(
                 _detailState.update { it.copy(match = fix(it.match ?: match)) }
                 _listState.update { st -> st.copy(matches = st.matches.map(::fix)) }
             }
-            _detailState.update { it.copy(signals = detail.signals, loadingSignals = false) }
+            _detailState.update { it.copy(signals = allowedSignals(detail.signals), loadingSignals = false) }
         }
     }
 
@@ -727,13 +777,15 @@ class MainViewModel(
                 ?: match
             fun fix(m: Match): Match = if (m.id == match.id) fixed else m
             _listState.update { st -> st.copy(matches = st.matches.map(::fix)) }
+            // 关掉的源发出的线路不许进播放页（判据见 allowedSignals）
+            val playable = allowedSignals(detail.signals)
             _detailState.value = MatchDetailUiState(
                 match = fixed,
-                signals = detail.signals,
+                signals = playable,
                 loadingSignals = false,
             )
-            _playerState.update { it.copy(match = fixed, signals = detail.signals) }
-            if (detail.signals.isEmpty()) {
+            _playerState.update { it.copy(match = fixed, signals = playable) }
+            if (playable.isEmpty()) {
                 _playerState.update {
                     it.copy(resolving = false, playbackDead = true)
                         .withError("该赛事暂无可用线路")
@@ -741,7 +793,7 @@ class MainViewModel(
             } else {
                 // 默认线路：优先选能直连的那条，省一次 WebView 往返。
                 // （用户手动点某条线路时仍然按用户的选择走，见 play()）
-                val preferred = detail.signals.indexOfFirst { it.isDirectHls }
+                val preferred = playable.indexOfFirst { it.isDirectHls }
                 play(if (preferred >= 0) preferred else 0)
             }
         }
