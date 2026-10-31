@@ -19,7 +19,23 @@
 全量 debug+release 各 **714/0/0**（104 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **29 条**。已发版 **v1.2.24**（tag `v1.2.24` → `4b19128`）。
 | 提交 | 内容 |
 |---|---|
-| `4b19128` | **下拉刷新**：`MatchListScreen` / `LiveNowScreen` 各挂 `PullToRefreshBox`（material3 1.3.1，需 `@OptIn(ExperimentalMaterial3Api)`），`onRefresh = onRetry`。⚠️ `isRefreshing = refreshing && 列表非空` —— 首载时整屏 loading 与下拉指示器叠在一起会像卡住。**检查更新**：新增 `UpdateCheckPolicy`（**按整数段比版本**，字符串比较会把 1.2.9 判成比 1.2.10 新；支持 v 前缀/-beta 后缀/段数不同）+ 我的页手动入口 + `MainViewModel.checkForUpdate()`；**静默失败**（GitHub API 国内常不通，不弹错误）、**不自动检查**（启动就查会拖慢冷启动）；下载走 `LocalUriHandler` 开 release 页。**比赛比分**：先实测确认**源站根本没有比分**（JRS 列表只有「直播中」；JRKAN 的 `bf title` 全是 `2`（类型编号）、`lab_bc` 是空 span；播放页 `score`/`比分` 命中 0 次）⇒ 只能取第三方：`EspnScoreboard`（手写最小 JSON 取值器，不引 JSON 库）+ `TeamNameBridge`（ESPN 英文队名→中文队名，全 30 队，**主客方向必须一致**）+ `ScoreboardRepository`（20s TTL、失败静默、一次查询覆盖全部场次）。⚠️ **CBA 没有数据**（ESPN 的 CBA 端点实测 HTTP 400）⇒ 显式 `League.CBA -> null`、一个请求都不发、不画 `0-0`。刷新 45s 且只在列表标签可见时跑。**回退实验（五条同批）**：列表页去 `PullToRefreshBox` + 我的页回调置空 + VM 检查更新不发请求 + 比分仓库给 CBA 也发请求 + 队名匹配去掉方向校验 → **恰好 6 红**。**实机（debug）**：新包装机正常；`logcat: ESPN 比分板 10 场，匹配上 0 场`（当时源站列表只有 3 场 CBA，匹配 0 是正确结果）。**⚠️ 未取得真机证据的两项**（如实记录）：下拉刷新手势、点「检查更新」—— 我为拓宽观测窗口执行 `cmd connectivity airplane-mode enable` 把雷电模拟器（VM `leidian0`）网络栈弄挂，`adb` 从此 offline，`VBoxManage controlvm leidian0 reset` 也未能恢复。**那是我的操作失误**；这两项接线由守卫钉住、判据由单测钉住，但"手势真能触发刷新""点了真会去查"**没有真机证据**，待模拟器恢复后补测。 |
+| `4b19128` | **下拉刷新**：`MatchListScreen` / `LiveNowScreen` 各挂 `PullToRefreshBox`（material3 1.3.1，需 `@OptIn(ExperimentalMaterial3Api)`），`onRefresh = onRetry`。⚠️ `isRefreshing = refreshing && 列表非空` —— 首载时整屏 loading 与下拉指示器叠在一起会像卡住。**检查更新**：新增 `UpdateCheckPolicy`（**按整数段比版本**，字符串比较会把 1.2.9 判成比 1.2.10 新；支持 v 前缀/-beta 后缀/段数不同）+ 我的页手动入口 + `MainViewModel.checkForUpdate()`；**静默失败**（GitHub API 国内常不通，不弹错误）、**不自动检查**（启动就查会拖慢冷启动）；下载走 `LocalUriHandler` 开 release 页。**比赛比分**：先实测确认**源站根本没有比分**（JRS 列表只有「直播中」；JRKAN 的 `bf title` 全是 `2`（类型编号）、`lab_bc` 是空 span；播放页 `score`/`比分` 命中 0 次）⇒ 只能取第三方：`EspnScoreboard`（手写最小 JSON 取值器，不引 JSON 库）+ `TeamNameBridge`（ESPN 英文队名→中文队名，全 30 队，**主客方向必须一致**）+ `ScoreboardRepository`（20s TTL、失败静默、一次查询覆盖全部场次）。⚠️ **CBA 没有数据**（ESPN 的 CBA 端点实测 HTTP 400）⇒ 显式 `League.CBA -> null`、一个请求都不发、不画 `0-0`。刷新 45s 且只在列表标签可见时跑。**回退实验（五条同批）**：列表页去 `PullToRefreshBox` + 我的页回调置空 + VM 检查更新不发请求 + 比分仓库给 CBA 也发请求 + 队名匹配去掉方向校验 → **恰好 6 红**。**实机（debug）**：新包装机正常；`logcat: ESPN 比分板 10 场，匹配上 0 场`（当时源站列表只有 3 场 CBA，匹配 0 是正确结果）。**当晚 20:0x 补做了真机复测（见下）**。 |
+
+### 2026-10-31 同日 20:0x 真机复测（用户：「安装到雷电模拟器测试」）
+| 项 | 结果 |
+|---|---|
+| 设备 | 16:0x 我为拓宽观测窗口执行 `cmd connectivity airplane-mode enable`，把原雷电实例（VM `leidian0`）弄成 `adb offline`，`VBoxManage reset` / `ldconsole reboot` / `quit`+`launch` 都没能救回。**原实例保持原样未删改**；另建全新实例 `nbatest`（index 1，`127.0.0.1:5557`）复测 |
+| 安装 | 已发布的 `nba-live-1.2.24.apk`（sha256 `932e9e76…`）→ `versionCode=28 versionName=1.2.24`，启动正常、无 `FATAL EXCEPTION`；列表 3 场 CBA 渲染正常 |
+| **检查更新（决定性）** | 临时把 `versionName` 改成 `1.2.20` 的测试包点「检查更新」→ **「有新版本 1.2.24」**；点「下载 1.2.24」→ logcat `START u0 {act=android.intent.action.VIEW … cmp=com.android.browser/.BrowserActivity}`（浏览器真打开了 release 页）；装回 1.2.24 → **「已是最新」**。请求/比较/下载入口**均已真机验证** |
+| **下拉刷新** | 清空 logcat → 基线无 `Refresh` → 网格区域向下慢拖（640,430→640,710，1200ms）→ `D Refresh: 开始刷新` 出现 ⇒ 手势真的触发了 `viewModel.refresh()` |
+| 比分 | ESPN 链路真机跑通（`ESPN 比分板 10 场，匹配上 0 场`）。**显示仍无真机证据**：此刻源站列表一个 NBA 都没有（独立拉 JRKAN 列表 JS 统计：英超6/德甲5/CBA3/德乙3/英冠2/西甲2/NBL2…），所以"不画比分"是正确行为，但"比分真的画到卡片上"这句还没在真机看到 |
+| 临时改动 | 改过 `versionName`（已还原）、加过一条 `debugLog("Refresh", …)`（验证后已删），`git status` 干净 |
+
+### ⚠️ 附带发现：release 构建**不是逐字节可复现的**
+同一份源码（`git status` 干净）、同一个 `assembleRelease`，两次产出 sha256 不同
+（`932e9e76…` vs `21ab02d9…`），**大小完全相同 2,766,693 B**。
+⇒ **不能**用"重新构建比对 sha"证明"已发布产物 = 当前源码"；发版记录里的 sha 只标识
+**那一次构建的产物**（用于核对"用户下的包是不是我发的那个"），不能用来核对接的是哪版源码。
 
 ### 2026-10-31 第十五回合（用户需求）：数据源开关（JRS / JRKAN 可单独关掉）
 全量 debug+release 各 **685/0/0**（99 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **20 条**。已发版 **v1.2.23**（tag `v1.2.23` → `21be684`）。
