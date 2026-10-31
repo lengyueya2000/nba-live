@@ -351,6 +351,7 @@ private fun PlayerBranch(
         onPlaybackError = viewModel::onPlaybackFailed,
         onPlaybackDead = viewModel::onPlaybackDead,
         onPlaybackSuspect = viewModel::onPlaybackSuspect,
+        onPageDeadEnd = viewModel::onPageDeadEnd,
         onStreamSniffed = viewModel::onStreamSniffed,
         sniffFailed = playerState.failedSniffUrl != null,
         // 疑似无信号（推断）的提示：判据只在这里算一次（审计 B2），

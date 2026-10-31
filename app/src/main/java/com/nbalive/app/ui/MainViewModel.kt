@@ -1020,6 +1020,37 @@ class MainViewModel(
     }
 
     /**
+     * 源站播放器**自己画出了错误面板**（2026-10-31「在这个页面点刷新没有反应」）。
+     *
+     * ## 现场
+     *
+     * 网页兜底播放时 xgplayer 报错，画一块「网络错误 / 请试试 刷新」。
+     * 点那个「刷新」**什么都不发生**：`retry()` 只是把**同一个** `config.url`
+     * 重新赋给 `<video>`，而那个地址已经失效（见 [WebPageDeadEndPolicy] 的注释）。
+     * 源站页面里也没有任何 `location.reload()`，所以它永远不会自己好。
+     *
+     * ## 与另外两条路径的区别
+     *
+     * | 回调 | 判据来源 | 处置 |
+     * |---|---|---|
+     * | [onPlaybackDead] | WebView 主框架真实加载失败（事实） | 可收小窗 |
+     * | [onPlaybackSuspect] | 嗅探超时（**推断**） | 只提示 + 换线 |
+     * | 本回调 | 页面 DOM 里的错误状态类（事实） | 换线（用户也可先点「重新加载」） |
+     *
+     * 走的是与"嗅探超时"同一套 [PlaybackAutoAdvance] 判据：每条线只试一次，
+     * 全部试完给一句可执行的提示，不会无限换线把源站打出限流。
+     */
+    fun onPageDeadEnd() {
+        val state = _playerState.value
+        // 已经在直连播了就不管（页面组件可能滞后于嗅探升级才回调）
+        if (state.streamUrl != null) return
+        // 同一条线路只处理一次：探测是每秒轮询的，回调可能连发
+        if (state.playbackSuspect) return
+        _playerState.update { it.markPlaybackSuspect(true) }
+        advanceAfterNoSignal(state, WebPageDeadEndPolicy.advanceNote())
+    }
+
+    /**
      * 「这条线没有信号了」的统一处置：按 [PlaybackAutoAdvance] 判据换下一条 / 或给明确提示。
      *
      * @param note 拼进提示里的原因（"无信号" / "直连失败后网页也没有恢复"），

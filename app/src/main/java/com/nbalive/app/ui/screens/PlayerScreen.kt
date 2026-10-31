@@ -124,6 +124,8 @@ import com.nbalive.app.ui.SystemBarsPolicy
 import com.nbalive.app.ui.PipAspectReset
 import com.nbalive.app.ui.WebMediaPauseScript
 import com.nbalive.app.ui.WebNavigationPolicy
+import com.nbalive.app.ui.WebErrorProbeScript
+import com.nbalive.app.ui.WebPageDeadEndPolicy
 import com.nbalive.app.ui.WebSniffWatchdog
 import com.nbalive.app.ui.PlayerLock
 import com.nbalive.app.ui.components.LeagueChip
@@ -171,6 +173,14 @@ fun PlayerScreen(
      * 这条是**推断**，只用于显示提示 + 停自动进小窗，**不允许**收窗或关任务。
      */
     onPlaybackSuspect: () -> Unit = {},
+    /**
+     * 页面里检测到源站播放器**自己的错误面板**（xgplayer 的 `xgplayer-is-error`）。
+     *
+     * 与 [onPlaybackDead]/[onPlaybackSuspect] 的区别：这条是页面 DOM 里的**事实**
+     * （播放器自己设的状态类），不是我们推断的"嗅探不到"。
+     * 判据见 [com.nbalive.app.ui.WebPageDeadEndPolicy]。
+     */
+    onPageDeadEnd: () -> Unit = {},
     onStreamSniffed: (String, String?) -> Unit = { _, _ -> },
     /** 嗅探升级失败退回网页：不再弹"暂无信号"提示 */
     sniffFailed: Boolean = false,
@@ -390,6 +400,7 @@ fun PlayerScreen(
                                     suppressHint = sniffFailed,
                                     onPlaybackDead = onPlaybackDead,
                                     onPlaybackSuspect = onPlaybackSuspect,
+                                    onPageDeadEnd = onPageDeadEnd,
                                 )
                             }
                         }
@@ -1953,10 +1964,19 @@ private fun WebSurface(
      * 所以走独立回调，上层只用于显示提示 + 停自动进小窗，**不**收窗、不关任务。
      */
     onPlaybackSuspect: () -> Unit = {},
+    /**
+     * 页面里检测到源站播放器**自己的错误面板**（xgplayer 的 `xgplayer-is-error`）。
+     *
+     * 与 [onPlaybackDead]/[onPlaybackSuspect] 的区别：这条是页面 DOM 里的**事实**
+     * （播放器自己设的状态类），不是我们推断的"嗅探不到"。
+     * 判据见 [com.nbalive.app.ui.WebPageDeadEndPolicy]。
+     */
+    onPageDeadEnd: () -> Unit = {},
 ) {
     val onStreamFoundState = rememberUpdatedState(onStreamFound)
     val onPlaybackDeadState = rememberUpdatedState(onPlaybackDead)
     val onPlaybackSuspectState = rememberUpdatedState(onPlaybackSuspect)
+    val onPageDeadEndState = rememberUpdatedState(onPageDeadEnd)
     val lifecycleOwner = LocalLifecycleOwner.current
     var webView by remember { mutableStateOf<WebView?>(null) }
 
@@ -2047,6 +2067,66 @@ private fun WebSurface(
                 return@LaunchedEffect
             }
             delay(WebSniffWatchdog.POLL_MS)
+        }
+    }
+
+    // ---------- 源站播放器自己报错（2026-10-31「点刷新没有反应」） ----------
+    // 页面里画了「网络错误 / 请试试 刷新」时，点那个「刷新」是**点不动**的：
+    // xgplayer 的 retry() 只是把同一个 config.url 重新赋给 <video>，
+    // 而那个地址已经失效（详见 WebPageDeadEndPolicy 的注释）。
+    // 这条路径既没有 onPlayerError、也没有 onReceivedError（页面加载是成功的），
+    // 只能由我们主动探测页面 DOM，并给出自己的出口。
+    //
+    // ⚠️ 探测用轮询 + evaluateJavascript：WebView 没有"页面 JS 报错"的宿主回调，
+    // 这是唯一能知道页面进入错误态的办法。
+    var pageDeadEnd by remember(url) { mutableStateOf(false) }
+    // 首次探测到错误的时刻（单调时钟）；0 = 还没探测到
+    var pageErrorAt by remember(url) { mutableStateOf(0L) }
+    LaunchedEffect(url, targetUrl) {
+        while (true) {
+            val view = webView
+            if (view != null) {
+                view.evaluateJavascript(WebErrorProbeScript.HAS_ERROR) { raw ->
+                    if (WebErrorProbeScript.detectsError(raw)) {
+                        if (pageErrorAt == 0L) pageErrorAt = android.os.SystemClock.elapsedRealtime()
+                    } else if (pageErrorAt != 0L) {
+                        // 页面自己恢复了（源站偶尔会重连成功）：把出口收掉，
+                        // 别让用户对着一条"其实已经好了"的提示。
+                        pageErrorAt = 0L
+                        pageDeadEnd = false
+                    }
+                }
+            }
+            delay(WebPageDeadEndPolicy.PROBE_INTERVAL_MS)
+        }
+    }
+    // 判据唯一来源是 WebPageDeadEndPolicy（有单测）；这里只采样 + 执行。
+    // 计时起点是"第一次探测到错误"，所以确认期与自动兜底都从那一刻算。
+    LaunchedEffect(url, pageErrorAt) {
+        if (pageErrorAt == 0L) return@LaunchedEffect
+        while (true) {
+            val elapsed = android.os.SystemClock.elapsedRealtime() - pageErrorAt
+            val hasStream = false // 有流时本组件已被 VideoSurface 替换、协程自动取消
+            val detected = pageErrorAt > 0L
+            if (WebPageDeadEndPolicy.shouldOffer(
+                    hasStream = hasStream,
+                    pageErrorDetected = detected,
+                    sinceDetectedMs = elapsed,
+                )
+            ) {
+                pageDeadEnd = true
+            }
+            if (WebPageDeadEndPolicy.shouldAutoAdvance(
+                    hasStream = hasStream,
+                    pageErrorDetected = detected,
+                    sinceDetectedMs = elapsed,
+                )
+            ) {
+                // 出口摆了一会儿没人点：替用户换下一条线，别让他干等一块死面板
+                onPageDeadEndState.value()
+                return@LaunchedEffect
+            }
+            delay(WebPageDeadEndPolicy.PROBE_INTERVAL_MS)
         }
     }
 
@@ -2305,6 +2385,54 @@ private fun WebSurface(
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.75f),
                         textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+
+        if (pageDeadEnd) {
+            // 源站播放器自己报了错，而它那个「刷新」是点不动的
+            // （xgplayer 的 retry() 只是重赋同一个已失效的地址）。
+            // 这里给**我们自己的**出口：重新加载页面（换一份新签名）或直接换线路。
+            //
+            // ⚠️ 不做全屏遮罩：源站画面可能还有残留，而且用户要能看见自己点的是什么。
+            // 用底部一条实色恢复条，位置与我们的控制栏错开（控制栏在它上面）。
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = Space.md, vertical = Space.sm),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(Radius.card))
+                        .background(Color.Black.copy(alpha = 0.86f))
+                        .padding(horizontal = Space.md, vertical = Space.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                ) {
+                    Text(
+                        text = WebPageDeadEndPolicy.note(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.9f),
+                    )
+                    PlayerChip(
+                        label = WebPageDeadEndPolicy.reloadLabel(),
+                        onClick = {
+                            pageDeadEnd = false
+                            pageErrorAt = 0L
+                            // 重新加载原播放页：壳页会给出**新的** encodedStr，
+                            // 这是唯一能拿到新签名地址的办法。
+                            webView?.reload()
+                        },
+                    )
+                    PlayerChip(
+                        label = WebPageDeadEndPolicy.switchLabel(),
+                        onClick = {
+                            pageDeadEnd = false
+                            onPageDeadEndState.value()
+                        },
                     )
                 }
             }
