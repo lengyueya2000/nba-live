@@ -747,3 +747,90 @@ P2-4 的防线有两道：① `key(webFallbackUrl)` 换线路时销毁重建 Web
      界面上的 `partialError` 横幅只在**真的失败**时出现，关掉的源不会触发它。
   2. 开关只作用于"下一次加载"。正在播的那条流不会因为关掉它的源而被中断
      （中断正在看的画面比"配置延后生效"更糟），下次进播放页才生效。
+
+## 十二、2026-10-31 第十六回合：下拉刷新 / 检查更新 / 比赛比分（用户挑选）
+
+用户从推荐清单里挑了三项：「下拉刷新和检查更新。还有比赛比分」。
+
+### 12.1 下拉刷新
+
+`MatchListScreen` 与 `LiveNowScreen` 各挂 `PullToRefreshBox`（material3 1.3.1，`@OptIn(ExperimentalMaterial3Api)`），
+`onRefresh = onRetry`（接到已有的 `viewModel.refresh()`）。
+
+⚠️ `isRefreshing = refreshing && <列表非空>`：首载时 `loading` 已经是整屏转圈，
+再把下拉指示器打开会叠成两层，观感像卡住。
+
+### 12.2 检查更新
+
+新增 `UpdateCheckPolicy`（纯判据）+ 「我的」页手动入口 + `MainViewModel.checkForUpdate()`。
+
+| 坑 | 处理 |
+|---|---|
+| 字符串比较会把 `1.2.9` 判成比 `1.2.10` 新 | 按**整数段**逐段比，缺段补 0（`1.2 == 1.2.0`） |
+| GitHub tag 带 `v` 前缀 / `-beta` 后缀 | 先按 `\d+` 提取数字段；`normalize` 去掉 `v` |
+| GitHub API 国内常不通 | **静默失败**：不弹任何错误，只把那一行显示成「已是最新」 |
+| 启动就查会拖慢冷启动 | **不自动检查**，只在用户点那一下才发请求 |
+| 仓库坐标写两处会漂移 | `REPO_OWNER` / `REPO_NAME` 常量各一份 |
+
+下载走 `LocalUriHandler` 打开 release 页（不在 App 内下载：那要处理存储权限 + 安装 Intent，
+而用户从 GitHub 手动装 APK 的路径本来就是通的）。
+
+### 12.3 比赛比分
+
+**先确认了"源站到底有没有比分"**（这一步决定整个方案）：
+
+| 来源 | 实测结果 |
+|---|---|
+| JRS 列表页 | `<p class="list-info-time">` 只有「直播中」/`20:30`；全页无 `数字:数字` 形态（唯一命中的 `11-07` 是队徽图片的日期路径） |
+| JRKAN 列表 JS | `<em class="bf" title="2">` 的 `title` **全是 `2`**（源站类型编号，不是比分）；`<li class="lab_bc">` 是空 `<span></span>` |
+| 播放页 `/play/mgxl/`、`paps.html` | `score` / `比分` / `lab_bc` 命中数 **0** |
+
+⇒ 源站不提供比分，只能取第三方。选 ESPN（`site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard`）：
+无需 API key、模拟器实测可达（200 / 约 238 KB）、同时给出 `state`(pre/in/post) 与剩余时间。
+
+组件：
+- `EspnScoreboard`：**手写最小 JSON 取值器**（本工程没有 JSON 依赖，为一份 238 KB 响应引反射型库不划算）。
+  只按 key 取子节点/标量，遇到 `highlights`/`leaders` 等上百 KB 无关子树直接跳过。
+- `TeamNameBridge`：ESPN 英文队名 → 源站中文队名（按 `team.name` 昵称对，全 30 队）。
+  **主客方向必须一致** —— 只判"两个队名都出现"会把比分画到对面球队身上。
+- `ScoreboardRepository`：20 秒 TTL、失败静默、一次查询覆盖全部场次。
+
+⚠️ **CBA 没有数据**：ESPN 的 `basketball/cba/scoreboard` 实测返回 **HTTP 400**
+⇒ `scoreboardUrl()` 对 CBA 显式返回 null，**一个请求都不发**，卡片不画比分区块
+（不显示 `0 - 0`，也不留空白占位）。
+
+刷新节奏 45 秒（ESPN 自己约 30 秒一变），且**只在列表标签可见时**跑 ——
+与 `AppListStatusAgeEffect` 同一个可见性判据；进播放页/「我的」页就停。
+
+### 12.4 守卫与回退实验
+
+| 守卫 | 内容 |
+|---|---|
+| `UpdateCheckPolicyTest`(7) | 数字段比较、v 前缀/后缀、拿不到远端版本静默、decide、状态文案、兜底地址 |
+| `EspnScoreboardTest`(5) | 真实裁剪样本解析、未开赛无 score、ISO 时间（**无秒**形态）、畸形/空响应、长键误命中 |
+| `TeamNameBridgeTest`(6) | 30 队映射、昵称直查、认不出返回 null、主客方向、状态文案、未开赛不显示比分 |
+| `ScoreboardRepositoryTest`(5) | 行为：查到比分、**CBA 不发请求**、失败静默、垃圾响应不抛、TTL 缓存 |
+| `NewFeaturesWiringTest`(6) | 两页下拉刷新、我的页入口、VM 真发请求、比分接卡片、CBA null 分支、自检 |
+
+五条回退**同批执行**：列表页去 `PullToRefreshBox` + 我的页 `onClick = {}` +
+VM 检查更新不发请求 + 比分仓库给 CBA 也发请求 + 队名匹配去掉主客方向校验
+→ **恰好 6 红**（方向校验那处同时打红 `TeamNameBridgeTest` 与 `ScoreboardRepositoryTest`）。
+
+### 12.5 数字与边界
+
+- 新增守卫 **29 条**；
+- 全量 debug + release 各 **714 通过 / 0 失败 / 0 跳过**（104 suites）；`assembleDebug`/`assembleRelease` 成功；
+- 版本 versionCode 28 / 1.2.24；代码提交 `4b19128`；
+- **实机（debug）**：新包装机启动正常；ESPN 链路在设备上跑通 ——
+  `logcat: D Scores: ESPN 比分板 10 场，匹配上 0 场`。
+  匹配 0 场是**正确结果**：当时源站列表只有 3 场 CBA（NBA 场次当晨已结束、被源站撤下），
+  而 CBA 本就没有比分。
+- **⚠️ 未能在真机上观测到的两项**（如实记录，不冒充已验证）：
+  1. **下拉刷新手势本身** —— 没能在设备上抓到 `正在刷新…` 指示器；
+  2. **点「检查更新」** —— 没能在设备上点那一下。
+  原因是我为了"拓宽观测窗口"执行了 `cmd connectivity airplane-mode enable`，
+  把雷电模拟器（VM `leidian0`）的网络栈弄挂，之后 `adb` 一直 `offline`，
+  `VBoxManage controlvm leidian0 reset` 也没能恢复。**这是我的操作失误，不是代码问题。**
+  这两项的**接线**由守卫钉住（回退即红），**判据**由单测钉住；
+  但"手势真的能触发刷新""点了真的会去查"这两句**目前没有真机证据**，
+  需要模拟器恢复后补测。

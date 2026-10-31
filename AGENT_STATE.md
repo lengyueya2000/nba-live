@@ -3,8 +3,8 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **685 通过 / 0 失败 / 0 跳过**，
-  debug 与 release 两个变体同数，99 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **714 通过 / 0 失败 / 0 跳过**，
+  debug 与 release 两个变体同数，104 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
 - 测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在 Gradle 锁内拷走再计数**；XML 带 BOM，用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 读）
@@ -15,6 +15,12 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近几个回合的提交
+### 2026-10-31 第十六回合（用户挑选）：下拉刷新 + 检查更新 + 比赛比分
+全量 debug+release 各 **714/0/0**（104 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **29 条**。已发版 **v1.2.24**（tag `v1.2.24` → `4b19128`）。
+| 提交 | 内容 |
+|---|---|
+| `4b19128` | **下拉刷新**：`MatchListScreen` / `LiveNowScreen` 各挂 `PullToRefreshBox`（material3 1.3.1，需 `@OptIn(ExperimentalMaterial3Api)`），`onRefresh = onRetry`。⚠️ `isRefreshing = refreshing && 列表非空` —— 首载时整屏 loading 与下拉指示器叠在一起会像卡住。**检查更新**：新增 `UpdateCheckPolicy`（**按整数段比版本**，字符串比较会把 1.2.9 判成比 1.2.10 新；支持 v 前缀/-beta 后缀/段数不同）+ 我的页手动入口 + `MainViewModel.checkForUpdate()`；**静默失败**（GitHub API 国内常不通，不弹错误）、**不自动检查**（启动就查会拖慢冷启动）；下载走 `LocalUriHandler` 开 release 页。**比赛比分**：先实测确认**源站根本没有比分**（JRS 列表只有「直播中」；JRKAN 的 `bf title` 全是 `2`（类型编号）、`lab_bc` 是空 span；播放页 `score`/`比分` 命中 0 次）⇒ 只能取第三方：`EspnScoreboard`（手写最小 JSON 取值器，不引 JSON 库）+ `TeamNameBridge`（ESPN 英文队名→中文队名，全 30 队，**主客方向必须一致**）+ `ScoreboardRepository`（20s TTL、失败静默、一次查询覆盖全部场次）。⚠️ **CBA 没有数据**（ESPN 的 CBA 端点实测 HTTP 400）⇒ 显式 `League.CBA -> null`、一个请求都不发、不画 `0-0`。刷新 45s 且只在列表标签可见时跑。**回退实验（五条同批）**：列表页去 `PullToRefreshBox` + 我的页回调置空 + VM 检查更新不发请求 + 比分仓库给 CBA 也发请求 + 队名匹配去掉方向校验 → **恰好 6 红**。**实机（debug）**：新包装机正常；`logcat: ESPN 比分板 10 场，匹配上 0 场`（当时源站列表只有 3 场 CBA，匹配 0 是正确结果）。**⚠️ 未取得真机证据的两项**（如实记录）：下拉刷新手势、点「检查更新」—— 我为拓宽观测窗口执行 `cmd connectivity airplane-mode enable` 把雷电模拟器（VM `leidian0`）网络栈弄挂，`adb` 从此 offline，`VBoxManage controlvm leidian0 reset` 也未能恢复。**那是我的操作失误**；这两项接线由守卫钉住、判据由单测钉住，但"手势真能触发刷新""点了真会去查"**没有真机证据**，待模拟器恢复后补测。 |
+
 ### 2026-10-31 第十五回合（用户需求）：数据源开关（JRS / JRKAN 可单独关掉）
 全量 debug+release 各 **685/0/0**（99 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **20 条**。已发版 **v1.2.23**（tag `v1.2.23` → `21be684`）。
 | 提交 | 内容 |
