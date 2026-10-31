@@ -3,8 +3,8 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **665 通过 / 0 失败 / 0 跳过**，
-  debug 与 release 两个变体同数，97 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **685 通过 / 0 失败 / 0 跳过**，
+  debug 与 release 两个变体同数，99 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
 - 测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在 Gradle 锁内拷走再计数**；XML 带 BOM，用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 读）
@@ -15,6 +15,12 @@
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
 ## 最近几个回合的提交
+### 2026-10-31 第十五回合（用户需求）：数据源开关（JRS / JRKAN 可单独关掉）
+全量 debug+release 各 **685/0/0**（99 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **20 条**。已发版 **v1.2.23**（tag `v1.2.23` → `21be684`）。
+| 提交 | 内容 |
+|---|---|
+| `21be684` | **需求**：「在我的页面增加一个控制 jrs 和 jrkan 的开关，比如我可以选择不解析某一个播放源，就可以手动关掉」。**关键词是「不解析」**：关掉的源在 `MatchRepository.loadMatchesWithOutcome(enabled=…)` 里直接走 `SourceOutcome.Disabled`，**一个请求都不发**（源站有严格限流，403/429 已专门处理）。新增 `SourceTogglePolicy`（判据唯一来源：默认全开、最后一个源关不掉、持久化空集/未知值回落全开、摘要文案）、`SourcePrefs`（SharedPreferences 存**枚举名集合**，不用序号/位掩码；attach 读一次、写入无 Context 形参）。`SourceOutcome` 新增 `Disabled`，`failed` 把它排除（用户自己关的不是故障，混进 `failedProviders` 会让用户以为源站挂了）。`MainViewModel.setProviderEnabled` 里**再挡一次**"最后一个源"（界面置灰与状态写入分成两处实现，任何一处漏了都会让用户进入"两个都关"的死状态），切换后清详情页缓存 + 重拉列表。⚠️ 还有一处必须过滤：`allowedSignals` 过滤**播放页的线路** —— 合并后的 `Match.sources` 可能带着上一次配置下另一个源的线路，不过滤的话关掉 JRS 后播放页仍能点进去播（开关等于没生效）。`ProfileScreen` 新增「数据源」区（每行显示 正在解析/已关闭/至少保留一个源）。**回退实验（四条同批）**：仓库不看开关 + VM 不过滤线路 + ProfileScreen 的 `canDisable` 硬编码 true + AppChrome 回调置空 → **恰好 5 红**。**实机（debug）**：关 JRS 后列表 `全部 13→12`、`NBA 10→9`；只剩 JRKAN 时它的开关 `enabled=false` 并显示"至少保留一个源"；重开后恢复 13 场；`force-stop` 重启后状态仍是"JRS 关、JRKAN 开"（持久化生效）。release 1.2.23 装机开关正常、无 `FATAL EXCEPTION`。**诚实边界**：开关只作用于"下一次加载"，不会中断正在播的流（中断正在看的画面比"配置延后生效"更糟）。 |
+
 ### 2026-10-31 第十四回合（现场 bug）：源站播放器报错后点「刷新」没反应
 全量 debug+release 各 **665/0/0**（97 suites）+ `assembleDebug`/`assembleRelease` 成功。新增守卫 **31 条**。已发版 **v1.2.22**（tag `v1.2.22` → `83b54bb`）。
 | 提交 | 内容 |
