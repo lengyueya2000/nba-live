@@ -14,7 +14,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.nbalive.app.MainActivity
 import kotlinx.coroutines.delay
 
@@ -48,27 +51,67 @@ internal const val LIST_STATUS_AGE_INTERVAL_MS = 60_000L
  * **一次查询覆盖全部场次**，不是每场一次。
  *
  * ⚠️ 只在**列表标签可见**时跑（见 [AppScoresRefreshEffect]）：
- * 用户进播放页看球时后台不该还在轮询，切后台时组合被移出也会自然停。
+ * 用户进播放页看球时不该还在轮询，切后台/画小窗时也要真的停 ——
+ * 后者由 lifecycle 判据保证（H7，见 [shouldRunTicker]），
+ * **不是**靠"组合被移出"（本文件 [PipExitFullscreenEffect] 的注释已经证明
+ * 小窗期间组合仍然活着）。
  */
 internal const val SCORES_REFRESH_INTERVAL_MS = 45_000L
 
 /**
+ * 状态老化 ticker 的**可见性判据**（review/optimization-review.md H7 / U1）。
+ *
+ * ## 为什么要抽成纯函数
+ *
+ * 旧实现是 `LaunchedEffect(route, tab) { while (true) { … } }` —— `LaunchedEffect`
+ * **不是** lifecycle-aware：用户按 Home / 切到别的 App / 画小窗（Activity 只是 PAUSED）
+ * 时它照样每 45 秒真发一次 ESPN 请求。KDoc 当时写的"切后台时组合被移出也会自然停"
+ * 与事实相反（同文件 [PipExitFullscreenEffect] 明写"小窗期间 Activity 是 PAUSED"）。
+ *
+ * 现在判据与接线分开：这里只回答"该不该 tick"，接线由
+ * `repeatOnLifecycle(RESUMED)` 保证"后台拿不到 tick"。
+ *
+ * @param route 当前路由；只有列表层才需要定时刷新
+ * @param tab 当前标签；「我的」页不消费任何列表数据
+ * @param lifecycleState 宿主 lifecycle 的当前状态
+ */
+internal fun shouldRunTicker(route: Route, tab: NavTab, lifecycleState: Lifecycle.State): Boolean =
+    route == Route.LIST &&
+        tab != NavTab.PROFILE &&
+        lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+
+/**
+ * 比分 ticker 的可见性判据（H7 + U3）。
+ *
+ * ⚠️ 比状态老化**更严**：只有「赛事」页消费 `scores`（U3）。
+ * `LiveNowScreen` 的参数表里根本没有 `scores`，在「直播」页轮询它等于
+ * 每 45 秒白发一次请求，数据在 UI 上无处可去。
+ */
+internal fun shouldRunScoresTicker(route: Route, tab: NavTab, lifecycleState: Lifecycle.State): Boolean =
+    shouldRunTicker(route, tab, lifecycleState) && tab == NavTab.MATCHES
+
+/**
  * 比分的定时刷新（2026-10-31 用户需求「比赛比分」）。
  *
- * ⚠️ 与 [AppListStatusAgeEffect] 的取舍一致：**只在列表可见时跑**。
- * 进详情页 / 播放页 / 「我的」页都会停 —— 比分只画在列表卡片上，
- * 其它页面轮询它没有任何意义，只是白耗流量和电。
+ * ⚠️ 与 [AppListStatusAgeEffect] 的取舍一致：**只在「赛事」页可见时跑**。
+ * 进详情页 / 播放页 / 「我的」页都会停 —— 比分只画在列表卡片上；
+ * 「直播」页也不画（U3），其它页面轮询它没有任何意义，只是白耗流量和电。
  *
- * ⚠️ 先 `onTick()` **再** `delay`：与状态老化同一个原因 ——
- * 首次进列表要立刻有比分，而不是先干等 45 秒。
+ * ⚠️ **lifecycle 驱动**（H7）：`repeatOnLifecycle(RESUMED)` 保证切后台/小窗期间
+ * 协程被取消，回到前台再重启 —— 重启会立刻 tick 一次，所以"先 tick 再 delay"
+ * 的语义（首次进列表马上有比分）仍然成立。
  */
 @Composable
 internal fun AppScoresRefreshEffect(route: Route, tab: NavTab, onTick: () -> Unit) {
-    LaunchedEffect(route, tab) {
-        if (route != Route.LIST || tab == NavTab.PROFILE) return@LaunchedEffect
-        while (true) {
-            onTick()
-            delay(SCORES_REFRESH_INTERVAL_MS)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentOnTick by rememberUpdatedState(onTick)
+    LaunchedEffect(route, tab, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (!shouldRunScoresTicker(route, tab, Lifecycle.State.RESUMED)) return@repeatOnLifecycle
+            while (true) {
+                currentOnTick()
+                delay(SCORES_REFRESH_INTERVAL_MS)
+            }
         }
     }
 }
@@ -146,15 +189,22 @@ internal fun AppLeavePlayerEffect(route: Route, onLeavePlayer: () -> Unit) {
  * 之前修的是"校正算错了"，这层是"不再算第二次"。
  *
  * ⚠️ 这是**纯内存**重算，零网络请求 —— 不违反"不轮询源站"的取舍。
- * ⚠️ 只在列表可见时跑：进详情页/播放页就停，切后台时组合被移出也会停。
+ * ⚠️ 只在列表可见时跑：进详情页/播放页就停。
+ * ⚠️ **lifecycle 驱动**（H7）：判据见 [shouldRunTicker]，接线用
+ * `repeatOnLifecycle(RESUMED)` —— 切后台/画小窗（Activity 仅 PAUSED）必须真的停，
+ * 旧实现的 `LaunchedEffect` 在那种情况下仍在跑。
  */
 @Composable
 internal fun AppListStatusAgeEffect(route: Route, tab: NavTab, onTick: () -> Unit) {
-    LaunchedEffect(route, tab) {
-        if (route != Route.LIST || tab == NavTab.PROFILE) return@LaunchedEffect
-        while (true) {
-            onTick()
-            delay(LIST_STATUS_AGE_INTERVAL_MS)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentOnTick by rememberUpdatedState(onTick)
+    LaunchedEffect(route, tab, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (!shouldRunTicker(route, tab, Lifecycle.State.RESUMED)) return@repeatOnLifecycle
+            while (true) {
+                currentOnTick()
+                delay(LIST_STATUS_AGE_INTERVAL_MS)
+            }
         }
     }
 }

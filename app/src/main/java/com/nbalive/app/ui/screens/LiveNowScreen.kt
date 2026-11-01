@@ -1,4 +1,4 @@
-﻿package com.nbalive.app.ui.screens
+package com.nbalive.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -44,6 +44,7 @@ import com.nbalive.app.ui.hhmm
 import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.FullScreenErrorState
 import com.nbalive.app.ui.components.LeagueChip
+import com.nbalive.app.ui.components.LoadingState
 import com.nbalive.app.ui.components.RetryErrorBanner
 import com.nbalive.app.ui.components.SignalBadge
 import com.nbalive.app.ui.components.StatusChip
@@ -80,11 +81,14 @@ fun LiveNowScreen(
 ) {
     val live = liveMatches
 
+    // ⚠️ H9：与赛事页共用同一套判据（`refreshingFeedbackFor`，纯函数 + 单测）。
+    // 旧写法 `refreshing && live.isNotEmpty()` 让"非比赛时段下拉刷新"整屏毫无变化。
+    val feedback = refreshingFeedbackFor(refreshing, loading, live.size)
+
     // 下拉刷新（2026-10-31 用户需求）：与赛事列表页同一套手势。
-    // ⚠️ isRefreshing 只在**已有数据**时为 true：首载时下拉指示器会和
-    // "正在加载赛事…"叠在一起，观感像卡住。
+    // 唯一保留的抑制条件是"首载整屏 loading 已经在转圈"。
     PullToRefreshBox(
-        isRefreshing = refreshing && live.isNotEmpty(),
+        isRefreshing = shouldShowRefreshing(refreshing, loading, live.size),
         onRefresh = onRetry,
         modifier = modifier.fillMaxSize(),
     ) {
@@ -123,13 +127,9 @@ fun LiveNowScreen(
         }
 
         when {
-            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "正在加载赛事…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            // U21：改用共享 LoadingState —— 原来这里只有一行静止文字，
+            // 同一次冷启动在「赛事」页看到转圈、在这一页看到"像挂了"
+            loading -> LoadingState(text = "正在加载赛事…")
 
             // ⚠️ 加载失败必须单独成态：不能混进"空列表"，
             // 否则用户看到的是"当前没有正在直播的比赛"——把故障说成"今天没球"，
@@ -137,7 +137,11 @@ fun LiveNowScreen(
             // 但"已有直播列表 + 刷新失败"不该整屏遮掉：那种情况用顶部横幅（见下）
             error != null && live.isEmpty() -> LiveErrorState(message = error, onRetry = onRetry)
 
-            live.isEmpty() -> EmptyLiveState()
+            // ⚠️ H9：非比赛时段 + 下拉刷新 = 旧实现的"整屏毫无变化"现场。
+            // 空态里补一条进度反馈。
+            live.isEmpty() -> EmptyLiveState(
+                refreshing = feedback == RefreshingFeedback.EmptyPlaceholder,
+            )
 
             else -> Column(Modifier.fillMaxSize()) {
                 if (error != null) LiveErrorBanner(message = error, onRetry = onRetry)
@@ -190,7 +194,7 @@ private fun LiveErrorState(message: String, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun EmptyLiveState() {
+private fun EmptyLiveState(refreshing: Boolean) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
@@ -211,6 +215,11 @@ private fun EmptyLiveState() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // ⚠️ H9：非比赛时段下拉刷新时，这一屏以前完全没有变化
+            if (refreshing) {
+                Spacer(Modifier.height(Space.lg))
+                RefreshingBar()
+            }
         }
     }
 }

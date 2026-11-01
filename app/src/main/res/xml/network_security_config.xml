@@ -5,9 +5,17 @@
   ## 为什么 base-config 必须放行明文
 
   这个 App 必须允许明文 HTTP，这不是疏忽，是硬需求：
-    - 源站播放页本身就是明文：实测抓包
-      `.forensics/detail_364127.html` 里 `toLive` 的 data-url 是
-      `http://play.sportsteam368.com/play/mgxl/?id=...`；
+    - 源站播放页本身就是明文：实测抓包（**证据已内联，见下**）里 `toLive`
+      的 data-url 是 `http://play.sportsteam368.com/play/mgxl/?id=...`；
+      ⚠️ review/optimization-review.md B18：这段证据原先指向 `.forensics/detail_364127.html`，
+      而 `.forensics/` 被 `.gitignore` 排除 —— 换机器/后来者无法复核，
+      本文件又恰恰是"全局放行明文"这个安全豁免的理由。所以把抓包原文**内联**在这里
+      （2026-11-01 逐字复核过），不要再指向工作区里未入库的文件：
+
+      ```
+      <a data-v-3073f131="" href="javascript:" data-url="http://play.sportsteam368.com/play/mgxl/?id=00594062&id2=" class="toLive nl picked">信号1</a>
+      <a href="http://play.sportsteam368.com/play/mgxl/?id=00594062&id2=" target="_blank"  class="toLive">信号2</a>
+      ```
     - JRS 列表页自身大量引用 `http://www.jrszb444.com`（实测 28 处 http
       对 3 处 https）；
     - m3u8 清单所在的 CDN 主机名是**运行时由源站生成并混淆**的

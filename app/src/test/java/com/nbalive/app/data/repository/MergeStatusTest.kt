@@ -81,7 +81,7 @@ class MergeStatusTest {
         // 于是 `ids.size == ids.distinct().size` 在单元素时**恒真** ——
         // 把 merge 里的 id 唯一化整段删掉也照样绿（审计实测）。
         //
-        // 真正会触发唯一化的是「**同 id、不同对阵**」：normalizeKey 不同 ⇒ 两场都必须保留，
+        // 真正会触发唯一化的是「**同 id、不同对阵**」：`MatchMerger.normalizeKey` 不同 ⇒ 两场都必须保留，
         // 但 id 撞车 ⇒ 必须加后缀。只有这种夹具才测得到"合并后 id 不能重复"。
         val jrs = listOf(match(id = "same", home = "A队", away = "B队"))
         val jrkan = listOf(match(id = "same", home = "C队", away = "D队"))

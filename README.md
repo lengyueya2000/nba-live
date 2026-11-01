@@ -104,12 +104,31 @@ git tag vX.Y.Z
 5. `:app:assembleRelease :app:bundleRelease`；
 6. `apksigner verify --print-certs` 验签 + `aapt2 dump badging` 核对版本号，结果进 job summary；
    同时检查**没有**产出 `app-UNSIGNED-*.apk`（出现即说明签名凭据没生效）；
-7. 上传 **R8 mapping 作为 workflow artifact**（`r8-mapping-<tag>`，`if-no-files-found: error`）；
-8. 创建/更新 GitHub Release，附件**只有 APK + AAB**。
+7. **核对产物版本号并断言 `versionCode` 严格递增**（review/optimization-review.md H1）：
+   从 badging 里解析产物的 `package` / `versionName` / `versionCode`，断言三方一致
+   （产物 = 源码声明 = tag），并下载上一版 Release 的 APK 读出它的 `versionCode`，
+   要求本版**严格大于**上一版；取不到上一版时降级为内置下限 + `::warning::`。
+   此前这里只把 badging `head -1` 贴进 Summary，于是"只改 versionName、忘了 +1 versionCode"
+   能全绿地发出去（用户会 `INSTALL_FAILED_VERSION_DOWNGRADE`，永久收不到更新）；
+8. 上传 **R8 mapping 作为 workflow artifact**（`r8-mapping-<tag>`，`if-no-files-found: error`）；
+9. 创建/更新 GitHub Release，附件**只有 APK + AAB**。
 
 > ⚠️ **mapping 只作 artifact，绝不挂公开 Release**：它是「混淆名 → 原始名/行号」的全量对照表，
 > 传上去等于把 R8 混淆作废。取用方式：Actions 运行页 → Artifacts → `r8-mapping-<tag>`。
 > 这条由 `ReleasePipelineGuardTest` 的**步骤块级**反向断言钉住。
+>
+> ⚠️⚠️ **artifact 只保留 90 天，本地副本才是唯一长期归档**（review/optimization-review.md B16）：
+> GitHub 对 workflow artifact 的默认保留期是 90 天，到期即删。而仓库根那批
+> `nba-live-<version>-mapping.txt`（1.2.13~1.2.16 各约 44 MB）**只存在于这一个工作区** ——
+> 一次 `git clean -xfd`、换机器或重置工作区就让这几个仍在线版本的崩溃还原能力永久消失。
+> **发版后请把 mapping 压缩归档到仓库之外的离线介质（并记录 sha256）**，不要只留在工作区。
+
+## 日常 CI（push / PR）
+
+`.github/workflows/ci.yml`（review/optimization-review.md B6）：以前唯一的自动化入口是 tag 触发的
+`release.yml`，714 条用例在两次发版之间一次都不跑；而且 release 流水线从不跑 `assembleDebug`。
+现在每次 push / PR 都会跑：**两变体全量单测 + `assembleDebug` + `lintDebug`（报告作 artifact）**，
+带 `timeout-minutes: 30`。实测 714 条用例合计约 20 秒，全流程 1~2 分钟。
 
 ### 需要的 secrets
 

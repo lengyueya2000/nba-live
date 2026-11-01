@@ -29,6 +29,11 @@ jobs:
   release:
     name: 构建并发布 ${{ github.ref_name }}
     runs-on: ubuntu-latest
+    # ⚠️ 这一步是 review/optimization-review.md **B9** 的落地：
+    # 没有任何 `timeout-minutes` 时，某一步挂住（网络等待、交互式命令）
+    # 会一直占着 GitHub 默认的 360 分钟上限；而 `concurrency.cancel-in-progress: false`
+    # 又让同一 tag 的下一次触发只能排队 —— 发版窗口会被堵数小时。
+    timeout-minutes: 30
     steps:
       - name: 校验触发 ref 必须是 v* tag
         shell: bash
@@ -156,6 +161,84 @@ jobs:
             head -1 /tmp/badging.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ⚠️ 这一步是 review/optimization-review.md **H1** 的落地：
+      # 此前流水线只核对**源码**里的 versionName（见上面"校验 tag 与 versionName 一致"），
+      # 而 `versionCode` 是**手工**维护的、产物里的版本号只是"贴进 Summary 的附注"。
+      # 于是"只改 versionName、忘了 +1 versionCode"能整条流水线全绿地发出去：
+      #   - versionCode 变小 → 已安装用户 INSTALL_FAILED_VERSION_DOWNGRADE，永久收不到更新；
+      #   - versionCode 不变 → 自动更新识别不出这是新版，且这个号被占死、回退发版也装不上。
+      # 现在对**产物**断言：包名 / versionName 与 tag 三方一致、versionCode 与源码一致，
+      # 并且**严格大于上一版 Release 的 versionCode**（拿不到上一版时降级为内置下限 + 警告）。
+      - name: 核对**产物**版本号与 versionCode 单调递增（H1）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 上一步的变量不跨 step 传递，这里自己再解析一次（drill 过：SDK 路径在 ubuntu runner 上来自 ANDROID_HOME）
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          BUILD_TOOLS="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)"
+          # 内置下限：低于它一律拒绝（防止"上一版拿不到"时这条判据完全失效）
+          MIN_RELEASE_VERSION_CODE=28
+
+          if ! grep -q "^package: name='" /tmp/badging.txt; then
+            echo "::error::产物里读不到包信息（aapt2/aapt badging 不可用）—— 无法核对版本号，拒绝发版"
+            exit 1
+          fi
+          PROD_PKG="$(grep -m1 -o "package: name='[^']*'" /tmp/badging.txt | sed -E "s/package: name='([^']*)'/\1/")"
+          PROD_VCODE="$(grep -m1 -o "versionCode='[0-9]*'" /tmp/badging.txt | sed -E "s/versionCode='([0-9]*)'/\1/")"
+          PROD_VNAME="$(grep -m1 -o "versionName='[^']*'" /tmp/badging.txt | sed -E "s/versionName='([^']*)'/\1/")"
+          SRC_VCODE="$(grep -E '^ *versionCode' app/build.gradle.kts | head -1 | grep -o '[0-9]\+')"
+          SRC_VNAME="$(grep -E '^ *versionName' app/build.gradle.kts | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+
+          if [ -z "$PROD_VCODE" ] || [ -z "$PROD_VNAME" ] || [ -z "$SRC_VCODE" ]; then
+            echo "::error::版本号解析失败（产物 vName='$PROD_VNAME' vCode='$PROD_VCODE' / 源码 vCode='$SRC_VCODE'）—— 拒绝发版"
+            exit 1
+          fi
+          if [ "$PROD_PKG" != "com.nbalive.app" ]; then
+            echo "::error::产物包名 '$PROD_PKG' 不是 com.nbalive.app —— 拒绝发版"
+            exit 1
+          fi
+          if [ "$PROD_VNAME" != "$SRC_VNAME" ] || [ "v$PROD_VNAME" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::产物 versionName='$PROD_VNAME' ≠ 源码 '$SRC_VNAME' 或 tag '$GITHUB_REF_NAME' —— 拒绝发版"
+            exit 1
+          fi
+          if [ "$PROD_VCODE" != "$SRC_VCODE" ]; then
+            echo "::error::产物 versionCode=$PROD_VCODE ≠ 源码声明 $SRC_VCODE —— 拒绝发版"
+            exit 1
+          fi
+
+          # 上一版 Release 的 versionCode：下载它的 APK 现读（比"缓存里记一笔"更难被绕过）
+          PREV_VCODE=""
+          PREV_TAG="$(gh release list --limit 30 --json tagName,createdAt \
+            --jq "[.[] | select(.tagName != \"$GITHUB_REF_NAME\")] | sort_by(.createdAt) | reverse | .[0].tagName" 2>/dev/null || true)"
+          if [ -n "${PREV_TAG:-}" ] && [ "$PREV_TAG" != "null" ]; then
+            PREV_DIR="$(mktemp -d)"
+            if gh release download "$PREV_TAG" --pattern '*.apk' --dir "$PREV_DIR" 2>/dev/null; then
+              PREV_APK="$(ls "$PREV_DIR"/*.apk 2>/dev/null | head -1 || true)"
+              if [ -n "${PREV_APK:-}" ]; then
+                { "$BUILD_TOOLS/aapt2" dump badging "$PREV_APK" 2>/dev/null \
+                    || "$BUILD_TOOLS/aapt" dump badging "$PREV_APK" 2>/dev/null; } > "$PREV_DIR/prev-badging.txt" || true
+                PREV_VCODE="$(grep -m1 -o "versionCode='[0-9]*'" "$PREV_DIR/prev-badging.txt" 2>/dev/null | sed -E "s/versionCode='([0-9]*)'/\1/" || true)"
+              fi
+            fi
+            echo "上一版 tag=$PREV_TAG versionCode=${PREV_VCODE:-（读不到）}"
+          fi
+
+          if [ -n "${PREV_VCODE:-}" ]; then
+            if [ "$PROD_VCODE" -le "$PREV_VCODE" ]; then
+              echo "::error::versionCode 没有递增：本版 $PROD_VCODE ≤ 上一版（$PREV_TAG）$PREV_VCODE —— 拒绝发版（H1）"
+              exit 1
+            fi
+            echo "versionCode 递增核对通过：$PREV_VCODE → $PROD_VCODE"
+          else
+            if [ "$PROD_VCODE" -lt "$MIN_RELEASE_VERSION_CODE" ]; then
+              echo "::error::读不到上一版 Release，且本版 versionCode=$PROD_VCODE 低于下限 $MIN_RELEASE_VERSION_CODE —— 拒绝发版（H1）"
+              exit 1
+            fi
+            echo "::warning::未能取到上一版 Release 的 versionCode，已降级为下限断言（≥$MIN_RELEASE_VERSION_CODE）—— 手工确认递增"
+          fi
 
       - name: 上传 R8 mapping（只作 artifact，绝不挂 Release）
         uses: actions/upload-artifact@v4

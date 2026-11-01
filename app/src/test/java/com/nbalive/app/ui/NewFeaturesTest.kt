@@ -6,6 +6,11 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.remote.EspnScoreboard
 import com.nbalive.app.data.remote.FetchResult
 import com.nbalive.app.data.repository.ScoreboardRepository
+// ⚠️ D11 迁包（task-10）：`com.nbalive.app.ui.TeamNameBridge` 只是**纯转发件**，
+// 判据与别名表都在数据层。这里用 `as` 起个别名显式指向实现体 ——
+// 既不依赖同包同名 object 的隐式解析（转发件哪天删掉，本文件不再受影响），
+// 又不会与同包的 `TeamNameBridge` 产生名字歧义。
+import com.nbalive.app.data.model.TeamNameBridge as DataTeamNameBridge
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -57,25 +62,25 @@ class UpdateCheckPolicyTest {
 
     @Test
     fun `decide 只在真的更新时给 Available`() {
-        val newer = UpdateCheckPolicy.decide("v1.2.24", "1.2.23", "https://x/y", "notes")
+        val newer = UpdateCheckPolicy.decide("v1.2.24", "1.2.23", "https://x/y")
         assertTrue(newer is UpdateCheckPolicy.Decision.Available)
         assertEquals("1.2.24", (newer as UpdateCheckPolicy.Decision.Available).latest)
         assertEquals("https://x/y", newer.downloadUrl)
 
         assertEquals(
             UpdateCheckPolicy.Decision.UpToDate,
-            UpdateCheckPolicy.decide("v1.2.23", "1.2.23", "https://x/y", ""),
+            UpdateCheckPolicy.decide("v1.2.23", "1.2.23", "https://x/y"),
         )
         assertEquals(
             "网络失败必须静默",
             UpdateCheckPolicy.Decision.UpToDate,
-            UpdateCheckPolicy.decide(null, "1.2.23", "https://x/y", ""),
+            UpdateCheckPolicy.decide(null, "1.2.23", "https://x/y"),
         )
     }
 
     @Test
     fun `状态文案`() {
-        val available = UpdateCheckPolicy.decide("v1.2.24", "1.2.23", "u", "")
+        val available = UpdateCheckPolicy.decide("v1.2.24", "1.2.23", "u")
         assertTrue(UpdateCheckPolicy.statusText(available).contains("1.2.24"))
         assertEquals("已是最新", UpdateCheckPolicy.statusText(UpdateCheckPolicy.Decision.UpToDate))
     }
@@ -144,17 +149,6 @@ class EspnScoreboardTest {
     }
 
     @Test
-    fun `ISO 时间解析`() {
-        assertEquals(
-            "2026-10-31T02:00Z 必须是 UTC 的 02:00",
-            java.time.Instant.parse("2026-10-31T02:00:00Z").toEpochMilli(),
-            EspnScoreboard.parseIso8601("2026-10-31T02:00Z"),
-        )
-        assertNull(EspnScoreboard.parseIso8601("not-a-date"))
-        assertNull(EspnScoreboard.parseIso8601(null))
-    }
-
-    @Test
     fun `畸形或空响应给 null 而不是抛异常`() {
         assertNull(EspnScoreboard.parse(null))
         assertNull(EspnScoreboard.parse(""))
@@ -186,6 +180,9 @@ class EspnScoreboardTest {
  * 中文队名映射（2026-10-31 用户需求「比赛比分」）。
  *
  * 源站是中文名、ESPN 是英文名，两边没有共同 id，只能按名字对。
+ *
+ * ⚠️ 引用的是 `data.model.TeamNameBridge`（别名为 `DataTeamNameBridge`）：
+ * `ui.TeamNameBridge` 已退化成纯转发件（D11 迁包），测试要钉的是**实现体**。
  */
 class TeamNameBridgeTest {
 
@@ -204,51 +201,51 @@ class TeamNameBridgeTest {
             "San Antonio Spurs" to "马刺",
         )
         for ((espn, cn) in pairs) {
-            assertEquals("$espn 应映射成 $cn", cn, TeamNameBridge.toChinese(espn))
+            assertEquals("$espn 应映射成 $cn", cn, DataTeamNameBridge.toChinese(espn))
         }
     }
 
     @Test
     fun `直接给昵称也能认`() {
-        assertEquals("湖人", TeamNameBridge.toChinese("Lakers"))
-        assertEquals("勇士", TeamNameBridge.toChinese("warriors"))
+        assertEquals("湖人", DataTeamNameBridge.toChinese("Lakers"))
+        assertEquals("勇士", DataTeamNameBridge.toChinese("warriors"))
     }
 
     @Test
     fun `认不出来返回 null 不许瞎猜`() {
-        assertNull(TeamNameBridge.toChinese("Guangdong Southern Tigers"))
-        assertNull(TeamNameBridge.toChinese(""))
-        assertNull(TeamNameBridge.toChinese(null))
+        assertNull(DataTeamNameBridge.toChinese("Guangdong Southern Tigers"))
+        assertNull(DataTeamNameBridge.toChinese(""))
+        assertNull(DataTeamNameBridge.toChinese(null))
     }
 
     @Test
     fun `找比赛时主客方向必须一致`() {
         val games = listOf(
-            EspnScoreboard.GameScore("Golden State Warriors", "Los Angeles Lakers", 112, 95, "post", "Final", 4, 0L),
+            EspnScoreboard.GameScore("Golden State Warriors", "Los Angeles Lakers", 112, 95, "post", "Final", 4),
         )
-        assertNotNull("主客都对得上", TeamNameBridge.findGame(games, "勇士", "湖人"))
+        assertNotNull("主客都对得上", DataTeamNameBridge.findGame(games, "勇士", "湖人"))
         assertNull(
             "方向反了不能匹配（比分会被画到对面去）",
-            TeamNameBridge.findGame(games, "湖人", "勇士"),
+            DataTeamNameBridge.findGame(games, "湖人", "勇士"),
         )
-        assertNull(TeamNameBridge.findGame(games, "勇士", "太阳"))
+        assertNull(DataTeamNameBridge.findGame(games, "勇士", "太阳"))
     }
 
     @Test
     fun `状态文案`() {
         assertEquals(
             "第3节 05:21",
-            TeamNameBridge.statusLabel(EspnScoreboard.GameScore("A", "B", 1, 2, "in", "05:21", 3, 0L)),
+            DataTeamNameBridge.statusLabel(EspnScoreboard.GameScore("A", "B", 1, 2, "in", "05:21", 3)),
         )
-        assertEquals("已结束", TeamNameBridge.statusLabel(EspnScoreboard.GameScore("A", "B", 1, 2, "post", "Final", 4, 0L)))
+        assertEquals("已结束", DataTeamNameBridge.statusLabel(EspnScoreboard.GameScore("A", "B", 1, 2, "post", "Final", 4)))
         assertNull(
             "未开赛不显示状态文案（卡片自己有开赛时间）",
-            TeamNameBridge.statusLabel(EspnScoreboard.GameScore("A", "B", null, null, "pre", "", 0, 0L)),
+            DataTeamNameBridge.statusLabel(EspnScoreboard.GameScore("A", "B", null, null, "pre", "", 0)),
         )
         assertEquals(
             "加时要能区分",
             "加时1 02:00",
-            TeamNameBridge.statusLabel(EspnScoreboard.GameScore("A", "B", 1, 2, "in", "02:00", 5, 0L)),
+            DataTeamNameBridge.statusLabel(EspnScoreboard.GameScore("A", "B", 1, 2, "in", "02:00", 5)),
         )
     }
 
@@ -256,17 +253,17 @@ class TeamNameBridgeTest {
     fun `未开赛不显示比分`() {
         assertNull(
             "未开赛给 0-0 会让用户以为比赛已经开打",
-            TeamNameBridge.displayableScore(EspnScoreboard.GameScore("A", "B", 0, 0, "pre", "", 0, 0L)),
+            DataTeamNameBridge.displayableScore(EspnScoreboard.GameScore("A", "B", 0, 0, "pre", "", 0)),
         )
         assertEquals(
             112 to 95,
-            TeamNameBridge.displayableScore(
-                EspnScoreboard.GameScore("A", "B", 112, 95, "post", "Final", 4, 0L),
+            DataTeamNameBridge.displayableScore(
+                EspnScoreboard.GameScore("A", "B", 112, 95, "post", "Final", 4),
             ),
         )
         assertNull(
             "字段缺失也不显示",
-            TeamNameBridge.displayableScore(EspnScoreboard.GameScore("A", "B", null, 95, "in", "", 1, 0L)),
+            DataTeamNameBridge.displayableScore(EspnScoreboard.GameScore("A", "B", null, 95, "in", "", 1)),
         )
     }
 }
@@ -297,7 +294,7 @@ class ScoreboardRepositoryTest {
         })
         val snap = repo.load()
         // ⚠️ 主客顺序必须与 ESPN 的 home/away 一致（样本里 home=Warriors、away=Lakers）：
-        // 写反了就该查不到 —— 那是 TeamNameBridge.findGame 的有意行为，
+        // 写反了就该查不到 —— 那是 DataTeamNameBridge.findGame 的有意行为，
         // 比"把比分画到对面球队身上"好得多。
         val game = repo.scoreFor(snap, match("勇士", "湖人", League.NBA))
         assertNotNull("NBA 场次必须能查到比分", game)

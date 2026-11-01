@@ -22,8 +22,11 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -45,6 +48,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -88,6 +92,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -100,6 +105,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -110,9 +116,13 @@ import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.data.remote.debugLog
+import com.nbalive.app.data.remote.redactUrl
 import com.nbalive.app.ui.AspectMode
 import com.nbalive.app.ui.AudioFocusPolicy
+import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.ui.PipState
+import com.nbalive.app.ui.PlayerClock
+import com.nbalive.app.ui.WebSniffState
 import com.nbalive.app.ui.PlayerControls
 import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.PlayerLoadingHintPolicy
@@ -181,6 +191,21 @@ fun PlayerScreen(
      * 判据见 [com.nbalive.app.ui.WebPageDeadEndPolicy]。
      */
     onPageDeadEnd: () -> Unit = {},
+    /**
+     * 死胡同**恢复条出现**的那一刻上报一次"疑似"（P18，复核修正版）。
+     *
+     * ⚠️ 与 [onPlaybackSuspect]/[onPageDeadEnd] 都不同，必须接到一个
+     * **只置疑似标记、不换线**的入口：
+     *  - `onPlaybackSuspect` 在 `MainViewModel` 里置标记之后紧接着
+     *    `advanceAfterNoSignal(...)`（`MainViewModel.kt:1242-1254`）→ 1.5 秒就换线，
+     *    会把恢复条与用户的 8 秒选择窗口一起抹掉；
+     *  - `onPageDeadEnd` 是 9.5 秒后的处置，太晚 —— 中间那 8 秒里
+     *    `playbackSuspect` 仍是 false，按 Home 会进一块坏小窗。
+     *
+     * 用途只有一句：让上层（`NbaLiveApp` 的 `playingNow` 判据）在这 8 秒里也停掉
+     * 「按 Home 自动进小窗」。⛔ 默认空实现 = 本项行为与改动前一致（接线由 Lead 协调）。
+     */
+    onDeadEndSuspect: () -> Unit = {},
     onStreamSniffed: (String, String?) -> Unit = { _, _ -> },
     /** 嗅探升级失败退回网页：不再弹"暂无信号"提示 */
     sniffFailed: Boolean = false,
@@ -226,6 +251,11 @@ fun PlayerScreen(
 ) {
     val videoOnly = fullscreen || inPip
 
+    // 播放页的单调时钟（P14 / review/opt/player.md 第 14 条）：
+    // 所有"多久了"的判断都走它，而不是散落的 `SystemClock.elapsedRealtime()` ——
+    // 纯逻辑（WebSniffState）因此可以在 JVM 单测里注入假时钟。
+    val clock = remember { PlayerClock.System }
+
     // "同时在播"右侧面板
     // ⚠️ rememberSaveable：进程被杀重建（用户切后台太久被回收）后，
     // 已打开的面板会被静默关掉 —— 用户看到"面板自己关了"。
@@ -233,7 +263,10 @@ fun PlayerScreen(
     // 播放源 / 播放线路 选择面板（不用 DropdownMenu：Popup 会被视频 SurfaceView 盖住）
     var picker by rememberSaveable { mutableStateOf<PickerKind?>(null) }
     // 视频播放器句柄：自定义控制栏要读播放状态、要能暂停/继续
-    val videoHandle = remember(streamUrl) { VideoPlayerHandle() }
+    // ⚠️ P9 完整版：句柄绑定**播放页**而不是单条线路 ——
+    // 播放器现在跨线路复用，工厂只跑一次；句柄若还按 streamUrl 重建，
+    // `handle.attach(player)` 不会再执行，底部控制栏会读不到播放/缓冲状态。
+    val videoHandle = remember { VideoPlayerHandle() }
 
     // 全屏时界面默认干净：所有浮层（顶部信息、右上按钮、底部控制栏）隐藏，
     // 单击画面显示、再单击隐藏；显示后 10 秒无操作自动收起。
@@ -246,7 +279,7 @@ fun PlayerScreen(
     // 浮层上的"用户操作"计数：每次点按钮/开面板就 +1，
     // 用来重置"10 秒无操作自动收起"的计时。
     // 否则用户在全屏里慢慢挑线路，挑到一半控制栏自己消失了。
-    var controlsTouchSeq by remember { mutableStateOf(0) }
+    var controlsTouchSeq by remember { mutableIntStateOf(0) }
     // 包装一层：所有"用户操作浮层"的点击都走这里，自动续期
     fun touchControls() {
         controlsVisible = true
@@ -296,34 +329,53 @@ fun PlayerScreen(
             controlsVisible = false
         }
     }
-    // ⚠️ 只在**进入全屏**时收起浮层，key 里不能有 streamUrl：
-    // 原来的 `LaunchedEffect(fullscreen, streamUrl)` 在换线路时也会重跑，
-    // 把 controlsVisible 重置成 false —— 用户刚点完"线路"胶囊，
-    // 底部控制栏就自己消失了，得再点一次画面才回来。
+    // ⚠️ 进全屏"收起浮层"与"面板刚关闭回补"必须排在**同一个 effect** 里
+    // （P6 / review/opt/player.md 第 6 条）：
+    // 旧代码是两个都以 `fullscreen` 为 key 的 LaunchedEffect ——
+    // 一个写 `controlsVisible = false`，另一个在"无面板 + 全屏"时写 `true`。
+    // 进全屏那一次两个都命中，净结果取决于 Compose 启动两个 effect 的顺序
+    // （`AppEffects` 自己点名批评过这种依赖），观感是全屏后浮层没立刻收起、
+    // 要等 10 秒自动隐。
     //
-    // 直连地址解析出来时也不需要额外收起：用户是从非全屏进播放页的
-    // （那时浮层本来就显示），点全屏才触发这个 effect。
-    LaunchedEffect(fullscreen) {
-        if (fullscreen) controlsVisible = false
-    }
-    // 打开任一选择面板时强制露出控制栏，避免面板还开着栏却消失了
-    LaunchedEffect(picker, showLivePanel) {
-        if (picker != null || showLivePanel) controlsVisible = true
-    }
-    // ⚠️ 面板**关闭**后要回补控制栏（review/01-player.md P2-8 的第二半）：
-    // 只暂停计时还不够 —— 若面板开着期间计时器已经触发过（或用户手动收起了栏），
-    // 关闭面板时必须有一步显式恢复，否则栏不会自己回来，用户以为 UI 卡住了。
-    // 判据抽在 SystemBarsPolicy.shouldRestoreControlsOnPanelClose（有单测）。
-    LaunchedEffect(picker, showLivePanel, fullscreen) {
-        if (SystemBarsPolicy.shouldRestoreControlsOnPanelClose(
+    // 现在把"面板是否**刚刚关闭**"变成显式输入（判据在 SystemBarsPolicy，有单测）：
+    // 进全屏没有这种变化，所以不会抵消收起。
+    //
+    // ⚠️ `panelWasOpen` 故意**不进 key**：它在 effect 末尾被写成 `panelOpen`，
+    // 进了 key 就会自触发一次重启，而第二次跑时它已经是 false ——
+    // 反而命中"进全屏收起"，把刚回补的栏又收掉。
+    val panelOpen = picker != null || showLivePanel
+    var panelWasOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(fullscreen, panelOpen) {
+        if (fullscreen && panelOpen) {
+            // 面板开着时强制露出控制栏，避免面板还开着、栏却消失了
+            controlsVisible = true
+        } else if (SystemBarsPolicy.shouldRestoreControlsOnPanelClose(
                 pickerOpen = picker != null,
                 livePanelOpen = showLivePanel,
                 fullscreen = fullscreen,
+                panelWasOpen = panelWasOpen,
             )
         ) {
+            // 面板**刚刚关闭**：显式回补（P2-8 的第二半）
             controlsVisible = true
+        } else if (fullscreen && !panelOpen) {
+            // 进入全屏（这一次没有"面板刚关闭"）：收起浮层
+            controlsVisible = false
         }
+        panelWasOpen = panelOpen
     }
+
+    // ---------- 死胡同恢复条的显示内容（P1 真机回归修复，2026-11-01） ----------
+    // ⚠️ 状态在这里，**渲染也必须在手势层之后**：
+    // 恢复条原来画在 `WebSurface` 内部 —— 而手势层是 `Modifier.fillMaxSize()` 的
+    // **后置兄弟**，命中测试先落进手势层那棵子树，于是用户点「重新加载 / 换线路」
+    // **完全没有反应**（雷电模拟器实测：连点三次、`input keyevent BACK` 正常，
+    // 而 CDP 里 URL 6 秒都没变、也没有任何导航日志）。
+    // 现在由 WebSurface 上报"该不该显示 + 文案"，渲染挪到与顶栏/底栏同级的浮层区。
+    var webDeadEndBar by remember(webFallbackUrl) { mutableStateOf<WebDeadEndBar?>(null) }
+    // 「重新加载」用**计数**而不是布尔事件：与 PipState.expandRequests 同一取舍 ——
+    // 布尔事件在重组合并时可能被吞掉，计数只增不减，永远不会丢。
+    var webDeadEndReloadRequests by remember(webFallbackUrl) { mutableIntStateOf(0) }
 
     Box(modifier = modifier.fillMaxSize()) {
     Column(
@@ -343,15 +395,19 @@ fun PlayerScreen(
             },
         ) {
             when {
-                streamUrl != null -> key(streamUrl, streamReferer) {
-                    VideoSurface(
-                        streamUrl = streamUrl,
-                        referer = streamReferer,
-                        aspectMode = aspectMode,
-                        handle = videoHandle,
-                        onError = onPlaybackError,
-                    )
-                }
+                // ⚠️ P9 完整版：**不再** `key(streamUrl, streamReferer)` ——
+                // 同一个播放页内换线路**复用同一个 ExoPlayer**（解码器/渲染器/缓冲都不重建），
+                // 换线只换媒体项（一次性，判据见 LineSwitchPolicy）。
+                // Referer 由 RefererDataSourceFactory 在每次 createDataSource() 时**现查**，
+                // 所以复用播放器不会出现"换了线路、CDN 还拿旧 Referer → 403"。
+                // 回归守卫：`PlayerFixTest.P9完整版`（生产里不许再出现 key(streamUrl, streamReferer)）。
+                streamUrl != null -> VideoSurface(
+                    streamUrl = streamUrl,
+                    referer = streamReferer,
+                    aspectMode = aspectMode,
+                    handle = videoHandle,
+                    onError = onPlaybackError,
+                )
                 webFallbackUrl != null -> {
                     // ⚠️ 网页兜底全屏时，WebView **不能铺满整个容器**。
                     //
@@ -401,6 +457,11 @@ fun PlayerScreen(
                                     onPlaybackDead = onPlaybackDead,
                                     onPlaybackSuspect = onPlaybackSuspect,
                                     onPageDeadEnd = onPageDeadEnd,
+                                    onDeadEndSuspect = onDeadEndSuspect,
+                                    // P1 真机回归修复：恢复条的内容上报 + 重载请求下传，
+                                    // 渲染在**手势层之后**的浮层区（见 PlayerDeadEndBar）
+                                    onDeadEndBarChanged = { webDeadEndBar = it },
+                                    reloadRequest = webDeadEndReloadRequests,
                                 )
                             }
                         }
@@ -442,22 +503,32 @@ fun PlayerScreen(
             // "App 在工作"的信号，观感就是"点开就卡死"。判据见 PlayerLoadingHintPolicy。
             // ⚠️ 只叠一行文字、不加 clickable：不能挡住 WebView（单击要透传给源站播放器）。
             webFallbackUrl?.let { page ->
-                var sinceLoadMs by remember(page) { mutableStateOf(0L) }
+                var sinceLoadMs by remember(page) { mutableLongStateOf(0L) }
                 LaunchedEffect(page) {
-                    val startedAt = android.os.SystemClock.elapsedRealtime()
+                    val startedAt = clock.nowMs()
                     while (sinceLoadMs < PlayerLoadingHintPolicy.MAX_HINT_MS) {
-                        sinceLoadMs = android.os.SystemClock.elapsedRealtime() - startedAt
+                        sinceLoadMs = clock.nowMs() - startedAt
                         kotlinx.coroutines.delay(250)
                     }
                 }
-                if (PlayerLoadingHintPolicy.shouldShow(
-                        hasWebFallback = true,
-                        hasStream = streamUrl != null,
-                        sinceLoadMs = sinceLoadMs,
-                        hasErrorMessage = errorMessage != null,
-                        inPip = inPip,
-                    )
-                ) {
+                // P7（review/opt/player.md 第 7 条）：判据下沉到 derivedStateOf ——
+                // 250ms 一次的 ticker 只让**这个布尔**失效，而它只在
+                // "该显示 / 不该显示"翻转时才真正通知读取方。
+                // 原来 shouldShow(...) 直接在 content lambda 里读 sinceLoadMs，
+                // 于是每 250ms 失效一次这块 lambda（含"其他直播"的过滤与列表），
+                // 而这段时间正是 chromium 与源站播放器 JS 最吃 CPU 的时候。
+                val showLoadingHint by remember(page, streamUrl, errorMessage, inPip) {
+                    derivedStateOf {
+                        PlayerLoadingHintPolicy.shouldShow(
+                            hasWebFallback = true,
+                            hasStream = streamUrl != null,
+                            sinceLoadMs = sinceLoadMs,
+                            hasErrorMessage = errorMessage != null,
+                            inPip = inPip,
+                        )
+                    }
+                }
+                if (showLoadingHint) {
                     Text(
                         text = "正在连接源站播放页…",
                         style = MaterialTheme.typography.labelMedium,
@@ -469,11 +540,17 @@ fun PlayerScreen(
                 }
             }
 
-            // 手势层（必须压在视频之上、按钮之下）：
+            // 手势层（必须压在视频之上、**后声明的浮层按钮之下**）：
             //  - 左半屏上下滑调亮度，右半屏上下滑调音量
             //  - 全屏时单击画面显示/隐藏浮层（直连与网页两条路径一致）
             //  - 网页线路只在**发生垂直拖动**时才消费事件，
             //    单击依旧透传给源站播放器（否则网页线路根本没法调亮度音量）
+            //
+            // ⚠️ "按钮之下"只对**在本层之后声明的**浮层成立（顶栏/底栏/选择面板都满足）。
+            // 画在**更早的兄弟子树**里（例如原来在 `WebSurface` 内部）的按钮拿不到点击 ——
+            // 命中测试先落进本层这棵 `fillMaxSize()` 的子树。
+            // 这正是 P1 真机回归的根因，见下面「死胡同恢复条」那段。
+            //
             // ⚠️ 判定全部收敛到 PlayerLock.gestureConfig（P2-9）：
             //    以前 enabled/tapOnly/onTap 的分流写死在这里的组合表达式里，
             //    PlayerLock 里的同名函数是死代码，测试测的是没人用的那份。
@@ -501,6 +578,33 @@ fun PlayerScreen(
                         PlayerLock.TapAction.PASS_THROUGH -> null
                     },
                 )
+            }
+
+            // ---------- 死胡同恢复条（P1 真机回归修复） ----------
+            // ⚠️ **必须声明在手势层之后**（与顶栏/底栏同级）：
+            // 手势层是 `Modifier.fillMaxSize()` 的兄弟，命中测试先于更早的兄弟子树；
+            // 恢复条以前画在 `WebSurface` 内部（手势层之前的子树）→ 两个按钮点不动。
+            // 判据：`PlayerFixTest.P1真机回归 恢复条必须渲染在手势层之后 否则按钮点不动`
+            // （源码下标断言，搬回 WebSurface 内部就红）。
+            // 只在网页线路还挂着、且还没升级成直连时渲染（与上面 `when` 的分支条件一致）。
+            if (streamUrl == null && webFallbackUrl != null) {
+                webDeadEndBar?.let { bar ->
+                    PlayerDeadEndBar(
+                        bar = bar,
+                        onReload = {
+                            // 先收起，再把"重新加载"当**计数式请求**交给 WebSurface ——
+                            // 真正的导航逻辑（targetUrl / reloadSeq / pageErrorAt）只有它知道。
+                            webDeadEndBar = null
+                            webDeadEndReloadRequests++
+                        },
+                        onSwitchLine = {
+                            webDeadEndBar = null
+                            // 与旧实现同一个出口：换线路仍走上层的自动换线判据
+                            //（WebPageDeadEndPolicy.shouldAutoAdvance 那条 9.5 秒兜底不变）
+                            onPageDeadEnd()
+                        },
+                    )
+                }
             }
 
             // 视频区顶部浮层：**只留实时时钟**。
@@ -738,6 +842,7 @@ fun PlayerScreen(
                             if (PlayerControls.shouldShowAspectChip(streamUrl)) {
                                 PlayerChip(
                                     label = "画面 ${aspectMode.label}",
+                                    actionLabel = "切换画面比例",
                                     onClick = {
                                         touchControls()
                                         val next = AspectMode.entries[
@@ -752,6 +857,7 @@ fun PlayerScreen(
                                 val safeIndex = selectedIndex.coerceIn(0, signals.lastIndex)
                                 PlayerChip(
                                     label = "源 ${signals.getOrNull(safeIndex)?.provider?.displayName ?: "-"}",
+                                    actionLabel = "切换播放源",
                                     onClick = {
                                         touchControls()
                                         picker = PickerKind.SOURCE
@@ -759,6 +865,7 @@ fun PlayerScreen(
                                 )
                                 PlayerChip(
                                     label = "线路 ${safeIndex + 1}/${signals.size}",
+                                    actionLabel = "切换线路",
                                     onClick = {
                                         touchControls()
                                         picker = PickerKind.LINE
@@ -767,6 +874,7 @@ fun PlayerScreen(
                             }
                             PlayerChip(
                                 label = "同时在播 ${liveMatches.count { it.id != match?.id }}",
+                                actionLabel = "打开同时在播面板",
                                 onClick = {
                                     touchControls()
                                     showLivePanel = true
@@ -782,233 +890,36 @@ fun PlayerScreen(
         if (!videoOnly) {
 
         // ---------- 赛事信息卡 ----------
+        // P8（review/optimization-review.md 第 8 条）：本函数原来约 990 行、
+        // 全屏/网页/面板/提示/选择器全在一个函数体里，任何改动都要在这个体量里重新定位副作用。
+        // 现在按"视频区 / 浮层 / 面板 / 侧栏"拆出独立的 private composable，
+        // **行为不变**（纯搬运），并把这些块的重组面收在它们自己里面。
         if (match != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(Space.lg)
-                    .clip(RoundedCornerShape(Radius.card))
-                    .background(MaterialTheme.colorScheme.surface)
-                    .padding(Space.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TeamLogo(match.homeLogo, match.homeTeam, size = 44.dp)
-                Spacer(Modifier.width(Space.md))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "${match.homeTeam} VS ${match.awayTeam}",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        text = buildString {
-                            append(match.leagueLabel())
-                            append(" · ")
-                            append(match.hhmm())
-                            if (signals.isNotEmpty()) {
-                                append(" · 共 ${signals.size} 条信号")
-                            }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(Modifier.width(Space.sm))
-                TeamLogo(match.awayLogo, match.awayTeam, size = 44.dp)
-            }
+            PlayerMatchCard(match = match, signals = signals)
         }
 
         // ---------- 信号切换 ----------
+        // P8：拆成 PlayerSignalStrip（纯搬运）
         if (signals.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.lg)
-                    .padding(bottom = Space.sm),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "信号切换",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    maxLines = 1,
-                )
-                Spacer(Modifier.width(Space.sm))
-                Text(
-                    text = "共 ${signals.size} 条线路",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = "当前 ${signals.getOrNull(selectedIndex)?.label ?: "-"}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                )
-            }
-
-            // 线路可能多达 9 条：横向滚动、每条固定宽度，
-            // 不再用 weight(1f) 把标签挤成"线…"
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.lg)
-                    .clip(RoundedCornerShape(Radius.card))
-                    .background(MaterialTheme.colorScheme.surface)
-                    .padding(Space.xs),
-                horizontalArrangement = Arrangement.spacedBy(Space.xs),
-            ) {
-                itemsIndexed(signals, key = { _, s -> s.id }) { index, source ->
-                    val active = index == selectedIndex
-                    Box(
-                        modifier = Modifier
-                            .width(76.dp)
-                            .height(52.dp)
-                            .clip(RoundedCornerShape(Radius.btn))
-                            .then(
-                                if (active) Modifier.background(accentBrush())
-                                else Modifier.background(Color.Transparent),
-                            )
-                            .clickable { onSignalSelected(index) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = source.label,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = if (active) Color.White
-                                else MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = source.provider.displayName,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (active) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                            )
-                        }
-                    }
-                }
-            }
+            PlayerSignalStrip(
+                signals = signals,
+                selectedIndex = selectedIndex,
+                onSignalSelected = onSignalSelected,
+            )
         }
 
-        // ---------- 故障切换 / 错误提示 ----------
-        if (errorMessage != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.lg)
-                    .padding(top = Space.md)
-                    .clip(RoundedCornerShape(Radius.card))
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f))
-                    .border(
-                        1.dp,
-                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f),
-                        RoundedCornerShape(Radius.card),
-                    )
-                    .padding(Space.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Filled.Warning,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.tertiary,
-                )
-                Spacer(Modifier.width(Space.sm))
-                Text(
-                    text = errorMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-
-        // ---------- 疑似无信号（推断）提示 ----------
-        // ⚠️ 有意与错误卡分开（P0-1）：嗅探超时只是**推断** —— 既不能收小窗、
-        // 也不能关任务，但**必须让用户看见**。否则现象是"页面加载完、15 秒过去，
-        // 界面毫无反应"，用户只能干等（review/01-player.md:41 明确要求"用于显示提示"；
-        // 旧代码只实现了后半"停自动进小窗"，提示从未接线 = 审计 B2 的假安全感）。
-        // 有确认错误（errorMessage）时错误卡优先，两张卡不叠加。
-        if (suspectHint && errorMessage == null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.lg)
-                    .padding(top = Space.md)
-                    .clip(RoundedCornerShape(Radius.card))
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f))
-                    .border(
-                        1.dp,
-                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f),
-                        RoundedCornerShape(Radius.card),
-                    )
-                    .padding(Space.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Filled.Warning,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.secondary,
-                )
-                Spacer(Modifier.width(Space.sm))
-                Text(
-                    text = "疑似无信号，可换线路试试",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
+        // ---------- 故障切换 / 错误提示 + 疑似无信号提示 ----------
+        // P8：拆成 PlayerNoticeCards（纯搬运；"有确认错误时错误卡优先、两张卡不叠加"
+        // 的优先级判据不变，见它内部的 `if (suspectHint && errorMessage == null)`）。
+        PlayerNoticeCards(errorMessage = errorMessage, suspectHint = suspectHint)
 
         // ---------- 其他直播 ----------
-        // 只列真正在直播的场次：otherMatches 是"全部赛事"，
-        // 直接拿来用会把未开赛/已结束的比赛摆进"其他直播"里
-        val others = otherMatches
-            .filter { it.id != match?.id && it.status == MatchStatus.LIVE }
-            .take(4)
-        if (others.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.lg)
-                    .padding(top = Space.xxl, bottom = Space.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "其他直播",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    maxLines = 1,
-                )
-                Spacer(Modifier.width(Space.sm))
-                Text(
-                    text = "今日赛事",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-            Column(
-                modifier = Modifier.padding(horizontal = Space.lg),
-                verticalArrangement = Arrangement.spacedBy(Space.sm),
-            ) {
-                others.forEach { other ->
-                    OtherMatchRow(match = other, onClick = { onOtherMatchClick(other) })
-                }
-            }
-        }
+        // P8：拆成 PlayerOtherLiveSection；过滤/裁剪在它内部 remember（P7）
+        PlayerOtherLiveSection(
+            otherMatches = otherMatches,
+            currentMatch = match,
+            onOtherMatchClick = onOtherMatchClick,
+        )
         } // end if (!videoOnly)
     } // end Column
 
@@ -1025,7 +936,10 @@ fun PlayerScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.55f))
-                    .clickable { showLivePanel = false },
+                    .clickable(
+                        onClickLabel = "关闭面板",
+                        role = Role.Button,
+                    ) { showLivePanel = false },
             )
         }
         AnimatedVisibility(
@@ -1052,95 +966,474 @@ fun PlayerScreen(
     // 参考 yingshi 播放器：右侧竖排浮层。
     // 不用 DropdownMenu —— 它是独立 Popup 窗口，会被 PlayerView 的
     // SurfaceView 图层盖住（实测点不动也看不见）。
-    if (picker != null) {
-        val kind = picker
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.45f))
-                .clickable { picker = null },
+    // P8：整个面板拆成 BoxScope.PlayerPickerPanel（纯搬运）；
+    // ⚠️ `val kind = picker` 保留：`picker` 是委托属性（rememberSaveable），
+    // 编译器不会对它做智能转换，拆出去之后这里必须仍是**普通局部 val**。
+    val kind = picker
+    if (kind != null) {
+        PlayerPickerPanel(
+            kind = kind,
+            signals = signals,
+            selectedIndex = selectedIndex,
+            onSignalSelected = onSignalSelected,
+            onClose = { picker = null },
         )
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .fillMaxHeight()
-                .fillMaxWidth(0.36f)
-                .widthIn(max = 300.dp)
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.97f))
-                .padding(horizontal = Space.md, vertical = Space.md),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = if (kind == PickerKind.SOURCE) "播放源" else "播放线路",
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                )
-                Spacer(Modifier.weight(1f))
-                Box(
-                    modifier = Modifier
-                        // ⚠️ 图标只有 16dp，但**可点区域要 48dp**：
-                        // 直接 .size(28.dp) 的话触摸目标远低于无障碍下限，
-                        // 看球时单手点关闭很容易点不中。
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .clickable { picker = null },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Filled.Close,
-                        contentDescription = "关闭",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            Spacer(Modifier.height(Space.sm))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Spacer(Modifier.height(Space.xs))
-            if (kind == PickerKind.SOURCE) {
-                val currentProvider = signals.getOrNull(selectedIndex)?.provider
-                val providers = signals.map { it.provider }.distinct()
-                LazyColumn(Modifier.fillMaxSize()) {
-                    items(providers, key = { it.name }) { p ->
-                        PickerRow(
-                            label = p.displayName,
-                            sub = "${signals.count { it.provider == p }} 条线路",
-                            selected = p == currentProvider,
-                            onClick = {
-                                picker = null
-                                val idx = signals.indexOfFirst { it.provider == p }
-                                if (idx >= 0) onSignalSelected(idx)
-                            },
-                        )
-                    }
-                }
-            } else {
-                LazyColumn(Modifier.fillMaxSize()) {
-                    itemsIndexed(signals, key = { _, s -> s.id }) { index, s ->
-                        PickerRow(
-                            label = s.label,
-                            sub = "源站 ${s.provider.displayName}",
-                            selected = index == selectedIndex,
-                            onClick = {
-                                picker = null
-                                onSignalSelected(index)
-                            },
-                        )
-                    }
-                }
-            }
-        }
     }
     } // end Box
 }
 
 /** 选择面板类型 */
 private enum class PickerKind { SOURCE, LINE }
+
+/**
+ * 赛事信息卡（P8 拆出来的第一块：原 `PlayerScreen` 体内的 `// ---------- 赛事信息卡 ----------`）。
+ *
+ * 行为与拆分前逐字一致 —— 这块只依赖 `match` 与 `signals`、没有任何副作用，
+ * 是最安全的抽取对象。
+ */
+@Composable
+private fun PlayerMatchCard(match: Match, signals: List<StreamSource>) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(Space.lg)
+            .clip(RoundedCornerShape(Radius.card))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(Space.md),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TeamLogo(match.homeLogo, match.homeTeam, size = 44.dp)
+        Spacer(Modifier.width(Space.md))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "${match.homeTeam} VS ${match.awayTeam}",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = buildString {
+                    append(match.leagueLabel())
+                    append(" · ")
+                    append(match.hhmm())
+                    if (signals.isNotEmpty()) {
+                        append(" · 共 ${signals.size} 条信号")
+                    }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(Space.sm))
+        TeamLogo(match.awayLogo, match.awayTeam, size = 44.dp)
+    }
+}
+
+/** 信号切换区（P8 拆出来的第二块）：标题行 + 横向线路列表，行为逐字不变。 */
+@Composable
+private fun PlayerSignalStrip(
+    signals: List<StreamSource>,
+    selectedIndex: Int,
+    onSignalSelected: (Int) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.lg)
+            .padding(bottom = Space.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "信号切换",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(Space.sm))
+        Text(
+            text = "共 ${signals.size} 条线路",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = "当前 ${signals.getOrNull(selectedIndex)?.label ?: "-"}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+        )
+    }
+
+    // 线路可能多达 9 条：横向滚动、每条固定宽度，
+    // 不再用 weight(1f) 把标签挤成"线…"
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.lg)
+            .clip(RoundedCornerShape(Radius.card))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(Space.xs),
+        horizontalArrangement = Arrangement.spacedBy(Space.xs),
+    ) {
+        itemsIndexed(signals, key = { _, s -> s.id }) { index, source ->
+            val active = index == selectedIndex
+            Box(
+                modifier = Modifier
+                    .width(76.dp)
+                    .height(52.dp)
+                    .clip(RoundedCornerShape(Radius.btn))
+                    .then(
+                        if (active) Modifier.background(accentBrush())
+                        else Modifier.background(Color.Transparent),
+                    )
+                    .clickable(
+                        onClickLabel = "切换线路",
+                        role = Role.Button,
+                    ) { onSignalSelected(index) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = source.label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (active) Color.White
+                        else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = source.provider.displayName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (active) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 错误卡 + 疑似无信号卡（P8 拆出来的第三块）。
+ *
+ * ⚠️ 两张卡的优先级判据必须留在这里、并且保持逐字形状：
+ * `if (suspectHint && errorMessage == null)` ——
+ * `review/01-player.md:41`、`PlayerHealthWiringTest` 都锚在这个条件上
+ * （有确认错误时错误卡优先，两张卡不叠加；嗅探超时只是**推断**，绝不收窗/关任务）。
+ */
+@Composable
+private fun PlayerNoticeCards(errorMessage: String?, suspectHint: Boolean) {
+    // ---------- 故障切换 / 错误提示 ----------
+    if (errorMessage != null) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Space.lg)
+                .padding(top = Space.md)
+                .clip(RoundedCornerShape(Radius.card))
+                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f))
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f),
+                    RoundedCornerShape(Radius.card),
+                )
+                .padding(Space.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.tertiary,
+            )
+            Spacer(Modifier.width(Space.sm))
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+
+    // ---------- 疑似无信号（推断）提示 ----------
+    // ⚠️ 有意与错误卡分开（P0-1）：嗅探超时只是**推断** —— 既不能收小窗、
+    // 也不能关任务，但**必须让用户看见**。否则现象是"页面加载完、15 秒过去，
+    // 界面毫无反应"，用户只能干等（review/01-player.md:41 明确要求"用于显示提示"；
+    // 旧代码只实现了后半"停自动进小窗"，提示从未接线 = 审计 B2 的假安全感）。
+    // 有确认错误（errorMessage）时错误卡优先，两张卡不叠加。
+    if (suspectHint && errorMessage == null) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Space.lg)
+                .padding(top = Space.md)
+                .clip(RoundedCornerShape(Radius.card))
+                .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f))
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f),
+                    RoundedCornerShape(Radius.card),
+                )
+                .padding(Space.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.secondary,
+            )
+            Spacer(Modifier.width(Space.sm))
+            Text(
+                text = "疑似无信号，可换线路试试",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/**
+ * 死胡同恢复条要显示的内容（P1 真机回归修复，2026-11-01）。
+ *
+ * ⚠️ 文案的**唯一来源仍是 [WebPageDeadEndPolicy]**，由 `WebSurface`（探测到页面进入
+ * 错误态的那一处）产出后上抛给浮层区渲染 —— 两处都不许各自另写一份字面量。
+ * 之所以上抛而不是让浮层区自己调 policy：探测与判定都在 `WebSurface` 里，
+ * 文案跟着判定走才不会出现"探测改了、文案没跟着改"。
+ */
+private data class WebDeadEndBar(
+    val note: String,
+    val reloadLabel: String,
+    val switchLabel: String,
+)
+
+/**
+ * 死胡同恢复条（P1 真机回归修复：从 `WebSurface` 内部提到浮层区渲染）。
+ *
+ * ## 为什么必须挪出来（真机实测，2026-11-01 雷电模拟器 / Android 14）
+ *
+ * 源站播放器报错后恢复条画得出来，但两个按钮**点不动**：
+ * 连点三次（含 uiautomator 精确 bounds）没有任何状态变化、没有一行日志，
+ * 而同一时刻 `KEYCODE_BACK` 正常、CDP 里 URL 6 秒没变（导航根本没发生）。
+ *
+ * 根因是**声明位置**：恢复条原来画在 `WebSurface` 内部的 `Box` 里，
+ * 而手势层 `PlayerMediaGestures(modifier = Modifier.fillMaxSize())` 是视频区 `Box` 的
+ * **后置兄弟** —— 命中测试先落进手势层那棵 `fillMaxSize()` 的子树，
+ * 更早的兄弟子树（`WebSurface`，恢复条在其中）拿不到这次点击。
+ *
+ * ⚠️ 顺带纠正一条注释误解：手势层并**没有**"消费"点击 ——
+ * `PlayerMediaGestures` 不用 `detectTapGestures`，且在未锁定 + 非全屏时
+ * `PlayerLock.gestureConfig(...)` 给的是 `tapAction = PASS_THROUGH`（`onTap = null`）、
+ * `consumeTap = false`，它一个事件都不消费。**问题出在命中范围，不是消费**。
+ *
+ * @param bar 文案（来源见 [WebDeadEndBar]）
+ * @param onReload 用户点了「重新加载」
+ * @param onSwitchLine 用户点了「换线路」
+ */
+@Composable
+private fun BoxScope.PlayerDeadEndBar(
+    bar: WebDeadEndBar,
+    onReload: () -> Unit,
+    onSwitchLine: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .padding(horizontal = Space.md, vertical = Space.sm),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(Radius.card))
+                .background(Color.Black.copy(alpha = 0.86f))
+                .padding(horizontal = Space.md, vertical = Space.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            Text(
+                text = bar.note,
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White.copy(alpha = 0.9f),
+            )
+            // 两个胶囊的标签本身就是动作词（「重新加载」「换线路」），
+            // 所以 PlayerChip 的 actionLabel 用默认值（= label）即可。
+            PlayerChip(label = bar.reloadLabel, onClick = onReload)
+            PlayerChip(label = bar.switchLabel, onClick = onSwitchLine)
+        }
+    }
+}
+
+/**
+ * 「其他直播」区（P8 拆出来的第四块）。
+ *
+ * P7：过滤 + `take(4)` 的结果用 `remember` 缓存 —— 键是**数据来源**
+ * （`otherMatches` 与当前场次），所以播放状态每翻转一次不再重新分配一个列表。
+ */
+@Composable
+private fun PlayerOtherLiveSection(
+    otherMatches: List<Match>,
+    currentMatch: Match?,
+    onOtherMatchClick: (Match) -> Unit,
+) {
+    // 只列真正在直播的场次：otherMatches 是"全部赛事"，
+    // 直接拿来用会把未开赛/已结束的比赛摆进"其他直播"里
+    val others = remember(otherMatches, currentMatch) {
+        otherMatches
+            .filter { it.id != currentMatch?.id && it.status == MatchStatus.LIVE }
+            .take(4)
+    }
+    if (others.isNotEmpty()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Space.lg)
+                .padding(top = Space.xxl, bottom = Space.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "其他直播",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+            )
+            Spacer(Modifier.width(Space.sm))
+            Text(
+                text = "今日赛事",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+        Column(
+            modifier = Modifier.padding(horizontal = Space.lg),
+            verticalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            others.forEach { other ->
+                OtherMatchRow(match = other, onClick = { onOtherMatchClick(other) })
+            }
+        }
+    }
+}
+
+/**
+ * 播放源 / 播放线路选择面板（P8 拆出来的第五块）。
+ *
+ * ⚠️ 必须是 `BoxScope` 的**扩展函数**：面板本体靠
+ * `Modifier.align(Alignment.CenterEnd)` 定位，而 `align` 只在 BoxScope 里可见 ——
+ * 普通 private composable 拿不到它（且不能让调用方把它挪出那个 Box）。
+ *
+ * P7：`currentProvider` / `providers` 用 `remember` 缓存，面板打开期间不再每次重组重新分配。
+ */
+@Composable
+private fun BoxScope.PlayerPickerPanel(
+    kind: PickerKind,
+    signals: List<StreamSource>,
+    selectedIndex: Int,
+    onSignalSelected: (Int) -> Unit,
+    onClose: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .clickable(
+                onClickLabel = "关闭面板",
+                role = Role.Button,
+                onClick = onClose,
+            ),
+    )
+    Column(
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .fillMaxHeight()
+            .fillMaxWidth(0.36f)
+            .widthIn(max = 300.dp)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.97f))
+            .padding(horizontal = Space.md, vertical = Space.md),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = if (kind == PickerKind.SOURCE) "播放源" else "播放线路",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+            )
+            Spacer(Modifier.weight(1f))
+            Box(
+                modifier = Modifier
+                    // ⚠️ 图标只有 16dp，但**可点区域要 48dp**：
+                    // 直接 .size(28.dp) 的话触摸目标远低于无障碍下限，
+                    // 看球时单手点关闭很容易点不中。
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable(
+                        onClickLabel = "关闭",
+                        role = Role.Button,
+                        onClick = onClose,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "关闭",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(Space.sm))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(Space.xs))
+        // P7：派生值用 remember（键 = 数据来源），避免每次重组重新 map/distinct
+        val currentProvider = remember(signals, selectedIndex) {
+            signals.getOrNull(selectedIndex)?.provider
+        }
+        val providers = remember(signals) { signals.map { it.provider }.distinct() }
+        if (kind == PickerKind.SOURCE) {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(providers, key = { it.name }) { p ->
+                    PickerRow(
+                        label = p.displayName,
+                        sub = "${signals.count { it.provider == p }} 条线路",
+                        selected = p == currentProvider,
+                        onClick = {
+                            onClose()
+                            val idx = signals.indexOfFirst { it.provider == p }
+                            if (idx >= 0) onSignalSelected(idx)
+                        },
+                    )
+                }
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize()) {
+                itemsIndexed(signals, key = { _, s -> s.id }) { index, s ->
+                    PickerRow(
+                        label = s.label,
+                        sub = "源站 ${s.provider.displayName}",
+                        selected = index == selectedIndex,
+                        onClick = {
+                            onClose()
+                            onSignalSelected(index)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
 
 /** 选择面板的一行：标题 + 副标题 + 选中勾（选中行整行高亮） */
 @Composable
@@ -1159,7 +1452,11 @@ private fun PickerRow(
                 if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                 else Color.Transparent,
             )
-            .clickable(onClick = onClick)
+            .clickable(
+                onClickLabel = "切换线路",
+                role = Role.Button,
+                onClick = onClick,
+            )
             .padding(horizontal = Space.md, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1245,7 +1542,12 @@ private fun LiveNowPanel(
                     // 直接 .size(30.dp) 的话看球时单手点刷新很容易点不中。
                     .size(44.dp)
                     .clip(CircleShape)
-                    .clickable(enabled = !refreshing, onClick = onRefresh),
+                    .clickable(
+                        enabled = !refreshing,
+                        onClickLabel = "刷新同时在播列表",
+                        role = Role.Button,
+                        onClick = onRefresh,
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 // 旋转动画只在真正刷新时存在：
@@ -1283,7 +1585,11 @@ private fun LiveNowPanel(
                     // 同上：图标 16dp，可点区域 48dp
                     .size(48.dp)
                     .clip(CircleShape)
-                    .clickable(onClick = onClose),
+                    .clickable(
+                        onClickLabel = "关闭",
+                        role = Role.Button,
+                        onClick = onClose,
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -1329,7 +1635,11 @@ private fun LiveNowRow(match: Match, onClick: () -> Unit) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.card))
             .background(MaterialTheme.colorScheme.background)
-            .clickable(onClick = onClick)
+            .clickable(
+                onClickLabel = CardSemantics.ACTION_LABEL,
+                role = Role.Button,
+                onClick = onClick,
+            )
             .padding(Space.md),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1394,7 +1704,11 @@ private fun VideoControlButton(
     Box(
         modifier = modifier
             .size(48.dp)
-            .clickable(onClick = onClick),
+            .clickable(
+                onClickLabel = description,
+                role = Role.Button,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -1455,6 +1769,17 @@ private class VideoPlayerHandle {
         qualityLabel = VideoResolution.labelOf(width, height)
     }
 
+    /**
+     * 换线路时清掉画质标签（P9 完整版）。
+     *
+     * ⚠️ 播放器被复用后，`onVideoSizeChanged` 要等**新线路首帧**到达才会再报一次；
+     * 中间这段时间若继续显示旧线路的分辨率，界面就是在说谎。
+     * 所以换媒体项之前先清空，由新线的首帧重新填。
+     */
+    fun clearQuality() {
+        qualityLabel = null
+    }
+
     fun togglePlay() {
         val p = player ?: return
         if (p.isPlaying) p.pause() else p.play()
@@ -1477,7 +1802,11 @@ private fun PlayerIconButton(
     Box(
         modifier = Modifier
             .size(48.dp)
-            .clickable(onClick = onClick),
+            .clickable(
+                onClickLabel = description,
+                role = Role.Button,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -1503,7 +1832,19 @@ private fun PlayerIconButton(
  * 不用图标，读起来更快（"线路 2/3" 比一个列表图标直观）。
  */
 @Composable
-private fun PlayerChip(label: String, onClick: () -> Unit) {
+private fun PlayerChip(
+    label: String,
+    onClick: () -> Unit,
+    /**
+     * 读屏动作词（`Modifier.clickable(onClickLabel = …)`）。
+     *
+     * ⚠️ 默认用 [label]：多数胶囊的标签本身就是动作（如「重新加载」「换线路」），
+     * 但**名词式**的胶囊（「画面 FIT」「源 直播吧」「线路 2/3」「同时在播 3」）
+     * 必须由调用方给一句准确的动作词，否则 TalkBack 只会把名词重念一遍
+     * （review/03-ui.md P2-25 的同款口径：动作词要说明"双击会发生什么"）。
+     */
+    actionLabel: String = label,
+) {
     // ⚠️ 必须用 Box 包一层做居中，不能把 Modifier 直接挂在 Text 上：
     // `.heightIn(min = 40.dp)` 让胶囊至少 40dp 高，而 Text 按自身行高
     // 贴在容器顶部 —— 文字会明显偏上（实测：11sp 文字在 40dp 胶囊里
@@ -1513,7 +1854,11 @@ private fun PlayerChip(label: String, onClick: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(Radius.btn))
             .border(1.dp, Color.White.copy(alpha = 0.26f), RoundedCornerShape(Radius.btn))
-            .clickable(onClick = onClick)
+            .clickable(
+                onClickLabel = actionLabel,
+                role = Role.Button,
+                onClick = onClick,
+            )
             // ⚠️ 触控区要够：只有文字 + 6dp 上下内边距时整个胶囊才 ~25dp 高，
             // 远低于 48dp 的无障碍下限，看球时点"换线路"容易点不中。
             .heightIn(min = 40.dp)
@@ -1538,7 +1883,11 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.card))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
+            .clickable(
+                onClickLabel = CardSemantics.ACTION_LABEL,
+                role = Role.Button,
+                onClick = onClick,
+            )
             .padding(Space.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1592,8 +1941,19 @@ private fun OtherMatchRow(match: Match, onClick: () -> Unit) {
  * 数据源复用应用共享的 OkHttpClient：连接池与 DNS 缓存已由前面的解析请求预热，
  * 首帧明显更快，也避免 HttpURLConnection 在弱网下频繁超时。
  *
- * 调用方用 `key(streamUrl, referer)` 包住本组件：Referer 是烧在数据源工厂里的，
- * 换线路必须整体重建播放器，否则会出现"换了线路但 CDN 还拿旧 Referer -> 403"。
+ * ## P9 完整版：**播放器跨线路复用**（2026-11-01）
+ *
+ * 早先调用方用 `key(streamUrl, referer)` 包住本组件：Referer 烧在数据源工厂里，
+ * 换线路必须整体重建播放器，否则"换了线路、CDN 还拿旧 Referer → 403"。
+ * 现在两件事都变了：
+ *  - [RefererDataSourceFactory] 在**每次 `createDataSource()`** 时现查 Referer
+ *    （`rememberUpdatedState(referer)`），换线路不必重建；
+ *  - 换线只做**一次** `setMediaItem + prepare + playWhenReady`，判据与"一次性"
+ *    守卫都在 [LineSwitchPolicy]（纯函数，有单测）。
+ *
+ * 于是换线延迟与黑帧不再包含"重新初始化解码器/渲染器/缓冲"这段。
+ * ⚠️ 代价是**所有随线路变化的量都必须显式管理**：`reachedReady`（按 streamUrl remember）、
+ * 两个看门狗（按 streamUrl 重启）、监听器里的 streamUrl（读 rememberUpdatedState）。
  */
 @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 @Composable
@@ -1607,9 +1967,24 @@ private fun VideoSurface(
     val reportedRef = remember { mutableSetOf<String>() }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     val onErrorState = rememberUpdatedState(onError)
+    // ⚠️ 监听器只在工厂里注册**一次**（播放器复用），所以它必须读**当前**的地址：
+    // 直接捕获 streamUrl 的话，错误去重会一直拿第一条线路的地址去判重。
+    val currentStreamUrl = rememberUpdatedState(streamUrl)
+    // 数据源工厂同样只建一次，Referer 必须读当前值（P9 的核心）。
+    val currentReferer = rememberUpdatedState(referer)
+    // 已经**应用到播放器上**的媒体地址（换线"一次性"的守卫，判据见 LineSwitchPolicy）。
+    var appliedUrl by remember { mutableStateOf<String?>(null) }
     // 是否曾经进入过 READY：直播流正常也会周期性重缓冲（STATE_BUFFERING），
     // 只看"当前不是 READY"会把健康线路误判成卡死。
+    // ⚠️ 按 streamUrl remember：换线路是"重新开始"，必须回到"未就绪"。
     var reachedReady by remember(streamUrl) { mutableStateOf(false) }
+    // 单调时钟（P14）：卡死看门狗的采样时刻全部走它。
+    val clock = remember { PlayerClock.System }
+    // P3：音频模式轮询链的重投开关。
+    // "暂停态不重投"（与 AudioFocusPolicy 的注释一致）会带来一个新问题 ——
+    // 用户手动点播放之后没人把这条链接回来，于是这道"来电盖住通话"的
+    // 最后保险就永久失效了。播放监听（onIsPlayingChanged）负责重新接上。
+    val focusPollRearm = remember { FocusPollRearm() }
 
     // 手动音频焦点：媒体类抢焦点（抖音/B 站/别的播放器）不停播，来电才停。
     // 见 AudioFocusPolicy 的说明。
@@ -1688,25 +2063,54 @@ private fun VideoSurface(
             hasFocus = AudioFocusPolicy.isFocusGranted(result ?: -1)
         }
         acquire()
-        // 轮询兜底：见上方说明。只在"在播"时查。
+        // 轮询兜底：见上方说明。
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        // ⚠️ 必须自我重投：postDelayed 只跑一次，不重投的话
-        // 第一次之后这道保险就永远不生效了。
+        // ⚠️ 必须能自我重投：postDelayed 只跑一次，链断了这道保险就永久失效。
+        //
+        // P3（review/opt/player.md 第 3 条）：重投是**有条件**的，但暂停态照样重投 ——
+        // 因为"被焦点暂停"本身正是要靠轮询恢复的状态（我们不在焦点栈里、收不到 GAIN）。
+        // 同时补上对称的**恢复**分支：现查到已经离开通话模式、而播放是被焦点停的，
+        // 就重新申请焦点 + 恢复播放（判据复用 AudioFocusPolicy.shouldResumeOnFocusGain）。
         lateinit var poll: Runnable
         poll = Runnable {
             val player = playerView?.player
-            if (player != null &&
-                AudioFocusPolicy.shouldPauseForAudioMode(
-                    playing = player.playWhenReady,
-                    mode = am?.mode ?: android.media.AudioManager.MODE_NORMAL,
-                )
-            ) {
-                pausedByFocus = true
-                player.pause()
+            val mode = am?.mode ?: android.media.AudioManager.MODE_NORMAL
+            if (player != null) {
+                if (AudioFocusPolicy.shouldPauseForAudioMode(
+                        playing = player.playWhenReady,
+                        mode = mode,
+                    )
+                ) {
+                    pausedByFocus = true
+                    player.pause()
+                } else if (AudioFocusPolicy.shouldResumeForAudioMode(
+                        pausedByFocus = pausedByFocus,
+                        playing = player.playWhenReady,
+                        mode = mode,
+                    )
+                ) {
+                    pausedByFocus = false
+                    acquire()
+                    player.play()
+                } else if (player.playWhenReady) {
+                    // 已经在播、且当前不是通话模式：把"被焦点暂停"这层状态清掉。
+                    // 不清的话，用户随后手动暂停时恢复分支会误以为那是焦点造成的，
+                    // 替他继续播 —— 违反"不替用户继续播"这条既有语义。
+                    pausedByFocus = false
+                }
             }
-            handler.postDelayed(poll, FOCUS_MODE_POLL_INTERVAL_MS)
+            // 只在"播放中 / 被焦点暂停"时重投（暂停且不是被焦点停的 → 链自然停在
+            // 用户手动暂停这一态，不烧电）；重新起播由 onIsPlayingChanged 接回。
+            if (player != null && (player.playWhenReady || pausedByFocus)) {
+                handler.postDelayed(poll, FOCUS_MODE_POLL_INTERVAL_MS)
+            }
         }
         handler.postDelayed(poll, FOCUS_MODE_POLL_INTERVAL_MS)
+        // 轮询链的重投入口（P3）：真正起播时重新接上这条链（见 onIsPlayingChanged）
+        focusPollRearm.rearm = {
+            handler.removeCallbacks(poll)
+            handler.postDelayed(poll, FOCUS_MODE_POLL_INTERVAL_MS)
+        }
         // 回前台时补申请：被抖音抢走焦点后我们已不在栈里，
         // 不补申请就永远收不到后续事件（这里正是补回的那一次）
         val resumeObserver = LifecycleEventObserver { _, event ->
@@ -1727,6 +2131,8 @@ private fun VideoSurface(
         }
         focusLifecycleOwner.lifecycle.addObserver(resumeObserver)
         onDispose {
+            // 先摘开关再清回调：残留的起播回调不该再往已销毁的 effect 里投递
+            focusPollRearm.rearm = null
             handler.removeCallbacks(poll)
             focusLifecycleOwner.lifecycle.removeObserver(resumeObserver)
             am?.abandonAudioFocus(listener)
@@ -1773,7 +2179,12 @@ private fun VideoSurface(
     // （上一场 4:3、这一场 16:9 时，小窗会被拉成错误形状）。
     // 清零后 pipAspectRatio() 回退 16:9，等真实宽高到了再更新。
     LaunchedEffect(streamUrl) {
-        if (PipAspectReset.shouldResetOnMatchSwitch()) {
+        // P17（player.md 第 17 条）：判据不再是恒真函数，真判据是"上一次是否真的记过尺寸"。
+        // 先查再写：`setVideoSize(0, 0)` 在本来就 (0,0) 时是空操作，跳过它不影响任何可观察状态。
+        if (PipAspectReset.shouldResetOnMatchSwitch(
+                hasRecordedVideoSize = PipState.videoSize.value.width > 0,
+            )
+        ) {
             PipState.setVideoSize(0, 0)
         }
     }
@@ -1817,11 +2228,11 @@ private fun VideoSurface(
             delay(STALL_POLL_INTERVAL_MS)
             val player = playerView?.player ?: continue
             // 位置前进说明在播（有些播放器追帧时短暂停在 BUFFERING）
-            tracker.onProgress(player.currentPosition, System.nanoTime() / 1_000_000L)
+            tracker.onProgress(player.currentPosition, clock.nowMs())
             val shouldSwitch = tracker.onTick(
                 reachedReady = reachedReady,
                 playbackState = player.playbackState,
-                nowMs = System.nanoTime() / 1_000_000L,
+                nowMs = clock.nowMs(),
             )
             if (shouldSwitch && reportedRef.add(streamUrl)) {
                 onErrorState.value()
@@ -1829,15 +2240,47 @@ private fun VideoSurface(
         }
     }
 
+    // ---------- P9 完整版：换线路 → 换媒体项（**一次性**，不重建播放器） ----------
+    // 判据 [LineSwitchPolicy.decide]（纯函数 + 单测）：
+    //  - 已经应用过同一个地址 → Ignore（**重组不会重复 prepare** —— 这正是 P11 当年
+    //    删掉的那个"每次重组都 setMediaItem"失效模式，现在由判据显式挡住）；
+    //  - 新地址 → Apply，`playWhenReady` 沿用换线前一刻的播放意图：
+    //    在播 → 自动起播；用户按过暂停 → 不起播（不替用户做决定）。
+    //
+    // ⚠️ key 里带 `playerView`：工厂是"布局阶段"才跑、把 view 写进这个状态的，
+    // 所以首轮 effect 可能看到 null（直接返回），view 就绪后会再跑一次。
+    LaunchedEffect(streamUrl, playerView) {
+        val view = playerView ?: return@LaunchedEffect
+        val player = view.player ?: return@LaunchedEffect
+        when (
+            val action = LineSwitchPolicy.decide(
+                appliedUrl = appliedUrl,
+                newUrl = streamUrl,
+                playingIntent = player.playWhenReady,
+            )
+        ) {
+            LineSwitchPolicy.Action.Ignore -> Unit
+            is LineSwitchPolicy.Action.Apply -> {
+                appliedUrl = streamUrl
+                // 换线时先清掉上一线的画质标签：新线首帧到达前显示旧分辨率是错的
+                handle.clearQuality()
+                player.setMediaItem(MediaItem.fromUri(streamUrl))
+                player.prepare()
+                player.playWhenReady = action.playWhenReady
+            }
+        }
+    }
+
     AndroidView(
         factory = { ctx ->
-            val headers = buildMap {
-                referer?.takeIf { it.isNotBlank() }?.let { put("Referer", it) }
-                put("Accept", "*/*")
-            }
-            val dataSourceFactory = OkHttpDataSource.Factory(HttpClient.shared.client)
-                .setDefaultRequestProperties(headers)
-                .setUserAgent(HttpClient.USER_AGENT)
+            // ⚠️ P9 完整版：Referer 不再"烧"在 build 里，而是**每次 createDataSource()
+            // 时现查** —— 这是"换线路不重建播放器"能成立的前提。
+            // 用 rememberUpdatedState 而不是捕获 referer：工厂只跑一次，
+            // 捕获的话换线路后 CDN 仍会拿到第一条线路的 Referer。
+            val dataSourceFactory = RefererDataSourceFactory(
+                refererProvider = { currentReferer.value },
+                userAgent = HttpClient.USER_AGENT,
+            )
 
             val player = ExoPlayer.Builder(ctx)
                 .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
@@ -1878,6 +2321,10 @@ private fun VideoSurface(
                 // 自定义控制栏要读播放/缓冲状态
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     handle.isPlaying = isPlaying
+                    // P3：真正起播时把"音频模式轮询"这条链重新接上。
+                    // 暂停态不重投（省电），但用户手动点播放之后没人接回来 ——
+                    // 挂在这里，这道"来电盖住通话"的最后保险才不会永久失效。
+                    if (isPlaying) focusPollRearm.request()
                 }
 
                 // 上报视频宽高：画中画窗口按真实比例算，非 16:9 的源不用加黑边
@@ -1913,16 +2360,13 @@ private fun VideoSurface(
             }
         },
         update = { view ->
+            // P11（player.md 第 11 条）：删掉原来的 `setMediaItem` 分支。
+            // 组件被 `key(streamUrl, streamReferer)` 包住，同一 view 实例上 streamUrl 永不改变，
+            // 所以那个分支正常不可达；而一旦某个 m3u8 地址的 `Uri.toString()` 与原串不相等
+            // （百分号编码/转义），它会在**每次重组**（缓冲状态每秒翻转数次）都
+            // `setMediaItem + prepare`，表现为画面不断重缓冲。
+            // 死代码却带一个"每次重组都 prepare"的失效模式 —— 删掉比留着安全。
             view.resizeMode = aspectMode.resizeMode
-            val player = view.player
-            if (player != null) {
-                val current = player.currentMediaItem?.localConfiguration?.uri?.toString()
-                if (current != streamUrl) {
-                    player.setMediaItem(MediaItem.fromUri(streamUrl))
-                    player.prepare()
-                    player.playWhenReady = true
-                }
-            }
         },
         onRelease = { view ->
             handle.detach()
@@ -1972,30 +2416,80 @@ private fun WebSurface(
      * 判据见 [com.nbalive.app.ui.WebPageDeadEndPolicy]。
      */
     onPageDeadEnd: () -> Unit = {},
+    /**
+     * 恢复条**出现**的那一刻上报一次"疑似"（P18，复核修正版）。
+     *
+     * 为什么需要一条比 [onPageDeadEnd] 更早、又比 [onPlaybackSuspect] 更轻的回调：
+     * 恢复条 1.5 秒就出现，而 [onPageDeadEnd] 要等 9.5 秒；中间这 8 秒里
+     * `playbackSuspect` 仍是 false，用户此刻按 Home 会进一块点不动的坏小窗。
+     *
+     * ⚠️ **绝不能**把它接到 `MainViewModel.onPlaybackSuspect`：
+     * 那个入口在置标记之后紧接着 `advanceAfterNoSignal(...)`（`MainViewModel.kt:1242-1254`），
+     * 1.5 秒就换线会把恢复条与用户的 8 秒选择窗口一起抹掉。
+     * 上层需要的是一个**只置疑似标记、不换线**的入口。
+     */
+    onDeadEndSuspect: () -> Unit = {},
+    /**
+     * 死胡同恢复条的**显示内容**上报（null = 收起）。P1 真机回归修复。
+     *
+     * ⚠️ 为什么恢复条不在这里渲染：本组件是视频区 `Box` 的**早于手势层**的兄弟子树，
+     * 画在这里的按钮拿不到点击（命中测试先落进 `fillMaxSize()` 的手势层）。
+     * 所以这里只负责"该不该显示 + 文案"（文案唯一来源仍是
+     * [com.nbalive.app.ui.WebPageDeadEndPolicy]），渲染交回 `PlayerScreen` 的浮层区。
+     * 判据：`PlayerFixTest.恢复条必须在手势层之后渲染`。
+     */
+    onDeadEndBarChanged: (WebDeadEndBar?) -> Unit = {},
+    /**
+     * 「重新加载」请求（**计数**，不是布尔事件）。
+     *
+     * 浮层区的按钮只能表达"用户点了"，真正的导航逻辑（`targetUrl` / `reloadSeq` /
+     * `pageErrorAt`）只有本组件知道，所以用计数把请求传进来：
+     * 计数只增不减，重组合并时不会像布尔事件那样被吞掉
+     * （同一取舍见 `PipState.expandRequests`）。
+     */
+    reloadRequest: Int = 0,
 ) {
     val onStreamFoundState = rememberUpdatedState(onStreamFound)
     val onPlaybackDeadState = rememberUpdatedState(onPlaybackDead)
     val onPlaybackSuspectState = rememberUpdatedState(onPlaybackSuspect)
     val onPageDeadEndState = rememberUpdatedState(onPageDeadEnd)
+    val onDeadEndSuspectState = rememberUpdatedState(onDeadEndSuspect)
+    val onDeadEndBarChangedState = rememberUpdatedState(onDeadEndBarChanged)
     val lifecycleOwner = LocalLifecycleOwner.current
     var webView by remember { mutableStateOf<WebView?>(null) }
 
-    // 是否观察到过任何"媒体请求"（见 [PlaybackHealth.isMediaRequest]）。
-    // ⚠️ 必须是 AtomicBoolean：shouldInterceptRequest 在 WebView 后台线程回调，
-    // 写 Compose 的 mutableStateOf 会跨线程触碰快照系统。
-    val sawMediaRequest = remember(url) { java.util.concurrent.atomic.AtomicBoolean(false) }
+    // ---------- 嗅探状态（P4 / P5 / P10） ----------
+    // ⚠️ 计时一律用**单调时钟** `SystemClock.elapsedRealtime()`，用墙钟会被用户改系统时间/
+    // 跨时区搞坏（计时永远不到点或立刻到点）。这里展开写默认实现（等价于 `PlayerClock.System`），
+    // 让这条口径在**本组件体内**直接可读 —— WebSniffWatchdogTest 的
+    // "loadStartedAt 必须来自单调时钟" 锚的正是这里。
+    val clock = remember { PlayerClock { android.os.SystemClock.elapsedRealtime() } }
+    // 媒体请求记账（见过吗 / 最近一次什么时候）+ 加载起点 + 导航代次，全部收进 WebSniffState。
+    // 原来：`sawMediaRequest` 是只 set(true) 的 AtomicBoolean（P4）、
+    // `loadStartedAt` 只按 url remember（P5）—— 两者都不随导航复位，于是
+    // 「重新加载 / 退回原页」之后看门狗要么永久沉默、要么按旧基准提前判疑似。
+    // 线程约定与判据见 WebSniffState（它有 JVM 单测）。
+    val sniff = remember(url) { WebSniffState(clock) }
     // 页面是否已完成首次加载：嗅探计时必须在它**之后**才开始。
     // 否则计时从 loadUrl 那一刻起跑，源站播放页常有 2~3 跳重定向，
     // 光导航就吃掉十几秒，留给播放器的时间根本不够 —— 正常线路也会被判疑似。
-    var pageFinishedAt by remember(url) { mutableStateOf(0L) }
-    // 本次加载的起点（**单调时钟**，与 pageFinishedAt 同源）。
-    // ⚠️ 它是"页面永不 finish"那条兜底时限的基准：只按 pageFinishedAt 计时的看门狗
-    // 在那类页面上永远不触发 —— 用户看到的是永久黑屏且没有任何提示（已实测）。
-    val loadStartedAt = remember(url) { android.os.SystemClock.elapsedRealtime() }
+    //
+    // ⚠️ 它必须留在这里做 **Compose 快照状态**：`LaunchedEffect(url, pageFinishedAt, …)`
+    // 靠它变化立刻重跑那一轮采样（WebSniffState 里是普通字段，不会触发 effect 重启）。
+    var pageFinishedAt by remember(url) { mutableLongStateOf(0L) }
     // 被守卫拦下的跳转说明（04-P1-3/4）。源站广告把播放页导航走时，
     // 这条路径不报 ExoPlayer 错误、也不报 onReceivedError，界面必须自己说话，
     // 否则用户只看到一个动不了的广告页，以为 App 卡死。
     var blockedNavigation by remember(url) { mutableStateOf("") }
+
+    /**
+     * 每次"重新导航"（首次加载 / 回到原始壳页 / 退回原播放页）都必须先走这里：
+     * **P4 + P5 的唯一复位入口**（导航代次 +1、媒体请求记账清零、加载基准重置）。
+     */
+    fun beginNavigation() {
+        sniff.onNavigationStarted()
+        pageFinishedAt = 0L
+    }
 
     // ---------- 任务 D：跳过播放页壳，直接加载玩家页（2026-10-30「解析播放太慢」） ----------
     // 播放页壳（约 2KB）会先拉跨站 jquery 与 parser-blocking 的 t.js，实测 0.1~27 秒；
@@ -2006,24 +2500,39 @@ private fun WebSurface(
     //  - 拉不到 / 解析不出 → targetUrl 保持 url；
     //  - 直接加载 paps 后 6 秒内一个媒体请求都没有 → 再退回原播放页（源站改版时的兜底）。
     var targetUrl by remember(url) { mutableStateOf(url) }
-    var directPlayerTried by remember(url) { mutableStateOf(false) }
-    LaunchedEffect(url) {
-        if (directPlayerTried) return@LaunchedEffect
-        directPlayerTried = true
-        val html = kotlinx.coroutines.withTimeoutOrNull(2_000L) {
+    // 导航代次（H6）：原来用 `directPlayerTried` 把这条捷径钉在"每个 url 只跑一次"上，
+    // 于是「重新加载」只能 `reload()` 当前地址 —— 捷径路径下那正是**同一个旧签名**。
+    // 现在"重新跑一次捷径"变成显式代次（进 effect 的 key）：点重新加载 → 代次 +1。
+    var reloadSeq by remember(url) { mutableIntStateOf(0) }
+    // 导航标识 = 代次 + 目标地址。
+    // ⚠️ 只比较地址会让"地址没变但要求重新加载"落空（旧实现在捷径路径下就是这样），
+    // 带上代次之后，即使 targetUrl 与当前 tag 相同也会真的 `loadUrl` 一次。
+    val navigationTag = "$reloadSeq|$targetUrl"
+    LaunchedEffect(url, reloadSeq) {
+        // ⚠️ 首轮与「重新加载」走**同一条路**：拉壳页 → 算新的 paps → 让 WebView 直接加载它。
+        // 解析失败时 targetUrl 保持 url（回退语义与改动前一致，只是现在每次都显式写一遍）。
+        val html = kotlinx.coroutines.withTimeoutOrNull(PlayerPageResolver.SHELL_FETCH_TIMEOUT_MS) {
             runCatching {
                 HttpClient.shared.get(url, HttpClient.shared.refererOf(url), fastFail = true)
             }.getOrNull()
         }
         val direct = html?.let { PlayerPageResolver.resolvePlayerUrl(it, url) }
-        if (direct != null) targetUrl = direct
+        // 壳页 → paps 也是一次新导航：嗅探状态与计时基准都要复位，
+        // 否则壳页那一小段里观察到的媒体请求会被算到新页面上。
+        beginNavigation()
+        targetUrl = direct ?: url
     }
     // 兜底：直接加载玩家页后迟迟没有任何媒体请求 → 可能源站改版/需要壳页里的额外脚本，
     // 退回原播放页重来一次（只退一次，避免来回跳）。
     LaunchedEffect(targetUrl) {
         if (targetUrl == url) return@LaunchedEffect
         delay(6_000)
-        if (!sawMediaRequest.get() && pageFinishedAt > 0L) targetUrl = url
+        if (!sniff.sawMediaRequest() && pageFinishedAt > 0L) {
+            // 退回原播放页同样是一次导航：不复位的话，刚加载的原页会按 paps 页的
+            // finish 时刻计时（P5 —— 只等几秒就被判疑似）。
+            beginNavigation()
+            targetUrl = url
+        }
     }
 
     // 源站页面可能一片黑且永远不出流（比赛已结束、播放器 JS 没跑起来）：
@@ -2053,10 +2562,10 @@ private fun WebSurface(
     LaunchedEffect(url, pageFinishedAt, suppressHint) {
         while (true) {
             val reported = WebSniffWatchdog.shouldReport(
-                loadStartedAt = loadStartedAt,
+                loadStartedAt = sniff.loadStartedAtMs(),
                 pageFinishedAt = pageFinishedAt,
-                nowMs = android.os.SystemClock.elapsedRealtime(),
-                sawMediaRequest = sawMediaRequest.get(),
+                nowMs = clock.nowMs(),
+                sawMediaRequest = sniff.sawMediaRequest(),
             )
             if (reported) {
                 // ⚠️ suppressHint 只抑制**用户可见的提示**，不抑制判定与上报：
@@ -2081,23 +2590,44 @@ private fun WebSurface(
     // 这是唯一能知道页面进入错误态的办法。
     var pageDeadEnd by remember(url) { mutableStateOf(false) }
     // 首次探测到错误的时刻（单调时钟）；0 = 还没探测到
-    var pageErrorAt by remember(url) { mutableStateOf(0L) }
+    var pageErrorAt by remember(url) { mutableLongStateOf(0L) }
+    // 连续「干净」的探测轮数：P12 的退避输入（探到错误立刻归零）
+    var cleanProbes by remember(url) { mutableIntStateOf(0) }
     LaunchedEffect(url, targetUrl) {
+        // 导航变化 → 这条循环重启：与**上一个**页面绑定的出口状态先清零（P4/P5 的同一入口）。
+        // 不清的话，上一个页面留下的错误时刻会让新页面刚打开就顶着恢复条。
+        pageErrorAt = 0L
+        pageDeadEnd = false
+        cleanProbes = 0
         while (true) {
             val view = webView
             if (view != null) {
                 view.evaluateJavascript(WebErrorProbeScript.HAS_ERROR) { raw ->
                     if (WebErrorProbeScript.detectsError(raw)) {
-                        if (pageErrorAt == 0L) pageErrorAt = android.os.SystemClock.elapsedRealtime()
+                        cleanProbes = 0
+                        if (pageErrorAt == 0L) pageErrorAt = clock.nowMs()
                     } else if (pageErrorAt != 0L) {
                         // 页面自己恢复了（源站偶尔会重连成功）：把出口收掉，
                         // 别让用户对着一条"其实已经好了"的提示。
                         pageErrorAt = 0L
                         pageDeadEnd = false
+                    } else {
+                        cleanProbes++
                     }
                 }
             }
-            delay(WebPageDeadEndPolicy.PROBE_INTERVAL_MS)
+            // P12（player.md 第 12 条）：原来是无条件 1Hz —— 整个网页播放期间每秒一次
+            // JSBridge 往返（页面内还要遍历同源 iframe 并取 getComputedStyle），
+            // 与同样 1Hz 的嗅探看门狗叠加成 2Hz。现在首轮密集、页面稳定后 / 已出流后退避。
+            delay(
+                WebPageDeadEndPolicy.probeIntervalMs(
+                    consecutiveClean = cleanProbes,
+                    hasStream = PlaybackHealth.hasStreamNow(
+                        recentMediaRequestAtMs = sniff.lastMediaRequestAtMs(),
+                        nowMs = clock.nowMs(),
+                    ),
+                ),
+            )
         }
     }
     // 判据唯一来源是 WebPageDeadEndPolicy（有单测）；这里只采样 + 执行。
@@ -2105,8 +2635,16 @@ private fun WebSurface(
     LaunchedEffect(url, pageErrorAt) {
         if (pageErrorAt == 0L) return@LaunchedEffect
         while (true) {
-            val elapsed = android.os.SystemClock.elapsedRealtime() - pageErrorAt
-            val hasStream = false // 有流时本组件已被 VideoSurface 替换、协程自动取消
+            val elapsed = clock.nowMs() - pageErrorAt
+            // P2（复核修正版）：`hasStream` 不再是写死的常量，而是"**现在**是否真的在出流"——
+            // 最近 2 秒内还有新的媒体请求才算（判据 PlaybackHealth.hasStreamNow）。
+            // ⚠️ 不能传 `sniff.sawMediaRequest()`：那个标志一旦为 true 就永不回 false，
+            // 而本功能唯一的目标场景恰恰是"页面发过媒体请求、只是那条 404"——
+            // 接上它会把这道出口永久关掉（review/opt/verification.md 第 2 节）。
+            val hasStream = PlaybackHealth.hasStreamNow(
+                recentMediaRequestAtMs = sniff.lastMediaRequestAtMs(),
+                nowMs = clock.nowMs(),
+            )
             val detected = pageErrorAt > 0L
             if (WebPageDeadEndPolicy.shouldOffer(
                     hasStream = hasStream,
@@ -2114,7 +2652,16 @@ private fun WebSurface(
                     sinceDetectedMs = elapsed,
                 )
             ) {
-                pageDeadEnd = true
+                // P18（复核修正版）：恢复条一出现就**同步**上报"疑似"，上层据此停掉
+                // 「按 Home 自动进小窗」。onPageDeadEnd 要等到 9.5 秒，中间这 8 秒里
+                // playbackSuspect 仍是 false —— 用户此刻按 Home 会进一块点不动的坏小窗。
+                // ⚠️ 必须走 onDeadEndSuspect（只置标记、不换线）：onPlaybackSuspect 在
+                // MainViewModel 里紧跟着 advanceAfterNoSignal，1.5 秒就换线会把恢复条
+                // 与用户的 8 秒选择窗口一起抹掉。
+                if (WebPageDeadEndPolicy.shouldEscalateSuspectOnOffer(pageDeadEnd)) {
+                    pageDeadEnd = true
+                    onDeadEndSuspectState.value()
+                }
             }
             if (WebPageDeadEndPolicy.shouldAutoAdvance(
                     hasStream = hasStream,
@@ -2214,8 +2761,9 @@ private fun WebSurface(
                         ): android.webkit.WebResourceResponse? {
                             val u = request?.url?.toString().orEmpty()
                             // ⚠️ 本回调在**后台线程**执行，写 Compose 状态会踩线程，
-                            // 所以"看到过媒体请求"用 AtomicBoolean 记，判定处再读。
-                            if (PlaybackHealth.isMediaRequest(u)) sawMediaRequest.set(true)
+                            // 所以媒体请求的记账放在 WebSniffState 里（原子类型，方法自己取时钟），
+                            // 判定处再读 —— 见 WebSniffState 的线程约定。
+                            if (PlaybackHealth.isMediaRequest(u)) sniff.markMediaRequest()
                             if (PlaybackHealth.isPlaylistRequest(u)) {
                                 val ref = request?.requestHeaders?.entries
                                     ?.firstOrNull { it.key.equals("Referer", true) }?.value
@@ -2265,7 +2813,7 @@ private fun WebSurface(
                          */
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
-                            pageFinishedAt = android.os.SystemClock.elapsedRealtime()
+                            pageFinishedAt = clock.nowMs()
                         }
                     }
                     webChromeClient = object : WebChromeClient() {
@@ -2292,15 +2840,17 @@ private fun WebSurface(
                         }
                     }
                     loadUrl(targetUrl)
-                    tag = targetUrl
+                    // ⚠️ tag 用 navigationTag（代次 + 地址）而不是裸地址：见它的 KDoc ——
+                    // 地址没变但要求"重新加载"时（H6），裸地址比较会让 loadUrl 落空。
+                    tag = navigationTag
                     webView = this
                 }
             },
             update = { view ->
                 // 注意不能比较 view.url：页面会自行跳转（sm.html -> 内层播放页），
-                // 那样每次重组都会重新 loadUrl，把正在播的流打断。用 tag 记住请求的 url。
-                if (view.tag != targetUrl) {
-                    view.tag = targetUrl
+                // 那样每次重组都会重新 loadUrl，把正在播的流打断。用 tag 记住"我们请求的导航"。
+                if (view.tag != navigationTag) {
+                    view.tag = navigationTag
                     view.loadUrl(targetUrl)
                 }
             },
@@ -2327,7 +2877,10 @@ private fun WebSurface(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.55f))
-                    .clickable { noSignal = false },
+                    .clickable(
+                        onClickLabel = "关闭提示",
+                        role = Role.Button,
+                    ) { noSignal = false },
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -2359,7 +2912,10 @@ private fun WebSurface(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.55f))
-                    .clickable { blockedNavigation = "" },
+                    .clickable(
+                        onClickLabel = "关闭提示",
+                        role = Role.Button,
+                    ) { blockedNavigation = "" },
                 contentAlignment = Alignment.Center,
             ) {
                 Column(
@@ -2390,56 +2946,117 @@ private fun WebSurface(
             }
         }
 
-        if (pageDeadEnd) {
-            // 源站播放器自己报了错，而它那个「刷新」是点不动的
-            // （xgplayer 的 retry() 只是重赋同一个已失效的地址）。
-            // 这里给**我们自己的**出口：重新加载页面（换一份新签名）或直接换线路。
-            //
-            // ⚠️ 不做全屏遮罩：源站画面可能还有残留，而且用户要能看见自己点的是什么。
-            // 用底部一条实色恢复条，位置与我们的控制栏错开（控制栏在它上面）。
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.md, vertical = Space.sm),
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(Radius.card))
-                        .background(Color.Black.copy(alpha = 0.86f))
-                        .padding(horizontal = Space.md, vertical = Space.sm),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Space.sm),
-                ) {
-                    Text(
-                        text = WebPageDeadEndPolicy.note(),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.9f),
+        // ---------- 死胡同恢复条：只上报"该不该显示 + 文案"，渲染交给浮层区 ----------
+        // ⚠️ P1 真机回归修复（2026-11-01 雷电模拟器实测）：
+        // 恢复条原来就画在这个位置，而本组件是视频区 `Box` 中**早于手势层**的兄弟子树 ——
+        // 命中测试先落进 `fillMaxSize()` 的手势层那棵子树，于是
+        // 「重新加载 / 换线路」两个按钮**点不动**：连点三次没有任何状态变化、
+        // 没有一行日志，而同一时刻 `KEYCODE_BACK` 正常、CDP 里 URL 6 秒都没变。
+        // 现在渲染挪到 `PlayerScreen` 的浮层区（`PlayerDeadEndBar`，声明在手势层之后），
+        // 与顶栏/底栏同级 —— 那才是"点得动"的那一层。
+        //
+        // ⚠️ 文案的唯一来源仍是 [com.nbalive.app.ui.WebPageDeadEndPolicy]：
+        // 探测与判定都在本组件里，文案跟着判定走，浮层区只渲染、不另写字面量
+        //（既有 `WebPageDeadEndWiringTest` 的锚点就在 `fun WebSurface(` 体内）。
+        LaunchedEffect(pageDeadEnd) {
+            // 真机回归的可观测性（2026-11-01）：这条路径原来一行日志都没有，
+            // 按钮点不动时无法区分"没点到"与"点了没生效"（两者的排查方向完全相反）。
+            debugLog("WebSurface", "dead-end bar -> ${if (pageDeadEnd) "show" else "hide"}")
+            onDeadEndBarChangedState.value(
+                if (pageDeadEnd) {
+                    WebDeadEndBar(
+                        note = WebPageDeadEndPolicy.note(),
+                        reloadLabel = WebPageDeadEndPolicy.reloadLabel(),
+                        switchLabel = WebPageDeadEndPolicy.switchLabel(),
                     )
-                    PlayerChip(
-                        label = WebPageDeadEndPolicy.reloadLabel(),
-                        onClick = {
-                            pageDeadEnd = false
-                            pageErrorAt = 0L
-                            // 重新加载原播放页：壳页会给出**新的** encodedStr，
-                            // 这是唯一能拿到新签名地址的办法。
-                            webView?.reload()
-                        },
-                    )
-                    PlayerChip(
-                        label = WebPageDeadEndPolicy.switchLabel(),
-                        onClick = {
-                            pageDeadEnd = false
-                            onPageDeadEndState.value()
-                        },
-                    )
-                }
-            }
+                } else {
+                    // 页面自己恢复了 / 用户已经处理过 / 换线路了：把恢复条收掉
+                    null
+                },
+            )
+        }
+
+        // 「重新加载」的**计数式请求**：按钮现在住在浮层区，而真正的导航逻辑
+        // （targetUrl / reloadSeq / pageErrorAt）只有本组件知道，所以用计数把请求传进来
+        //（布尔事件会在重组合并时被吞掉；同一取舍见 `PipState.expandRequests`）。
+        //
+        // ⚠️ H6（player.md 第 1 条）：**不能** `webView.reload()` ——
+        // 走 PlayerPageResolver 捷径时当前页就是 `paps.html?id=<旧 encodedStr>`，
+        // reload 只会用同一个 encodedStr 重发一次请求，解出来还是那条死地址。
+        // 回到**原始壳页**重新解析（并让捷径重跑一次）才拿得到新的 encodedStr。
+        // 判据抽在 WebPageDeadEndPolicy.targetOnReload（有单测）。
+        LaunchedEffect(reloadRequest) {
+            if (reloadRequest <= 0) return@LaunchedEffect
+            // 同上：这条路径原来没有任何日志，真机上"点了没反应"时无法定位。
+            // URL 走 redactUrl：签名（encodedStr / auth_key）不进 logcat，只留 host+path 便于定位。
+            debugLog("WebSurface", "reload requested #$reloadRequest from ${redactUrl(targetUrl)}")
+            pageDeadEnd = false
+            pageErrorAt = 0L
+            targetUrl = WebPageDeadEndPolicy.targetOnReload(url, targetUrl)
+            reloadSeq++
+            beginNavigation()
         }
     }
 }
 
+
+/**
+ * 音频模式轮询链的"重投开关"（P3，`player.md` 第 3 条）。
+ *
+ * ## 为什么要有它
+ *
+ * 轮询改成"只在播放中重投"之后（与 `AudioFocusPolicy` 的注释一致），
+ * 链会停在"用户手动暂停"那一态。而用户随后点播放时**没有任何生命周期事件**，
+ * 于是这条"来电盖住通话"的最后保险再也不跑了 —— 修好一处又漏一处。
+ * 播放监听（`onIsPlayingChanged`）通过这个开关把链重新接上。
+ *
+ * ## 为什么是普通对象而不是 Compose 快照状态
+ *
+ * 它只是两段 effect/监听器之间的一根线，写它不该引起任何重组
+ * （播放/暂停每翻转一次就重组整页是没必要的）。
+ */
+private class FocusPollRearm {
+    var rearm: (() -> Unit)? = null
+
+    fun request() {
+        rearm?.invoke()
+    }
+}
+
+/**
+ * 每次 `createDataSource()` 时**现查** Referer 的数据源工厂（P9 的安全一半）。
+ *
+ * ## 为什么需要它
+ *
+ * `OkHttpDataSource.Factory.setDefaultRequestProperties(headers)` 是在 **build 期**
+ * 固定请求头的，所以 `VideoSurface` 只能把 Referer 提前算好、再用
+ * `key(streamUrl, streamReferer)` 在换线路时把整个 ExoPlayer 重建一遍
+ * （解码器/渲染器/缓冲全部重来，换线延迟与黑帧都比"换 MediaItem"长）。
+ *
+ * 这个包装把"请求头从哪来"变成**每次创建数据源时才求值**的提供者 ——
+ * 完整版（不重建播放器 + Referer 每请求可变）可以直接复用它。
+ *
+ * ⚠️ 本轮**只落地这一半**：`key(streamUrl, streamReferer)` 原样保留，
+ * 因此当前行为与改动前逐字等价（转发路径与请求头集合完全相同），
+ * 不在最贵的播放链路上引入未经验证的生命周期改动。
+ */
+@androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+private class RefererDataSourceFactory(
+    private val refererProvider: () -> String?,
+    private val userAgent: String,
+) : DataSource.Factory {
+
+    override fun createDataSource(): DataSource {
+        val headers = buildMap {
+            refererProvider()?.takeIf { it.isNotBlank() }?.let { put("Referer", it) }
+            put("Accept", "*/*")
+        }
+        return OkHttpDataSource.Factory(HttpClient.shared.client)
+            .setDefaultRequestProperties(headers)
+            .setUserAgent(userAgent)
+            .createDataSource()
+    }
+}
 
 /**
  * 首帧看门狗：直连线路多久没进入 READY 就判"卡死"并触发故障切换。

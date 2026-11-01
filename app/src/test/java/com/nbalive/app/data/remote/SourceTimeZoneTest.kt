@@ -19,7 +19,7 @@ import org.junit.Test
  * 但解析侧一直在用 `ZoneId.systemDefault()`：
  *  - `JrkanParser.parseDateTime` / `parseStatus`
  *  - `JrsParser` 的日期与 HH:mm 合成
- *  - `MatchRepository.normalizeKey`（跨源合并键）
+ *  - `MatchMerger.normalizeKey`（跨源合并键；D10 从 `MatchRepository` 抽到合并器）
  *
  * 设备时区设成 UTC-5 时，同一份源站数据会被解释成完全不同的时刻 ——
  * 「直播中」判定整体偏移 13 小时，跨源合并键也对不上（同一场变成两张卡）。

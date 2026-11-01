@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -76,6 +77,44 @@ class RepoConfigDisciplineTest {
                 stale.joinToString("\n") { it.value } +
                 "\n改完声明必须跑 `gradle dependencies --write-locks` 重新生成。",
             stale.isEmpty(),
+        )
+    }
+
+    /**
+     * review/optimization-review.md **B8**：依赖声明与 lockfile 的一致性判据
+     * 此前只**点名**了一个 artifact（`kotlinx-coroutines-test`），
+     * 换成 `okio`/`jsoup`/`media3` 重演同款漂移（声明 1.8.1、锁 1.9.0）不会被发现。
+     *
+     * 这里改成**通用比对**：`app/build.gradle.kts` 里每一个带显式版本号的依赖声明
+     * （任意配置：`implementation/platform/debugImplementation/coreLibraryDesugaring/testImplementation`…），
+     * 都必须在 `app/gradle.lockfile` 里以**同一版本**出现。
+     *
+     * ⚠️ 不含版本号的声明（`implementation("androidx.compose.ui:ui")` 这类由 BOM 管的）
+     * 跳过 —— 它们的版本由 BOM 决定，判据在 BOM 那一行上。
+     * 一个都不匹配时 `error()`（判据退化成"零违规的空扫"比漂移更难发现）。
+     */
+    @Test
+    fun `每一条带版本号的依赖声明都必须按同版本进 lockfile`() {
+        val buildScript = GuardSourceScan.stripComments(repoFileOrFail("app/build.gradle.kts").readText())
+        val lockfile = repoFileOrFail("app/gradle.lockfile").readText()
+
+        // 形如 implementation("group:artifact:1.2.3")
+        val declared = Regex("""\w+\s*\(\s*"([\w.\-]+):([\w.\-]+):([\w.\-]+)"\s*\)""")
+            .findAll(buildScript)
+            .map { Triple(it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
+            .toList()
+        assertTrue(
+            "一条带版本号的依赖声明都没解析出来（判据退化成空扫）：" +
+                "build.gradle.kts 的形状变了，请更新这条正则 —— 空扫全绿是最危险的形态",
+            declared.size >= 8,
+        )
+
+        val missing = declared.filterNot { (g, a, v) -> lockfile.contains("$g:$a:$v") }
+        assertTrue(
+            "以下依赖声明在 lockfile 里找不到**同版本**条目（声明与锁定不一致，构建实际用的是锁定版本）：\n" +
+                missing.joinToString("\n") { "  ${it.first}:${it.second}:${it.third}" } +
+                "\n改完声明必须跑 `gradle dependencies --write-locks` 重新生成 lockfile。",
+            missing.isEmpty(),
         )
     }
 

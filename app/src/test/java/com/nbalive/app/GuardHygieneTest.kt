@@ -144,6 +144,43 @@ class GuardHygieneTest {
         )
     }
 
+    /**
+     * B13 的原样字符串模板能力（review/optimization-review.md B13）。
+     *
+     * `stripNonCode` 对 `"""…"""` 的**内容**按字符串剔掉，但其中的 `${…}` 是**代码**。
+     * 早期实现把整段原样字符串一起剔掉，于是"写在模板里的调用"被数成 0：
+     * 正向守卫（必须有调用点）假红、反向守卫（不许出现 X）假绿 ——
+     * 而本仓的 JS 注入脚本（`WebErrorProbeScript` / `WebMediaPauseScript`）就长在
+     * `"""…${…}…"""` 里，这条能力一退回去，那批守卫会静默失效。
+     *
+     * 三个样本分别钉住：
+     *  1. 原样字符串模板里的 `a.b(` **必须**被数到（刚修好的能力）；
+     *  2. 普通字符串模板里的同理（同一实现的两条分支，别只修一半）；
+     *  3. 模板**之外**的字符串内容仍然要被剔掉（能力不许把剔除口子开太大）。
+     */
+    @Test
+    fun `原样字符串里的模板插值算代码 其中的调用必须被数到`() {
+        val inRawString = "val s = \"\"\"${'$'}{a.b()}\"\"\""
+        assertTrue(
+            "原样字符串里的 ${'$'}{…} 是**代码**：写在模板里的调用必须被数到 1。" +
+                "否则「必须有调用点」的守卫假红、「不许出现 X」的守卫假绿（B13）。\n" +
+                "实际剔非代码后：${GuardSourceScan.stripNonCode(inRawString)}",
+            GuardSourceScan.callSites(inRawString, "a.b") == 1,
+        )
+        val inPlainString = "val s = \"${'$'}{a.b()}\""
+        assertTrue(
+            "普通字符串的模板插值同样必须算代码（同一实现的两条分支，别只修一半）：" +
+                "${GuardSourceScan.stripNonCode(inPlainString)}",
+            GuardSourceScan.callSites(inPlainString, "a.b") == 1,
+        )
+        val stringOnly = "val s = \"\"\"a.b() 只在字符串里\"\"\""
+        assertTrue(
+            "模板**之外**的字符串内容必须仍然被剔除，否则「字符串里写一句」又能骗过守卫：" +
+                "${GuardSourceScan.stripNonCode(stringOnly)}",
+            GuardSourceScan.callSites(stringOnly, "a.b") == 0,
+        )
+    }
+
     // ---------------------------------------------------------------
 
     /** 违反纪律的行号（1 起）。输入是**已剔除注释与字符串**的代码。 */

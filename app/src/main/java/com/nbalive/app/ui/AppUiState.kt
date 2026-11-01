@@ -28,7 +28,6 @@ import com.nbalive.app.data.model.Provider
  * 画中画接线和播放路由里用得到，所以收集发生在 [RouteHost] 与 [AppTopBar] 内部。
  */
 internal data class AppUiState(
-    val route: Route,
     val nav: NavState,
     val darkPref: Boolean?,
     val aspectMode: AspectMode,
@@ -40,18 +39,28 @@ internal data class AppUiState(
      * 判据（至少留一个）仍只由 [SourceTogglePolicy] 一处决定。
      */
     val enabledProviders: Set<Provider>,
-)
+) {
+    /**
+     * 当前页面（U18）。
+     *
+     * ⚠️ **派生值，不再单独收集**：`route` 本来就是 `nav.route` 的同步镜像
+     *（`MainViewModel` 的 KDoc 自己写了"唯一写入口 setNav 同时更新两者"），
+     * 旧实现让根作用域同时订阅 `nav` 与 `route` 两条 flow ——
+     * 同一事实两次订阅、两个失效来源。
+     * 现在只订 `nav`，`route` 从它派生；对外 API（`ui.route`）不变。
+     */
+    val route: Route get() = nav.route
+}
 
 /** 收集根节点需要的状态；调用点在 `NbaLiveApp` 的第一行。 */
 @Composable
 internal fun rememberAppUiState(viewModel: MainViewModel): AppUiState {
-    val route by viewModel.route.collectAsStateWithLifecycle()
+    // ⚠️ U18：**不**收 `viewModel.route`（它是 nav.route 的镜像，同一事实订阅两次）。
     val nav by viewModel.nav.collectAsStateWithLifecycle()
     val darkPref by viewModel.darkPref.collectAsStateWithLifecycle()
     val aspectMode by viewModel.aspectMode.collectAsStateWithLifecycle()
     val enabledProviders by viewModel.enabledProviders.collectAsStateWithLifecycle()
     return AppUiState(
-        route = route,
         nav = nav,
         darkPref = darkPref,
         aspectMode = aspectMode,

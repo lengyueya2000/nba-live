@@ -35,10 +35,28 @@ object AppPrefs {
      * 平台层注入 `applicationContext`（**唯一**需要 Context 的地方）并立刻读一次。
      *
      * 存储文件的键名与 .xml 文件名保持不变，老用户的设置不会丢。
+     *
+     * ⚠️ U8：`attach` = [attachStore] + [init]。**想要不阻塞主线程就用这两步分开调**：
+     * `attachStore` 只登记（`getSharedPreferences` 会自己异步开始解析 XML，不读盘），
+     * 真正的首次数据访问（`contains`）放到后台线程 —— 见 `PrefsStore.kt` 的 `PrefsPreload`。
      */
     fun attach(context: Context) {
-        store = context.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+        attachStore(context)
         init()
+    }
+
+    /**
+     * **只**注入 `applicationContext`，不读盘（U8）。
+     *
+     * ⚠️ `getSharedPreferences` 本身不阻塞：它只登记文件并**异步**起一个加载线程；
+     * 阻塞发生在**第一次数据访问**（`contains`/`getBoolean` → `awaitLoadedLocked`）。
+     * 所以"注入"与"读一次"必须能分开，后台预热点才有立足处。
+     *
+     * ⚠️ 未 attach 时 `sp()` 仍然直接 `error()`（纪律不变）：本方法只是把
+     * "注入"这一步提前，不会让偏好读写变成静默空操作。
+     */
+    fun attachStore(context: Context) {
+        store = context.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
     }
 
     fun init() {

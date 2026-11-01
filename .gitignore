@@ -39,5 +39,13 @@ node_modules/
 design/app-run/
 build-shots/
 
+# 设计稿的渲染产物与中间切图（与上面 design/app-run/ 同性质）
+# review/optimization-review.md B17：这几条此前**没有被忽略** ——
+# `design/cinema/out`、`design/minimal/out`、`design/minimal/tmp`、`design/sportcard/out`
+# 共 54 个文件 / 7.12 MB 二进制截图进了库，与"截图不入库"的声明自相矛盾。
+# 已入库的那批已用 `git rm --cached` 移出索引（历史里的 blob 仍在，故仓库体积不会因此变小）。
+design/*/out/
+design/minimal/tmp/
+
 # 调查期抓取的源站页面快照（仅供本地定位用，不入库）
 .forensics/

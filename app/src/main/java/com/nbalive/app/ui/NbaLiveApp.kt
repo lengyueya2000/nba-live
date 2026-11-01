@@ -373,6 +373,11 @@ private fun PlayerBranch(
         onPlaybackDead = viewModel::onPlaybackDead,
         onPlaybackSuspect = viewModel::onPlaybackSuspect,
         onPageDeadEnd = viewModel::onPageDeadEnd,
+        // P18：恢复条出现（约 1.5s）那一刻就置"疑似" ——
+        // 到自动换线（9.5s）之间的 8 秒里 `blocksAutoEnterPip` 生效，
+        // 用户按 Home 不会进一块坏小窗。⚠️ 走的是**只置标记、不换线**的入口
+        //（复用 onPlaybackSuspect 会把恢复条与选择窗口一起取消）。
+        onDeadEndSuspect = viewModel::onDeadEndSuspectOnly,
         onStreamSniffed = viewModel::onStreamSniffed,
         sniffFailed = playerState.failedSniffUrl != null,
         // 疑似无信号（推断）的提示：判据只在这里算一次（审计 B2），

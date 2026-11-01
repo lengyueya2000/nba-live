@@ -49,6 +49,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -57,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.data.remote.safeLogWarn
+import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.ui.components.LeagueChip
 import com.nbalive.app.ui.components.SquareIconButton
 import com.nbalive.app.ui.components.StatusChip
@@ -172,7 +174,12 @@ fun SearchScreen(
                                 // 图标只有 18dp，触摸目标补到 48dp
                                 .minimumInteractiveComponentSize()
                                 .clip(RoundedCornerShape(Radius.chip))
-                                .clickable { query = "" }
+                                .clickable(
+                                    // U9：动作词 + role —— 旧实现只有裸 clickable，
+                                    // TalkBack 读到的是"双击以激活"
+                                    onClickLabel = "清空搜索词",
+                                    role = Role.Button,
+                                ) { query = "" }
                                 .semantics { contentDescription = "清空" },
                             contentAlignment = Alignment.Center,
                         ) {
@@ -245,7 +252,13 @@ private fun SearchResultRow(match: Match, onClick: () -> Unit) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.card))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
+            // U9：搜索结果行的动作词（点了就是播这场）+ role。
+            // 整行可点却只有"双击以激活"时，视障用户无法预判会发生什么。
+            .clickable(
+                onClickLabel = CardSemantics.ACTION_LABEL,
+                role = Role.Button,
+                onClick = onClick,
+            )
             .padding(Space.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {

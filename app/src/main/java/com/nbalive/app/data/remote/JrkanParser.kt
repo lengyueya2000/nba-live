@@ -47,6 +47,51 @@ class JrkanParser {
         // ⚠️ 线路名的敏感词表已搬到 [ChannelAdmission.EXCLUDED_KEYWORDS]：
         // 它的语义从"命中即删除整条线路"变成了"命中即隐去名义（必要时才保留）"，
         // 而那个决定必须能单测，所以和判据放在一起。这里不再留第二份。
+
+        /**
+         * 列表页 `getPlayUrl("lineN", "playId")`。
+         *
+         * ⚠️ 提成常量（review/optimization-review.md D13）：旧实现每解析一个 `<ul>` 块
+         * 就新建一次 `Regex`（一次刷新 119 个块 = 119 次 `Pattern` 编译）。
+         * ⚠️ `\d` 放宽为 `\d+`：源站线路从 `line1…line3` 扩到 `line10+` 后，
+         * 旧正则让 `playId == null` → `sources` 为空 → 卡片 `signalCount=0`
+         * （界面按 `>0` 隐藏徽标）→ 该场次**既不报错也没有线路**。
+         */
+        private val PLAY_ID = Regex("""getPlayUrl\("line\d+",\s*"(\d+)"\)""")
+
+        /** 列表页时间串 `"10-21 19:35"`（提成常量，理由同上）。 */
+        private val DATE_TIME = Regex("""(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})""")
+
+        /**
+         * 播放页里 `data-play` 地址的匹配。
+         *
+         * ⚠️ 引号放宽到单/双（review/optimization-review.md D4）：
+         * 列表页解析早就为"单引号 / 属性顺序 / `span` 替 `strong`"写过变体用例，
+         * 播放页这两条没有 —— 源站改成单引号时 `path` 匹配归零，
+         * 所有 JRKAN 场次 0 条线路；更糟的是 `pageFetched=true` 会让
+         * `loadSignals` **不再退回入口页做 WebView 兜底**，用户看到的是
+         * "该赛事暂无可用线路"而不是"线路坏了"。
+         */
+        private val DATA_PLAY = Regex(
+            """<a\b[^>]*data-play\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)</a>""",
+        )
+
+        /**
+         * 线路名所在的 `<strong>`。
+         *
+         * ⚠️ 允许内嵌标签（D4）：旧实现 `([^<]+)` 在
+         * `<strong><span>主播解说①</span></strong>` 上取到空串。
+         */
+        private val CHANNEL_LABEL = Regex("""<strong\b[^>]*>([\s\S]*?)</strong>""")
+
+        /** 任意 HTML 标签，用于"剥标签后取线路名"（D4）。 */
+        private val TAGS = Regex("""<[^>]*>""")
+
+        /** 剥标签后的空白压缩（D4：`<strong><span>主播解说①</span></strong>` → 干净的名字）。 */
+        private val WHITESPACE_COLLAPSE = Regex("""\s+""")
+
+        /** 空占位线路（`data-play="=&id2="`）。提成常量同上。 */
+        private val EMPTY_ID = Regex("""[?&]id=(&|$)""")
     }
 
     /** 队徽地址补全：相对路径按源站 origin 补齐 */
@@ -126,8 +171,7 @@ class JrkanParser {
             // ⚠️ 必须从**原始块文本**里取：Jsoup 解析时
             // `href="' + getPlayUrl("line1", "824761") + '"` 这个坏掉的属性
             // 会被拆散，重新序列化后正则再也匹配不到。
-            val playId = Regex("""getPlayUrl\("line\d",\s*"(\d+)"\)""")
-                .find(block)?.groupValues?.get(1)
+            val playId = PLAY_ID.find(block)?.groupValues?.get(1)
 
             val sources = if (playId == null) {
                 emptyList()
@@ -298,18 +342,15 @@ class JrkanParser {
         val seen = linkedSetOf<String>()
         val raw = mutableListOf<RawChannel>()
 
-        Regex("""<a[^>]*data-play="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
-            .findAll(html).forEach { m ->
-                val path = m.groupValues[1].trim()
-                if (!path.startsWith("/play/")) return@forEach
-                // 源站里有若干空占位（data-play="=&id2="），要跳过
-                if (Regex("""[?&]id=(&|$)""").containsMatchIn(path)) return@forEach
-                if (!seen.add(path)) return@forEach
+        DATA_PLAY.findAll(html).forEach { m ->
+            val path = m.groupValues[1].trim()
+            if (!path.startsWith("/play/")) return@forEach
+            // 源站里有若干空占位（data-play="=&id2="），要跳过
+            if (EMPTY_ID.containsMatchIn(path)) return@forEach
+            if (!seen.add(path)) return@forEach
 
-                val rawLabel = Regex("""<strong>([^<]+)</strong>""")
-                    .find(m.groupValues[2])?.groupValues?.get(1)?.trim().orEmpty()
-                raw += RawChannel(path = path, rawLabel = rawLabel)
-            }
+            raw += RawChannel(path = path, rawLabel = extractLabel(m.groupValues[2]))
+        }
 
         // 准入判据：名字过滤（整条剔除主播线路，不补回；可单测，见 ChannelAdmission）
         return ChannelAdmission.admit(raw)
@@ -324,6 +365,28 @@ class JrkanParser {
                     pageUrl = playHost.trimEnd('/') + path,
                 )
             }
+    }
+
+    /**
+     * 从 `<a>` 的内层 HTML 里取出线路名（review/optimization-review.md D4）。
+     *
+     * 顺序：`<strong>…</strong>` → 整个内层剥标签 → 空串。
+     *
+     * ⚠️ 必须**剥标签**：`<strong><span>主播解说①</span></strong>` 这类嵌标签形态
+     * 用旧的 `([^<]+)` 只能得到空串，于是 [ChannelAdmission] 的**唯一规则**
+     * （按名字过滤主播线路）对这条线路完全失效；而
+     * `sortedByDescending { isDirectPath(path) }` 会把可直连的 `sm.html`
+     * 排到第 0 条（默认播放）—— 2026-10-29 用户"过滤掉涉及主播的线路"
+     * 的要求就被静默绕过了。
+     *
+     * 取不到名字（空串）时由 [ChannelAdmission.admit] **整条剔除**：
+     * 拿不到名字就无法证明它不是主播线路，只能按最保守的方式处理。
+     */
+    private fun extractLabel(innerHtml: String): String {
+        val strong = CHANNEL_LABEL.find(innerHtml)?.groupValues?.get(1)
+        // 没有 <strong> 时退到整段内层文本（有些线路名直接写在 <a> 里）
+        val text = strong ?: innerHtml
+        return TAGS.replace(text, "").replace(WHITESPACE_COLLAPSE, " ").trim()
     }
 
     /** 保留源站原名；清洗后为空则退回统一命名。 */
@@ -342,7 +405,7 @@ class JrkanParser {
      * 同一场比赛在两个源下就合不起来，信号数也被腰斩。
      */
     private fun parseDateTime(raw: String): Long? {
-        val m = Regex("""(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})""").find(raw) ?: return null
+        val m = DATE_TIME.find(raw) ?: return null
         val month = m.groupValues[1].toIntOrNull() ?: return null
         val day = m.groupValues[2].toIntOrNull() ?: return null
         val hour = m.groupValues[3].toIntOrNull() ?: return null

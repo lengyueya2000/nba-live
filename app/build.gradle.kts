@@ -1,4 +1,4 @@
-﻿import java.util.Properties
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -62,6 +62,19 @@ android {
             if (missingKeystoreKeys.isEmpty() && !skipSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
+            // ⚠️ B5（review/optimization-review.md）：发布产物不该带**构建元数据**。
+            //
+            // AGP 会把 VCS 信息写成 `META-INF/version-control-info.textproto`（含本次构建的
+            // git revision）。实测（2026-11-01，逐 entry 检查产物）：`packaging.resources.excludes`
+            // **挡不住**它 —— 它走的是另一条资源通道；带/不带前导斜杠两种写法都试过。
+            //
+            // 正确开关是**公开 DSL**（javap 实证 AGP 8.7.3：
+            // `com.android.build.api.dsl.BuildType#vcsInfo(Function1<VcsInfo, Unit>)`，
+            // `VcsInfo#include` 是公开属性；旧的 `android.enableVcsInfo` Gradle 属性已被 AGP
+            // 弃用，字节码里的提示原文是"This feature is now enabled in the DSL per build type
+            // with \"vcsInfo.include = true\""）——
+            // 所以这里**不碰任何 AGP 内部实现类**（04-P2-7 的教训），只在 release 构建类型上关掉。
+            vcsInfo { include = false }
         }
     }
 
@@ -101,7 +114,45 @@ android {
         buildConfig = true
     }
     packaging {
-        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // ⚠️ 公开产物不该带构建元数据（review/optimization-review.md B5）：
+            // 实测 release APK 里还有 `META-INF/README.md`（3,218 B）与
+            // `META-INF/version-control-info.textproto`（120 B，内含本次构建的 git revision）。
+            // 体积收益很小（约 3 KB），但"发布产物不带构建元数据"是常见纪律红线，收掉零成本。
+            //
+            // ⚠️ 路径带前导斜杠（与上面那条已有的 exclude 同形）。
+            //
+            // ⚠️ 实测结论（2026-11-01，用产物逐 entry 验证，不是看配置）：
+            //   - `META-INF/README.md`：**已被挡下** ✅；
+            //   - `META-INF/version-control-info.textproto`：**挡不住**（带/不带前导斜杠都试过，
+            //     产物里仍然在）。它是 AGP 的 VCS 信息，走的是 java 资源那条路，
+            //     不被 `packaging.resources.excludes` 覆盖；
+            //     要真正去掉得挂 AGP 内部任务类型，而本仓库**明确不碰 AGP 内部实现**
+            //     （review/04-security.md P2-7 的教训），故如实保留。
+            //   影响评估：120 B；内容只有本次构建的 git revision，而本仓库是公开仓库、
+            //   revision 本来就是公开信息。这条的价值在"知道它在那儿"，不在于能删掉它。
+            excludes += "/META-INF/README.md"
+            excludes += "/META-INF/version-control-info.textproto"
+        }
+    }
+    lint {
+        // ⚠️ review/optimization-review.md B7：lint 此前**不是闸** ——
+        // release 只顺带跑 lintVital（fatal-only），warning/information 没有任何自动化，
+        // 唯一一份完整报告还是几天前手工跑的（里面 2 条，其中
+        // `AutoboxingStateCreation` 指向 `PlayerScreen.kt` 的 `mutableStateOf(0)`）。
+        //
+        // 这里把松紧**显式写出来**：error 阻塞、warning 不阻塞 ——
+        // 写出来是为了防止有人为了让某次构建变绿而悄悄改掉这条策略
+        // （AGP 默认就是 abortOnError=true，所以这不是新负担）。
+        abortOnError = true
+        warningsAsErrors = false
+        // release 变体也跑 lint（此前只有 lintVital，fatal 之外一律看不见）
+        checkReleaseBuilds = true
+        // ⚠️ 刻意**不**设 baseline：baseline 会把这批问题一次性合法化，
+        // 而"把违规记进 baseline 再也不用管"正是本仓库反复批评的假安全感形态。
+        textReport = true
+        htmlReport = true
     }
     testOptions {
         // 单元测试跑在 JVM 上，android.util.Log 等框架桩没有实现。

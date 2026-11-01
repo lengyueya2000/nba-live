@@ -50,12 +50,58 @@ class BuildScriptHygieneTest {
     @Test
     fun `未签名产物必须显式改名 且绝不占用正式包名`() {
         val raw = script.readText()
+        // ⚠️ 断言必须跑在**只剔注释**的文本上（review/optimization-review.md H2）：
+        // 这里的判据里含字符串字面量（`endsWith("-unsigned.apk")`），
+        // 用 `stripNonCode` 会把字面量一起剔掉导致断言恒假；而用 `raw` 又会被
+        // **注释**满足 —— `app/build.gradle.kts:81`/`:174` 的注释里就逐字写着
+        // `app-UNSIGNED-` 与 `PackageAndroidArtifact`，于是把真改名逻辑
+        // （`:135`/`:160`）删掉，守卫照样绿。`stripComments` 正好取中间：
+        // 剔注释、留字符串字面量。
+        val code = GuardSourceScan.stripComments(raw)
 
         // 断言真实执行的改名动作（打包任务的 doLast 里），不是注释里的承诺：
-        assertTrue("改名判据丢了：必须只处理 `-unsigned.apk` 产物", raw.contains("""endsWith("-unsigned.apk")"""))
-        assertTrue("改写目标丢了：未签名包必须变成 app-UNSIGNED-<variant>.apk", raw.contains("app-UNSIGNED-"))
-        assertTrue("改名必须调用文件 API 真的落盘", raw.contains(".renameTo(target)"))
-        assertTrue("改名必须挂在打包任务上", raw.contains("PackageAndroidArtifact"))
+        assertTrue("改名判据丢了：必须只处理 `-unsigned.apk` 产物", code.contains("""endsWith("-unsigned.apk")"""))
+        assertTrue("改写目标丢了：未签名包必须变成 app-UNSIGNED-<variant>.apk", code.contains("app-UNSIGNED-"))
+        assertTrue("改名必须调用文件 API 真的落盘", code.contains(".renameTo(target)"))
+        assertTrue("改名必须挂在打包任务上", code.contains("PackageAndroidArtifact"))
+    }
+
+    /**
+     * 负控（review/optimization-review.md H2）：**注释里的字面量不能再满足判据**。
+     *
+     * 样本逐字取自 `app/build.gradle.kts` 的两条注释行（`:81` 与 `:174`），
+     * 它们此前正好满足上面那份断言里的第 2、4 条。这条测试证明"只剔注释"这一步
+     * 真的生效：如果谁把上面的断言改回 `raw.contains(...)`，他就会重新落入
+     * "删掉实现、守卫仍绿"的形态 —— 而这里钉住的正是那个前提。
+     */
+    @Test
+    fun `注释里的字面量不得满足改名判据`() {
+        val commentOnlySample = listOf(
+            "    //    改名后是 `app-UNSIGNED-release.apk`；",
+            "// **不继承** `com.android.build.gradle.tasks.PackageAndroidArtifact` —— 所以上面那道 `doFirst`",
+        ).joinToString("\n")
+        val stripped = GuardSourceScan.stripComments(commentOnlySample)
+        for (needle in listOf("app-UNSIGNED-", "PackageAndroidArtifact")) {
+            assertFalse(
+                "`${needle}` 在**只含注释**的样本里仍然命中 —— 剔注释那一步没生效，" +
+                    "于是「删掉真实现、守卫照样绿」的形态回来了（H2）",
+                stripped.contains(needle),
+            )
+        }
+        // 反向自检：字符串字面量必须**保留**，否则判据会因剔得太狠而恒假。
+        assertTrue(
+            "`stripComments` 把字符串字面量也剔掉了 —— 判据会恒假（比假绿更难发现）",
+            GuardSourceScan.stripComments("""it.name.endsWith("-unsigned.apk")""").contains("""endsWith("-unsigned.apk")"""),
+        )
+        // 行注释形态（`//` 之后同行还有内容）与块注释形态都要覆盖。
+        assertFalse(
+            "同行尾注释里的字面量仍被当成代码",
+            GuardSourceScan.stripComments("""val x = 1 // app-UNSIGNED-""").contains("app-UNSIGNED-"),
+        )
+        assertFalse(
+            "块注释里的字面量仍被当成代码",
+            GuardSourceScan.stripComments("/* app-UNSIGNED- */").contains("app-UNSIGNED-"),
+        )
     }
 
     /**
@@ -70,11 +116,13 @@ class BuildScriptHygieneTest {
     fun `bundle 任务必须按名字补签名闸 而不是只按 APK 任务类型拦`() {
         val raw = script.readText()
         val code = GuardSourceScan.stripNonCode(raw)
+        // ⚠️ 与上面同理：含字符串字面量的判据走"只剔注释"（H2）。
+        val uncommented = GuardSourceScan.stripComments(raw)
 
         assertTrue(
             "bundle 任务没有闸：脚本里找不到 `endsWith(\"ReleaseBundle\")` —— " +
                 "只 withType<PackageAndroidArtifact>() 拦不住 AAB 路径（P2-8）",
-            raw.contains("""endsWith("ReleaseBundle")"""),
+            uncommented.contains("""endsWith("ReleaseBundle")"""),
         )
         assertTrue(
             "闸必须挂在 tasks.matching 上（按名字匹配，不依赖 AGP 内部类型）",
@@ -82,7 +130,7 @@ class BuildScriptHygieneTest {
         )
         assertTrue(
             "未签名 AAB 必须改名成 app-UNSIGNED-release.aab，不能留在发布路径上",
-            raw.contains("app-UNSIGNED-release.aab"),
+            uncommented.contains("app-UNSIGNED-release.aab"),
         )
     }
 

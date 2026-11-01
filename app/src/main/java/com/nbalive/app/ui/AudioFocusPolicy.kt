@@ -152,4 +152,26 @@ object AudioFocusPolicy {
      */
     fun shouldPauseForAudioMode(playing: Boolean, mode: Int): Boolean =
         playing && isCallAudioMode(mode)
+
+    /**
+     * 轮询兜底：现查到**已经离开通话模式**、而播放是被焦点打断的暂停态时，要不要自己恢复（P3）。
+     *
+     * ## 为什么必须有这条对称分支
+     *
+     * 轮询存在的唯一理由是"我们不在焦点栈里、收不到事件"（见 [shouldRequestFocusAgain]）。
+     * 被抖音用永久 `GAIN` 抢走焦点后再来电：轮询把播放停下 → 通话结束 →
+     * 系统**不会**给我们任何回调（我们不在栈里）→ 直播永久停在暂停态，用户得自己点播放。
+     * `AUDIOFOCUS_GAIN` 监听器里那条 `player.play()`（`PlayerScreen` 的 GAIN 分支）
+     * 在这种情况下永远不会被触发。
+     *
+     * ⚠️ 语义与 [shouldResumeOnFocusGain] 完全一致（只恢复**被焦点打断**的播放，
+     * 不替用户继续播他自己暂停的），所以这里直接委托它，避免两份判据漂移。
+     *
+     * @param pausedByFocus 这次暂停是不是焦点丢失/来电造成的
+     * @param playing 当前是否已经在播
+     * @param mode `AudioManager.getMode()` 的现值（通话中不许抢焦点，会和电话打乒乓）
+     */
+    fun shouldResumeForAudioMode(pausedByFocus: Boolean, playing: Boolean, mode: Int): Boolean =
+        !isCallAudioMode(mode) &&
+            shouldResumeOnFocusGain(pausedByFocus = pausedByFocus, playing = playing)
 }

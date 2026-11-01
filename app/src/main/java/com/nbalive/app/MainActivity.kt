@@ -6,7 +6,6 @@ import android.content.res.Configuration
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import android.util.Rational
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -46,10 +45,15 @@ class MainActivity : ComponentActivity() {
         // 新 Activity 实例必然不在小窗里。若不重置：用户把小窗划掉时系统
         // 不保证回调 onPictureInPictureModeChanged(false)，进程还活着的话，
         // 下一次进播放页会直接渲染成"只有视频、无任何控件"的假死界面。
-        PipState.inPip.value = false
+        // ⚠️ P16：写入口统一走 PipState.setInPip（`inPip` 已是只读 asStateFlow）
+        PipState.setInPip(false)
         // 偏好存储（review/03-ui.md P2-17 的剩余部分）：
         // `Context` 只在**平台层**出现这一次（交给 Android 实现自己持有），
         // 之后 UI 与 VM 见到的都是无 Context 的读/写。
+        // ⚠️ U8：这里仍然同步调 init()，但**首次磁盘读**已经在
+        // `NbaLiveApplication.onCreate` 的 `PrefsPreload.warmUp` 里预热过
+        //（Application 早于 Activity），所以正常情况下主线程不再等 XML 解析；
+        // 预热万一没赶上（几毫秒的竞态），init() 会同步兜底，值不会先渲染成默认值。
         val prefs: PrefsStore = AndroidPrefsStore(applicationContext)
         prefs.init()
         enableEdgeToEdge()
@@ -131,7 +135,10 @@ class MainActivity : ComponentActivity() {
                 .build()
             setPictureInPictureParams(params)
         }.onFailure {
-            Log.w("MainActivity", "syncAutoEnterEnabled($active) failed: ${it.javaClass.simpleName}")
+            // ⚠️ U20 的纪律扩展（`LogCallDisciplineTest`）：MainActivity 里不许再裸调 `Log.`。
+            // 文案只拼异常**类型名**（`simpleName`），不把 Throwable 交给日志 ——
+            // 两参重载正是为"纯字面量/脱敏文案"准备的，堆栈与 message 一律不落盘。
+            safeLogWarn("MainActivity", "syncAutoEnterEnabled($active) failed: ${it.javaClass.simpleName}")
         }
     }
 
@@ -247,7 +254,8 @@ class MainActivity : ComponentActivity() {
         newConfig: Configuration,
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        PipState.inPip.value = isInPictureInPictureMode
+        // P16：唯一写入口（`PipState.inPip` 只读）
+        PipState.setInPip(isInPictureInPictureMode)
         // 刚进小窗：播放器要过一会儿才知道能不能播，先不动，
         // 交给 Compose 侧在拿到真实错误后再决定要不要收掉
         if (isInPictureInPictureMode) return
@@ -299,7 +307,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (!isChangingConfigurations) {
-            PipState.inPip.value = false
+            // P16：写入口统一走 PipState.setInPip
+            PipState.setInPip(false)
             PipState.setPlayerActive(false)
         }
     }

@@ -1,6 +1,5 @@
 package com.nbalive.app.data.repository
 
-import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.MatchStatusClock
@@ -42,7 +41,16 @@ class MatchRepository(
     private val jrkanParser: JrkanParser = JrkanParser(),
     private val resolver: StreamUrlResolver = StreamUrlResolver(),
     /**
-     * 列表加载的整体 deadline（review/02-data.md P2-3）。
+     * **每个源**各自的 deadline（review/02-data.md P2-3，修正见
+     * review/optimization-review.md H3 / opt/data.md D1）。
+     *
+     * ⚠️ 语义已从"整体 deadline"下移到"每源各一份"：
+     * 旧实现用 `withTimeoutOrNull` 包住 **`jrsDeferred.await() to jrkanDeferred.await()`**，
+     * 超时即 `matches = emptyList()` —— 一个源慢/死会把**另一个源已经拿到**的场次
+     * 一起丢掉，还被报成"两个源都超时"。而 60 秒这个值的动因（域名死时
+     * 首候选要跑满 3 次重试 = 105 秒）恰好就是它丢数据的场景：
+     * 界面得到"JRS、JRKAN 源暂时不可用（网络超时）"+ 空列表，
+     * 尽管 JRKAN 2 秒就返回了十几场。
      *
      * 单源 3 次尝试 × `callTimeout = 35s`，两源并发约 105s；
      * 之后状态校正最多 16 场 / 4 并发 = 4 批 × 35s = 140s。
@@ -53,6 +61,39 @@ class MatchRepository(
      * 超过 60 秒基本可以确定是源站/网络挂了，再等只是让用户干瞪眼。
      */
     private val loadDeadlineMs: Long = DEFAULT_LOAD_DEADLINE_MS,
+    /**
+     * 列表级短缓存的 TTL（review/optimization-review.md D5）。
+     *
+     * 取 **30 秒**的依据（Lead 复核口径）：
+     *  - 源站列表本身约 **2 分钟**粒度更新（同一批场次两分钟内内容不变），
+     *    30 秒远短于真实变化节奏，命中缓存不会让用户看到"过期场次"；
+     *  - 单次全量刷新要下 JRKAN 索引 **271,323 B** + JRS 列表 11 KB ≈ 282 KB，
+     *    而"切标签/进详情再回来"这类返回式刷新在 30 秒内很常见 ——
+     *    命中一次就省 282 KB 与一倍源站压力（源站对频繁请求回 403/429）；
+     *  - 30 秒也短到用户**主动下拉刷新**时即使忘了绕过，也最多看到 30 秒前的数据；
+     *    真正的用户主动刷新仍必须走 `forceRefresh = true` 直接绕过（见
+     *    [loadMatchesOutcome] 的 `forceRefresh` 形参）。
+     */
+    private val listCacheTtlMs: Long = DEFAULT_LIST_CACHE_TTL_MS,
+    /**
+     * 403/429 之后的"源冷却"时长（review/optimization-review.md D9）。
+     *
+     * 取 **60 秒**：源站的限流窗口通常是分钟级，60 秒足够让窗口过去，
+     * 又短到用户不会觉得"这个源永久坏了"。
+     * ⚠️ 与"永久拉黑"的区别见 [startCooldown] 的 KDoc。
+     */
+    private val sourceCooldownMs: Long = DEFAULT_SOURCE_COOLDOWN_MS,
+    /**
+     * 可注入的**单调**时钟（毫秒），用于缓存年龄与源冷却。
+     *
+     * 为什么必须能注入（D9 的判据要求）："冷却窗口内不发请求、窗口过后恢复"
+     * 这条判据如果只能靠真等 60 秒，就没法在单测里钉死；
+     * 注入之后测试可以把时钟推到窗口之外。
+     *
+     * ⚠️ 默认是 `nanoTime` 而不是墙钟：用户把系统时间往前拨时，
+     * `now - cachedAt` 会变成负数、缓存永不过期（详情页缓存原本就吃这个亏）。
+     */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     /**
      * runCatching 会把 [CancellationException] 也吞掉，
@@ -77,6 +118,54 @@ class MatchRepository(
      * 同步容器：两个源的抓取在不同协程里并发。
      */
     private val listFailedHosts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /**
+     * **源的限流冷却**（review/optimization-review.md D9）：host（小写）→ (冷却截止时刻, 状态码)。
+     *
+     * ## 与 [listFailedHosts]「不永久拉黑」的区别（这一条最容易被误读）
+     *
+     * `listFailedHosts` 只影响**候选顺序**（把失败 host 挪到队尾，全部失效时从头再来），
+     * 它从不阻止请求；本表则是在 TTL 内**真的不发请求**。
+     * 但两者都不是永久拉黑：冷却窗口（默认 60 秒）一过，条目自然失效、请求照发。
+     * 永久黑名单会把"暂时故障"变成"长期故障"，那是 review/01-P1-5
+     * 「15 秒看门狗永久拉黑健康线路」的同款错误 —— 这里绝不做。
+     *
+     * 旧实现只在**单次调用内**不重试（403/429 立即停），跨调用不设防：
+     * 限流窗口内用户每次下拉刷新、切标签、进详情都会再撞一次，
+     * 而用户遇到 403 的直觉动作恰好是"一直刷新"，正是最坏用法。
+     *
+     * 时刻用构造参数 [clock]（默认单调钟）：可注入，单测才能把时钟推到窗口外验证恢复。
+     */
+    private val sourceCooldowns = mutableMapOf<String, Pair<Long, Int>>()
+
+    /**
+     * 列表级**短 TTL 缓存**：key = "开着的源组合" → (缓存时刻, 结果)。
+     *
+     * review/optimization-review.md D5：列表层原先一次缓存都没有，
+     * 每次刷新重下 JRKAN 索引 271,323 B + JRS 列表 11 KB ≈ 282 KB，
+     * 而详情页有 5 分钟缓存、比分有 20 秒 TTL。
+     *
+     * ⚠️ 同步容器：两个源的抓取在不同协程里并发（`loadMatchesWithOutcome` 也是并发入口）。
+     * ⚠️ 有**条数上限**：key 只有"源组合"几种，但上限存在是为了防御将来 key 变形。
+     */
+    private val listCache = object : LinkedHashMap<String, Pair<Long, LoadOutcome>>(
+        /* initialCapacity = */ 4,
+        /* loadFactor = */ 0.75f,
+        /* accessOrder = */ true,
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, Pair<Long, LoadOutcome>>?,
+        ): Boolean = size > LIST_CACHE_MAX_ENTRIES
+    }
+
+    /**
+     * 正在飞的列表加载：key → Deferred（D5 的 single-flight 那一半）。
+     *
+     * ⚠️ 缓存只挡"已完成的请求"，挡不住"正在飞的"：冷启动 + 用户立刻下拉刷新、
+     * 或切标签再切回来，都会让同一份列表被请求两次。
+     * ⚠️ 与 [inFlightDetails] 同款纪律（D12）：`forceRefresh` 路径**不许**删别人的条目。
+     */
+    private val inFlightLists = mutableMapOf<String, CompletableDeferred<LoadOutcome>>()
 
     /**
      * 列表级状态校正：源站列表对已结束的场次仍标"直播中"（实测滞后 3 小时+）。
@@ -253,18 +342,25 @@ class MatchRepository(
         fetch: suspend (String, String?) -> FetchResult,
         forceRefresh: Boolean = false,
     ): String? {
-        // ⚠️ 用**单调时钟**（nanoTime）而不是 currentTimeMillis：
+        // ⚠️ 用**单调时钟**（nanoTime，走可注入的 [clock]）而不是 currentTimeMillis：
         // 用户把系统时间往前拨，"now - cachedAt" 会变成负数，
         // 负数 < TTL 恒成立 → 缓存永不过期（源站改版了也看不到新内容）。
         // nanoTime 不受系统时间调整影响。
         // （不用 android.os.SystemClock.elapsedRealtime：它在 JVM 单元测试里
         //   返回默认值 0，测试就没法验证 TTL 过期了。）
-        val now = System.nanoTime() / 1_000_000L
+        val now = clock()
         if (!forceRefresh) {
             synchronized(detailCache) {
                 val hit = detailCache[detailId]
                 if (hit != null) {
-                    if (now - hit.first < DETAIL_CACHE_TTL_MS) return hit.second
+                    if (now - hit.first < DETAIL_CACHE_TTL_MS) {
+                        // D18：命中路径必须可观测，否则现场只能靠请求数反推。
+                        // ⚠️ 只打 detailId：详情页 URL 的域名/query 都不该进日志。
+                        debugLog("MatchRepo", "详情页缓存命中: $detailId")
+                        return hit.second
+                    }
+                    // D18：TTL 过期是"点了刷新却没变"类投诉的第一嫌疑点。
+                    debugLog("MatchRepo", "详情页缓存过期: $detailId (age=${now - hit.first}ms >= ${DETAIL_CACHE_TTL_MS}ms)")
                     detailCache.remove(detailId)
                 }
             }
@@ -283,6 +379,7 @@ class MatchRepository(
             }
         }
         val deferred = CompletableDeferred<String?>()
+        var registered = false
         if (!forceRefresh) {
             val raced = synchronized(inFlightDetails) {
                 // 双重检查：拿锁前可能已有别人放进去了
@@ -292,23 +389,34 @@ class MatchRepository(
                 }
             }
             if (raced != null) return raced.await()
+            registered = true
         }
+        var fetched: String? = null
         val body = try {
-            fetchDetailBody(detailId, fetch)
+            // ⚠️ `.also` 保证 fetched 在正常路径上一定拿到真实正文：
+            // 旧实现在 finally 里读 `detailCache[detailId]?.second`，而缓存
+            // 是**这段 try 之后**才写的 —— 于是等待者（single-flight 的另一半）
+            // 永远拿到 null。等待者拿到 null 会当成"详情页没内容"，
+            // 白白丢掉一次本已成功的请求。
+            fetchDetailBody(detailId, fetch).also { fetched = it }
         } finally {
             // ⚠️ 必须在 finally 里移除并完成：任何异常路径都不能把 detailId 永久卡在
             // in-flight map 里 —— 那会让这个场次的详情页永远等待一个已经结束的 Deferred。
-            synchronized(inFlightDetails) { inFlightDetails.remove(detailId) }
-            deferred.complete(
-                synchronized(detailCache) { detailCache[detailId]?.second },
-            )
+            //
+            // ⚠️ D12：只有**自己注册过**才移除。旧实现无条件 remove，
+            // 于是 forceRefresh 路径会删掉**别人**正在等待的条目，
+            // 第三个来者以为没有在飞请求、又重新发一次 —— 偶发重复请求。
+            if (registered) {
+                synchronized(inFlightDetails) { inFlightDetails.remove(detailId) }
+                deferred.complete(fetched)
+            }
         }
 
         if (!body.isNullOrBlank()) {
             // ⚠️ 时间戳在**拿到正文之后**取（review/02-data.md P2-7）：
             // 原来的 now 在发起请求**之前**算，请求耗时（最长 35s）被算进缓存年龄，
             // 等于把 5 分钟 TTL 悄悄缩短成 4 分半 —— 越慢的请求，缓存越短。
-            val cachedAt = System.nanoTime() / 1_000_000L
+            val cachedAt = clock()
             synchronized(detailCache) {
                 detailCache[detailId] = cachedAt to body
             }
@@ -325,6 +433,11 @@ class MatchRepository(
             SourceEndpoints.jrsDetailUrls(detailId),
             synchronized(listFailedHosts) { listFailedHosts.toSet() },
         )
+        // D9：冷却窗口内一个请求都不发（与列表路径同一条纪律）
+        coolingCodeFor(candidates)?.let { code ->
+            debugLog("MatchRepo", "详情页处于限流冷却中(HTTP $code)，本轮不发请求: $detailId")
+            return null
+        }
         var body: String? = null
         for (url in candidates) {
             when (val r = fetch(url, http.refererOf(url))) {
@@ -337,8 +450,17 @@ class MatchRepository(
                     // 镜像与主域名同属一个站点家族，大概率共享限流窗口，
                     // 继续打只会把窗口越拖越长（review 的"限流放大器"）。
                     synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                    // D9：记一次冷却，让后续调用也不再撞限流窗口
+                    startCooldown(url, r.code)
                     Log.w("MatchRepo", "详情页被拒绝(HTTP ${r.code})，放弃重试: ${redactUrl(url)}")
                     return null
+                }
+                is FetchResult.NotFound -> {
+                    // ⚠️ D3：404/410 **不重试、不登记 host 失败**。
+                    // 已结束场次的详情页就是 404（实测）：登记了会让主域名被降到候选队尾，
+                    // 之后整个会话的列表/详情/播放都先敲镜像。
+                    // 换下一个候选（镜像上可能还留着这份页面）。
+                    debugLog("MatchRepo", "详情页不存在(HTTP ${r.code})，不重试: $detailId")
                 }
                 is FetchResult.Unreachable -> {
                     synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
@@ -351,12 +473,30 @@ class MatchRepository(
 
     companion object {
         /**
-         * 列表加载的整体 deadline（review/02-data.md P2-3）。
+         * 列表加载的**每源** deadline（review/02-data.md P2-3；D1 修正为按源）。
          *
          * 60 秒：正常两源并发首屏 1~3 秒，慢网也在 10 秒级；
          * 超过 60 秒基本可以确定源站/网络挂了，再等只是让用户干瞪眼。
+         * ⚠️ 它是"每个源各自跑满 60 秒"，不是"两源合计 60 秒"——见构造参数 KDoc。
          */
         private const val DEFAULT_LOAD_DEADLINE_MS = 60_000L
+
+        /**
+         * 列表级短缓存 TTL：30 秒（review/optimization-review.md D5）。
+         *
+         * 依据写在构造参数的 KDoc 里（源站约 2 分钟粒度 + 单次 282 KB + 下拉必须绕过）。
+         */
+        private const val DEFAULT_LIST_CACHE_TTL_MS = 30_000L
+
+        /** 列表级缓存的条数上限：只有"开着的源组合"几种 key，留几个就够。 */
+        private const val LIST_CACHE_MAX_ENTRIES = 4
+
+        /**
+         * 403/429 之后的源冷却时长：60 秒（review/optimization-review.md D9）。
+         *
+         * 与"永久拉黑"的区别见 [startCooldown] 的 KDoc。
+         */
+        private const val DEFAULT_SOURCE_COOLDOWN_MS = 60_000L
 
         // ⚠️ 端点不再写死在本类：单值常量扛不住源站换域名（review/02-data.md P1-9）。
         // JRS/JRKAN/播放域名全部收进 SourceEndpoints，一个失效按顺序试下一个。
@@ -411,20 +551,9 @@ class MatchRepository(
         private const val DETAIL_CACHE_MAX_ENTRIES = 64
 
         /**
-         * 队名归一化用的空白正则。
-         *
-         * ⚠️ 必须提成常量：每次调用 `Regex("\\s+")` 都会新建一个对象，
-         * 而 normalizeKey 每场比赛要调两次 —— 几十场还好，上百场就是无谓的分配。
+         * 队名归一化与合并键的正则已随合并逻辑搬到 [MatchMerger]（D10）：
+         * 它们只服务 normalizeKey / fallbackDayKey，留在这里会让"两份实现"的假象重现。
          */
-        private val WHITESPACE = Regex("\\s+")
-
-        /**
-         * 从 `timeLabel` 里抠 `MM-dd`（JRKAN 形态：`"10-25 07:30"`）。
-         *
-         * 用于 [fallbackDayKey]：拿不到 startAtMillis 时，至少还能从文案里
-         * 拿到真实日期，而不是退化成 `"直播中"` 这种字面量（review/02-data.md P2-12）。
-         */
-        private val MMDD = Regex("""(\d{1,2})-(\d{1,2})""")
     }
 
     /**
@@ -515,6 +644,23 @@ class MatchRepository(
         /** 源站明确拒绝（403/429）。不重试，但必须让用户知道这个源没了。 */
         data class Rejected(val code: Int) : SourceOutcome()
 
+        /**
+         * 资源不存在（404/410，review/optimization-review.md D3）。
+         *
+         * ⚠️ 与 [Unreachable] 严格区分：它**不重试、不登记 host 失败**。
+         * 源站对**已结束场次**的播放页就返回 404（实测），把它当成"域名挂了"
+         * 会让主域名被挪到候选队尾，之后整个会话都先敲镜像。
+         */
+        data class NotFound(val code: Int) : SourceOutcome()
+
+        /**
+         * 该源在 deadline 内没有返回（review/optimization-review.md H3 / opt/data.md D1）。
+         *
+         * ⚠️ 它是**按源**判定的：一个源超时只影响它自己，
+         * 另一个源已经拿到的场次必须照常返回。
+         */
+        data class TimedOut(val deadlineMs: Long) : SourceOutcome()
+
         /** 网络不通（DNS/超时/连接失败），重试后仍失败 */
         data class Unreachable(val reason: String?) : SourceOutcome()
 
@@ -536,9 +682,6 @@ class MatchRepository(
 
         /** 只有"真的出错"才算失败；[Disabled] 不算。 */
         val failed: Boolean get() = this !is Ok && this !is Disabled
-
-        /** 这个源是否产生了场次（[Disabled] 与失败都是 false）。 */
-        val enabled: Boolean get() = this !is Disabled
     }
 
     /**
@@ -587,73 +730,154 @@ class MatchRepository(
      *
      * @param enabled 用户开着的数据源（「我的」页开关）。默认全开，
      *   这样既有调用点与测试一行都不用改。
+     * @param forceRefresh 用户**主动**刷新（下拉刷新 / 重试按钮）时传 `true`，
+     *   直接绕过 30 秒的列表短缓存（review/optimization-review.md D5）。
+     *   ⚠️ 这是**对外暴露的形参**：调用方（下拉刷新链路）必须真的传它，
+     *   否则用户点了刷新却可能拿到 30 秒前的列表 —— 那正是这次修复要避免的
+     *   "缓存把用户显式操作吞掉"。`false`（默认）时命中缓存的调用连一次 HTTP 都不发。
      */
     suspend fun loadMatchesOutcome(
         enabled: Set<Provider> = Provider.entries.toSet(),
+        forceRefresh: Boolean = false,
     ): LoadOutcome =
-        loadMatchesWithOutcome(enabled = enabled) { url, referer -> http.fetch(url, referer) }
+        loadMatchesWithOutcome(enabled = enabled, forceRefresh = forceRefresh) { url, referer ->
+            http.fetch(url, referer)
+        }
 
     /**
      * 带失败信息的列表加载。
      *
      * 与 [loadMatchesInternal] 的区别：**不因部分失败而抛异常**，
-     * 而是把失败源如实报出来。两源全挂时也不抛，
-     * 由调用方决定怎么呈现（[loadMatches] 为了兼容旧签名仍会抛）。
+     * 而是把失败源如实报出来。
+     *
+     * ## 两层"不发请求"（review/optimization-review.md D5）
+     *
+     *  - **短 TTL 缓存**（默认 30 秒，见构造参数 KDoc）：命中即返回，零请求；
+     *  - **single-flight**：同一"开着的源组合"的并发调用合并成一次，
+     *    后来者等第一个结果（旧实现只挡"已完成的请求"，挡不住"正在飞的"）。
+     *
+     * 用户主动刷新必须传 `forceRefresh = true`：它同时绕过上面两层。
      *
      * @param enabled 用户开着的数据源（「我的」页开关，2026-10-31 需求）。
      *   **关掉的源根本不发请求** —— 用户说的是"不解析"，不是"解析完再过滤"。
      *   空集合按全开处理（防御：宁可多解析一个源，也不要给用户一个永远空列表）。
+     * @param forceRefresh 绕过缓存与 single-flight（用户显式刷新）
      */
     internal suspend fun loadMatchesWithOutcome(
         enabled: Set<Provider> = Provider.entries.toSet(),
+        forceRefresh: Boolean = false,
         fetch: suspend (String, String?) -> FetchResult,
     ): LoadOutcome = withContext(Dispatchers.IO) {
         // ⚠️ 防御性归一：空集/全关不是"什么都不解析"，而是"用户配置读坏了"。
         // 静默返回空列表会让用户以为源站今天没比赛，比多打一个源糟得多。
         val active = enabled.ifEmpty { Provider.entries.toSet() }
-        // ⚠️ 整体 deadline（review/02-data.md P2-3）：
-        // 单源 3 次重试 × 35s callTimeout 已约 105s，再叠加状态校正的
-        // 4 批 × 35s，最坏接近 3 分钟无出口。用户宁可看到
-        // "部分场次 + 可重试"，也不要盯着转圈。
-        //
-        // 超时后**不抛异常**：如实报成"两个源都没在时限内返回"，
-        // 由调用方按 partialError 呈现 —— 抛异常会让 UI 只剩一个错误页，
-        // 连已经拿到的部分数据也丢掉。
-        val finished = withTimeoutOrNull(loadDeadlineMs) {
-            supervisorScope {
-                val jrsDeferred = async {
-                    if (Provider.JRS in active) fetchJrsOutcome(fetch) else SourceOutcome.Disabled
+        // 缓存身份 = "开着的源组合"（与顺序无关）：关掉一个源是另一份数据，
+        // 不能命中"两源都开"时缓存的结果。
+        val cacheKey = active.sortedBy { it.ordinal }.joinToString(",")
+
+        // ---- D5① 短 TTL 缓存：TTL 内第二次调用不发任何请求 ----
+        if (!forceRefresh) {
+            synchronized(listCache) {
+                val hit = listCache[cacheKey]
+                if (hit != null && clock() - hit.first < listCacheTtlMs) {
+                    debugLog("MatchRepo", "列表缓存命中($cacheKey)，本轮不发源站请求")
+                    return@withContext hit.second
                 }
-                val jrkanDeferred = async {
-                    if (Provider.JRKAN in active) fetchJrkanOutcome(fetch) else SourceOutcome.Disabled
-                }
-                jrsDeferred.await() to jrkanDeferred.await()
             }
         }
-        if (finished == null) {
-            Log.w("MatchRepo", "列表加载超过 ${loadDeadlineMs}ms 未完成，按超时返回")
-            val timeout = "网络超时（超过 ${loadDeadlineMs / 1000} 秒未响应）"
-            // ⚠️ 只报**开着**的源：把用户自己关掉的源说成"超时"是误导
-            val timedOut = Provider.entries.filter { it in active }
-            return@withContext LoadOutcome(
-                matches = emptyList(),
-                failedProviders = timedOut,
-                reasons = timedOut.associateWith { timeout },
-            )
+        // ---- D5② single-flight：同一 key 的并发调用合并成一次 ----
+        if (!forceRefresh) {
+            val existing = synchronized(inFlightLists) { inFlightLists[cacheKey] }
+            if (existing != null) return@withContext existing.await()
         }
-        val (jrs, jrkan) = finished
+        val deferred = CompletableDeferred<LoadOutcome>()
+        var registered = false
+        if (!forceRefresh) {
+            val raced = synchronized(inFlightLists) {
+                // 双重检查：拿锁前可能已有别人放进去了
+                inFlightLists[cacheKey] ?: run {
+                    inFlightLists[cacheKey] = deferred
+                    null
+                }
+            }
+            if (raced != null) return@withContext raced.await()
+            registered = true
+        }
+        var produced: LoadOutcome? = null
+        try {
+            val result = loadMatchesUncached(active, fetch)
+            produced = result
+            result
+        } finally {
+            produced?.let { result ->
+                // ⚠️ 写缓存放在 finally 里：异常路径也不留一个"永远空"的 key。
+                // forceRefresh 也写（绕过的是"读"，不是"写"）—— 否则用户刷新完
+                // 下一次普通调用还会拿到刷新前的旧缓存。
+                synchronized(listCache) { listCache[cacheKey] = clock() to result }
+            }
+            if (registered) {
+                // ⚠️ 只有**自己注册过**才移除（review/optimization-review.md D12 同款纪律）：
+                // 无条件 remove 会删掉别人正在等待的 in-flight 条目，
+                // 后来者于是重新发一次请求（偶发重复请求）。
+                synchronized(inFlightLists) { inFlightLists.remove(cacheKey) }
+                val result = produced
+                // 等待者必须拿到**本轮**的结果，而不是缓存里可能已存在的旧值
+                if (result != null) deferred.complete(result)
+                else deferred.completeExceptionally(IllegalStateException("列表加载失败"))
+            }
+        }
+    }
+
+    /**
+     * 不带缓存的实际加载：**每个源各自**带 deadline（review/optimization-review.md H3）。
+     *
+     * 旧实现把 `withTimeoutOrNull` 包在"两源都完成"这个**整体结果**上，
+     * 超时即 `matches = emptyList()`：一个源慢/死会把另一个源已经拿到的场次
+     * 一起丢掉，还被报成"两个源都超时"（JRS 首候选要跑满 3×35s=105s，必然触发）。
+     * 现在两个 `async` 各自超时：超时的那个源自己变成 [SourceOutcome.TimedOut]，
+     * 另一个源的场次照常合并、照常返回。
+     */
+    private suspend fun loadMatchesUncached(
+        active: Set<Provider>,
+        fetch: suspend (String, String?) -> FetchResult,
+    ): LoadOutcome = supervisorScope {
+        val jrsDeferred = async {
+            if (Provider.JRS in active) {
+                sourceWithDeadline { fetchJrsOutcome(fetch) }
+            } else {
+                SourceOutcome.Disabled
+            }
+        }
+        val jrkanDeferred = async {
+            if (Provider.JRKAN in active) {
+                sourceWithDeadline { fetchJrkanOutcome(fetch) }
+            } else {
+                SourceOutcome.Disabled
+            }
+        }
+        val jrs = jrsDeferred.await()
+        val jrkan = jrkanDeferred.await()
 
         val failures = listOf(Provider.JRS to jrs, Provider.JRKAN to jrkan)
             .filter { it.second.failed }
         val reasons = failures.associate { (provider, outcome) ->
             provider to when (outcome) {
                 is SourceOutcome.Rejected -> "源站拒绝请求（HTTP ${outcome.code}）"
+                is SourceOutcome.NotFound -> "源站页面不存在（HTTP ${outcome.code}）"
+                is SourceOutcome.TimedOut ->
+                    "网络超时（超过 ${outcome.deadlineMs / 1000} 秒未响应）"
                 is SourceOutcome.Unreachable ->
                     "网络连接失败${outcome.reason?.let { "（$it）" } ?: ""}"
                 SourceOutcome.ParsedEmpty -> "未解析到任何场次（源站可能已改版）"
                 SourceOutcome.Disabled -> ""
                 is SourceOutcome.Ok -> ""
             }
+        }
+        failures.filter { it.second is SourceOutcome.TimedOut }.forEach {
+            // ⚠️ 只报**超时的那一个源**（review/optimization-review.md H3）：
+            // 旧实现在整体超时时把两个源都报成"网络超时"，
+            // 而另一个源其实早就返回了数据 —— 文案与事实相反。
+            Log.w("MatchRepo", "${it.first.displayName} 列表在 ${loadDeadlineMs}ms 内未返回，按超时处理")
         }
 
         val merged = merge(jrs.orEmpty(), jrkan.orEmpty())
@@ -670,6 +894,21 @@ class MatchRepository(
             reasons = reasons,
         )
     }
+
+    /**
+     * 单个源套上**自己的** deadline（review/optimization-review.md H3）。
+     *
+     * 用 `withTimeoutOrNull` 而不是 `withTimeout`：超时必须变成
+     * [SourceOutcome.TimedOut] 这种**可上报的结果**，不许抛出去 ——
+     * 抛出去会让 `supervisorScope` 里另一个源的结果也没人接。
+     *
+     * ⚠️ 取消只作用于本协程内的请求（`HttpClient.get` 已挂 `invokeOnCancellation`
+     * 同步 cancel 底层 Call），不会波及另一个源。
+     */
+    private suspend fun sourceWithDeadline(
+        body: suspend () -> SourceOutcome,
+    ): SourceOutcome =
+        withTimeoutOrNull(loadDeadlineMs) { body() } ?: SourceOutcome.TimedOut(loadDeadlineMs)
 
     /** 单源成功时给场次，失败时给空表。 */
     private fun SourceOutcome.orEmpty(): List<Match> =
@@ -705,8 +944,16 @@ class MatchRepository(
             urls,
             synchronized(listFailedHosts) { listFailedHosts.toSet() },
         )
+        // ---- D9：403/429 之后的**源冷却** ----
+        // 跨调用记住"这个 host 正在限流窗口里"，窗口内**一个请求都不发**
+        // （旧实现只在单次调用内不重试，用户连点刷新就会反复撞限流）。
+        // 窗口一过条目自然失效，不是永久拉黑 —— 见 [sourceCooldowns] 的 KDoc。
+        coolingCodeFor(candidates)?.let { code ->
+            debugLog("MatchRepo", "源处于限流冷却中(HTTP $code)，本轮不发任何请求")
+            return SourceOutcome.Rejected(code)
+        }
         var last: Fetched.Unreachable? = null
-        var rejected: Fetched.Rejected? = null
+        var notFound: Fetched.NotFound? = null
         for ((index, url) in candidates.withIndex()) {
             // 首个候选跑满重试（瞬时抖动靠它兜），镜像只试一次：
             // 镜像存在的意义是"这个域名死了"（DNS/主机故障），
@@ -734,7 +981,16 @@ class MatchRepository(
                     // 镜像与主域名是同一站点家族，大概率共享限流窗口，
                     // 继续打只会让窗口越拖越长（review 的"限流放大器"）。
                     synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                    // D9：记一次冷却，让**后续调用**也不再撞限流窗口
+                    startCooldown(url, fetched.code)
                     return SourceOutcome.Rejected(fetched.code)
+                }
+                is Fetched.NotFound -> {
+                    // ⚠️ D3：404/410 **不重试、不登记 host 失败**。
+                    // 登记了会让 attemptOrder 把主域名挪到队尾，
+                    // 之后整个会话的列表/详情/播放都先敲镜像（镜像首轮还要跑满 3 次重试）。
+                    // 换下一个候选是安全的：镜像上这份内容可能还在。
+                    notFound = fetched
                 }
                 is Fetched.Unreachable -> {
                     last = fetched
@@ -742,6 +998,8 @@ class MatchRepository(
                 }
             }
         }
+        // 所有候选都是"页面不存在"：如实报成 NotFound（而不是"网络连接失败"）
+        notFound?.let { if (last == null) return SourceOutcome.NotFound(it.code) }
         SourceOutcome.Unreachable(last?.reason)
     }.getOrElse {
         Log.w("MatchRepo", "fetch failed (${it.javaClass.simpleName})")
@@ -751,10 +1009,54 @@ class MatchRepository(
     private fun hostOf(url: String): String =
         runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("").lowercase()
 
+    /**
+     * 这批候选里是否有 host 正处于限流冷却（D9）；有就返回当时的状态码。
+     *
+     * ⚠️ 任一候选命中就判整个源冷却，不去试"没冷却的镜像"：
+     * 镜像与主域名同属一个站点家族、大概率共享限流窗口 ——
+     * 这正是 [runSource] 里 403/429 分支"不试镜像"的同一条纪律。
+     */
+    private fun coolingCodeFor(urls: List<String>): Int? {
+        val now = clock()
+        return synchronized(sourceCooldowns) {
+            var code: Int? = null
+            for (url in urls) {
+                val host = hostOf(url)
+                val entry = sourceCooldowns[host]
+                if (entry != null) {
+                    if (now < entry.first) {
+                        code = entry.second
+                    } else {
+                        // 窗口已过：条目自然失效（**不是**永久拉黑）
+                        sourceCooldowns.remove(host)
+                    }
+                }
+            }
+            code
+        }
+    }
+
+    /**
+     * 记一次"源冷却"（review/optimization-review.md D9）。
+     *
+     * ⚠️ 与 [listFailedHosts]「不永久拉黑」的区别：这里的条目带 **TTL**，
+     * 到点自动失效、请求照发。永久黑名单会把暂时故障变成长期故障
+     * （review/01-P1-5 的同款错误），所以冷却时长刻意只给 60 秒。
+     */
+    private fun startCooldown(url: String, code: Int) {
+        val host = hostOf(url)
+        if (host.isEmpty()) return
+        val until = clock() + sourceCooldownMs
+        synchronized(sourceCooldowns) { sourceCooldowns[host] = until to code }
+    }
+
     /** [runSource] 的底层：把"为什么没拿到正文"分清楚。 */
     private sealed class Fetched {
         data class Body(val body: String) : Fetched()
         data class Rejected(val code: Int) : Fetched()
+
+        /** 404/410：不重试，也**不登记** host 失败（D3）。 */
+        data class NotFound(val code: Int) : Fetched()
         data class Unreachable(val reason: String?) : Fetched()
     }
 
@@ -771,6 +1073,12 @@ class MatchRepository(
                     Log.w("MatchRepo", "源站拒绝请求(HTTP ${result.code})，放弃重试: ${redactUrl(url)}")
                     return Fetched.Rejected(result.code)
                 }
+                is FetchResult.NotFound -> {
+                    // ⚠️ D3：404/410 是"这个页面没了"，不是"域名挂了"。
+                    // 不重试（再打还是 404），也**不**登记 host 失败。
+                    debugLog("MatchRepo", "列表项不存在(HTTP ${result.code})，不重试: ${redactUrl(url)}")
+                    return Fetched.NotFound(result.code)
+                }
                 is FetchResult.Unreachable -> {
                     lastReason = result.reason
                     if (attempt < attempts - 1) {
@@ -783,151 +1091,27 @@ class MatchRepository(
     }
 
     /**
-     * 合并两个源：按 "日期|主队|客队" 归一化 key 归并，信号列表合并去重。
-     *
-     * 日期必须参与 key：同一对球队背靠背/系列赛会重复出现，
-     * 只按队名归并会把真实存在的第二场直接吞掉。
-     */
-    /**
      * 合并逻辑的测试入口。
      *
-     * merge 本身是 private（只在 loadMatches 内部用），
+     * merge 本身是 internal（只在 loadMatches 内部用），
      * 但"两个源怎么合并"是最容易出静默错误的地方（id 撞车、状态被覆盖），
      * 必须能直接测。
+     *
+     * ⚠️ 签名保持不变（review/optimization-review.md D10）：既有测试在用。
+     * 实现已抽到 [MatchMerger]（纯函数，可单独测、不再和 IO/协程样板混在一个类里）。
      */
     internal fun mergeForTest(jrs: List<Match>, jrkan: List<Match>): List<Match> =
-        merge(jrs, jrkan).matches
-
-    /** [merge] 的结果：合并后的场次 + 因非 NBA/CBA 被丢弃的数量。 */
-    internal data class Merged(val matches: List<Match>, val filteredOutCount: Int)
-
-    private fun merge(jrs: List<Match>, jrkan: List<Match>): Merged {
-        val merged = LinkedHashMap<String, Match>()
-        // 已用过的 id：避免每次都 O(n) 扫 merged.values（几十场还行，上百场会退化）
-        val usedIds = HashSet<String>()
-
-        fun mergeOne(m: Match) {
-            val key = normalizeKey(m)
-            // id 兜底唯一化：LazyVerticalGrid 的 key 重复会直接崩溃，
-            // 宁可 id 加后缀，也绝不丢比赛
-            var unique = m.id
-            var suffix = merged.size
-            while (!usedIds.add(unique)) {
-                unique = "${m.id}#${suffix++}"
-            }
-            val existing = merged[key]
-            merged[key] = if (existing == null) {
-                m.copy(id = unique)
-            } else {
-                val sources = (existing.sources + m.sources).distinctBy { it.pageUrl }
-                existing.copy(
-                    // 状态取"更可信"的那个，而不是"后合并的那个"：
-                    // JRS 的列表会滞后（已结束还标直播中），
-                    // JRKAN 自带 MM-dd HH:mm 可以做时钟校正。
-                    // 原来直接用 m.status（JRS 后合并）会把 JRKAN 更准的状态覆盖掉。
-                    status = betterStatus(existing.status, m.status),
-                    timeLabel = existing.timeLabel.ifBlank { m.timeLabel },
-                    startAtMillis = existing.startAtMillis ?: m.startAtMillis,
-                    homeLogo = existing.homeLogo ?: m.homeLogo,
-                    awayLogo = existing.awayLogo ?: m.awayLogo,
-                    sources = sources,
-                    signalCount = sources.size,
-                    jrsDetailId = existing.jrsDetailId ?: m.jrsDetailId,
-                )
-            }
-        }
-
-        jrkan.forEach(::mergeOne)
-        jrs.forEach(::mergeOne)
-
-        val all = merged.values.toList()
-        // 产品只做 NBA + CBA：源站混入的足球/外联赛在这里统一丢弃。
-        // ⚠️ 丢弃数量要能被观测（P1-新）：联赛名解析失败会落到 League.OTHER，
-        // 整场静默消失 —— 至少让 filteredOutCount 能把"丢了几场"暴露出来。
-        val kept = all.filter { it.league in League.supported }
-            .distinctBy { it.id }
-        return Merged(kept, all.size - kept.size)
-    }
+        MatchMerger.merge(jrs, jrkan).matches
 
     /**
-     * 合并两个来源的状态：取更可信的那个。
+     * 合并两个源（委托给 [MatchMerger]）。
      *
-     * 可信度排序：FINISHED > LIVE > UPCOMING。
-     *
-     * 为什么要这样而不是"后合并的赢"：
-     * - JRS 列表的"直播中"会滞后好几小时（已结束的场次还标着直播中）
-     * - JRKAN 自带 "MM-dd HH:mm"，可以拿本地时钟双向校正
-     * JRS 后合并，直接用 m.status 会把 JRKAN 更准的状态覆盖成滞后值。
-     *
-     * 后续 correctLiveStatuses 还会用详情页/时钟再校正一遍，这里只是别把
-     * 已经更准的状态改差。
+     * 原先这段纯逻辑（归一化 key / 状态可信度 / 联赛取优 / 去重）长在本类里，
+     * 和抓取/重试/缓存/协程样板混在同一个千行文件中 —— 改一处要在一堆 IO 里定位。
+     * 抽出去之后 [MatchMerger] 可以脱离仓库单独测（D10）。
      */
-    private fun betterStatus(a: MatchStatus, b: MatchStatus): MatchStatus =
-        if (statusRank(b) > statusRank(a)) b else a
-
-    private fun statusRank(s: MatchStatus): Int = when (s) {
-        MatchStatus.FINISHED -> 3
-        MatchStatus.LIVE -> 2
-        MatchStatus.UPCOMING -> 1
-    }
-
-    /**
-     * 归一化队名用于跨源匹配（去掉空白差异），并带上开赛日期防止同队重复场次被合并。
-     *
-     * ⚠️ 主客队必须**排序后**拼接：实测 JRS 列表与 JRKAN 的主客顺序相反
-     * （JRS "骑士 vs 76人" / JRKAN "76人 vs 骑士"），按固定 "home|away" 排列
-     * 会让两源的 key 永远对不上——同一场被拆成两张卡，点进去各只有半边信号。
-     * 排序后顺序无关，仅日期+队名对决定归属（背靠背两场靠日期区分，仍然安全）。
-     */
-    private fun normalizeKey(m: Match): String {
-        val day = m.startAtMillis?.let {
-            // ⚠️ 合并键的"哪一天"必须按北京时间算（review/02-data.md P2-2）：
-            // 用 systemDefault() 时，设备在 UTC-5 会让同一个 epoch 落到前一天的日期，
-            // 两源对同一场的 key 就对不上 —— 同一场拆成两张卡、各只有半边信号。
-            java.time.Instant.ofEpochMilli(it)
-                .atZone(MatchStatusClock.SOURCE_ZONE)
-                .toLocalDate()
-                .toString()
-        } ?: fallbackDayKey(m)
-        val (t1, t2) = listOf(m.homeTeam, m.awayTeam).map { it.replace(WHITESPACE, "") }.sorted()
-        return "$day|$t1|$t2"
-    }
-
-    /**
-     * 拿不到开赛时间戳时的合并键日期部分（review/02-data.md P2-12）。
-     *
-     * ## 旧实现的问题
-     *
-     * 旧兜底是 `m.timeLabel.substringBefore(' ')`。JRS 的"直播中"行
-     * `timeLabel` 就是 `"直播中"`，于是 key 变成 `"直播中|A|B"`，
-     * 而 JRKAN 同一场是 `"10-25|A|B"` —— 两者永不相等，
-     * 同一场被拆成两张卡、各只有半边信号（用户看到"场次重复"且线路不全）。
-     *
-     * ## 现在的兜底
-     *
-     * 先看 `timeLabel` 里有没有 `MM-dd`（JRKAN 形态），有就用它；
-     * 否则退到**当天**（北京时间）—— "直播中"的比赛必然发生在今天，
-     * 这个推断比字面量强得多，且两源都会落到同一个日期上。
-     *
-     * 仍然可能误合并（同一天同一对队打两场），但那种情况极少，
-     * 而"同一场拆成两张卡"是每次都会发生 —— 取舍明确。
-     */
-    private fun fallbackDayKey(m: Match): String {
-        val md = MMDD.find(m.timeLabel)
-        if (md != null) {
-            // "10-25" 形态：补上当前年份，保持与正常路径同样的 key 形状
-            val year = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE).year
-            return runCatching {
-                java.time.LocalDate.of(
-                    year,
-                    md.groupValues[1].toInt(),
-                    md.groupValues[2].toInt(),
-                ).toString()
-            }.getOrDefault(m.timeLabel)
-        }
-        // 连 MM-dd 都没有（"直播中"/"未开始"）：用当天
-        return java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE).toString()
-    }
+    private fun merge(jrs: List<Match>, jrkan: List<Match>): MatchMerger.Merged =
+        MatchMerger.merge(jrs, jrkan)
 
     /**
      * 拉取某场赛事的全部信号，并用详情页时间校正"直播中"（源站列表缓存会滞后）。
@@ -952,6 +1136,8 @@ class MatchRepository(
      * 开关是数据来源的变更，不该受上一次配置的缓存影响。
      */
     fun clearDetailCache() {
+        // D18：缓存被整体清掉也该留痕（"刷新线路"类投诉的第一嫌疑点）
+        debugLog("MatchRepo", "详情页缓存被整体清空（数据源开关变更）")
         synchronized(detailCache) { detailCache.clear() }
     }
 
@@ -966,6 +1152,9 @@ class MatchRepository(
      * 只清这一场，不动其它场次（其它场次的缓存仍在 TTL 内，继续省请求）。
      */
     fun invalidateDetailCache(detailId: String) {
+        // D18：失效路径要能观测 —— 否则"点了刷新线路却拿到旧正文"只能靠猜。
+        // ⚠️ 只打 detailId，不打 URL（URL 会带域名与签名 query）。
+        debugLog("MatchRepo", "详情页缓存被显式失效: $detailId")
         synchronized(detailCache) {
             // key 是 detailId 而不是 URL：详情页现在有多个候选域名
             // （[SourceEndpoints.jrsDetailUrls]），按写死的某个域名去 remove
@@ -1061,6 +1250,11 @@ class MatchRepository(
             source.pageUrl,
             synchronized(listFailedHosts) { listFailedHosts.toSet() },
         )
+        // D9：冷却窗口内一个请求都不发（与列表/详情路径同一条纪律）
+        coolingCodeFor(candidates)?.let { code ->
+            debugLog("MatchRepo", "播放页处于限流冷却中(HTTP $code)，本轮不发请求")
+            return Expansion(emptyList(), pageFetched = false)
+        }
         // 只要**有一页**拿到过正文就记下来：此时"0 条线路"是事实（全是主播线路），
         // 而不是"没连上"。两种情况对调用方的含义完全不同，见 [Expansion]。
         var pageFetched = false
@@ -1075,7 +1269,17 @@ class MatchRepository(
                     // 镜像与主域名同属一个站点家族，大概率共享限流窗口。
                     Log.w("MatchRepo", "播放页被拒绝(HTTP ${r.code})，放弃重试: ${redactUrl(url)}")
                     synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
+                    // D9：记一次冷却，让后续调用不再撞限流窗口
+                    startCooldown(url, r.code)
                     return Expansion(emptyList(), pageFetched)
+                }
+                is FetchResult.NotFound -> {
+                    // ⚠️ D3：404/410 **不重试、不登记 host 失败**。
+                    // 已结束场次的播放页实测就是 404：登记了会让主域名被降到候选队尾，
+                    // 之后整个会话的列表/详情/播放都先敲镜像。
+                    // 换下一个候选（镜像上可能还留着一份）。
+                    debugLog("MatchRepo", "播放页不存在(HTTP ${r.code})，不重试: ${redactUrl(url)}")
+                    continue
                 }
                 is FetchResult.Unreachable -> {
                     synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }

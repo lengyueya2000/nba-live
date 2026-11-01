@@ -95,6 +95,20 @@ internal fun safeLogWarn(tag: String, message: String, t: Throwable) {
 }
 
 /**
+ * 无异常对象时的安全日志（review/optimization-review.md U20）。
+ *
+ * ⚠️ 本重载**只接受纯字面量文案**：它的存在是为了让"没有 throwable 的场景"也能
+ * 走 `safeLogWarn` 这个名字，从而让"`ui/` 与 `MainActivity` 里不许直接调 `Log.`"
+ * 这条纪律可以被**机械地**守住（守卫见 `LogCallDisciplineTest`）。
+ *
+ * 往这里拼 URL/签名/异常 message 一样会泄露 —— 文案由调用方负责不含敏感信息；
+ * 有异常对象时请用上面那个三参重载（它会脱敏 message）。
+ */
+internal fun safeLogWarn(tag: String, message: String) {
+    Log.w(tag, message)
+}
+
+/**
  * 给用户看的异常简述：**脱敏后的 message**，没有 message 时退回异常类型。
  *
  * ⚠️ 为什么错误提示也要脱敏（review/02-P1-5 的延伸）：

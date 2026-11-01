@@ -166,6 +166,43 @@ object PlaybackHealth {
     }
 
     /**
+     * 「现在是否**真的在出流**」——死胡同判据的第一道否决（P2，复核修正版）。
+     *
+     * ## 为什么不能直接传 `sawMediaRequest`
+     *
+     * 审查原稿建议把 `WebSurface` 里写死的 `hasStream = false` 改成 `sawMediaRequest.get()`。
+     * 那**有害**：该标志一旦为 true 就再也不回 false（见 `review/opt/verification.md` 第 2 节），
+     * 而这条判据要覆盖的**唯一目标场景**恰恰是"页面确实发过媒体请求、只是那条请求 404"
+     * （`WebErrorProbeScript` 的 KDoc）。接上它等于把"源站播放器报错时给用户出口"永久关掉。
+     *
+     * 真语义是"**最近**还在拉媒体"：只有窗口内仍有**新的**媒体请求才算在出流。
+     * 这样死胡同出口仍然会出现，只是给"正在自愈"的页面多留一口气。
+     *
+     * @param recentMediaRequestAtMs 最近一次媒体请求的单调时刻；`0L` = 本次导航内还没见过
+     * @param nowMs 当前单调时刻（与前者同源，见 `PlayerClock`）
+     * @param windowMs 窗口长度，默认 [MEDIA_REQUEST_STREAM_WINDOW_MS]
+     */
+    fun hasStreamNow(
+        recentMediaRequestAtMs: Long,
+        nowMs: Long,
+        windowMs: Long = MEDIA_REQUEST_STREAM_WINDOW_MS,
+    ): Boolean = recentMediaRequestAtMs > 0L && nowMs - recentMediaRequestAtMs <= windowMs
+
+    /**
+     * [hasStreamNow] 的窗口长度：**2 秒**。
+     *
+     * 取值依据（复核修正后的口径）：
+     *  - 取大（≥15 秒）会让"页面发过一次媒体请求、随后那条 404"这个**唯一目标场景**
+     *    在窗口内被判成"在出流"，死胡同出口要等窗口过期才出现 —— 功能名存实亡；
+     *  - 取 2 秒只把"错误面板出现的同时页面**仍在**拉分片"这一种情形算作在出流：
+     *    那是源站播放器正在自愈（或只是瞬时抖动）的样子，值得多给一口气。
+     *    HLS 分片请求间隔通常 2~10 秒，2 秒窗口不会把"请求在流动"的页面误判成死线；
+     *  - 这条判据只在页面**自己报了错**之后才被消费（`pageErrorAt > 0`），
+     *    所以窗口抖动不影响健康页面 —— 那时根本不走这条分支。
+     */
+    const val MEDIA_REQUEST_STREAM_WINDOW_MS: Long = 2_000L
+
+    /**
      * 取 URL 的 path 部分（剥掉 query 与 fragment），小写便于匹配。
      * 空/畸形返回 null 让调用方判否。
      */

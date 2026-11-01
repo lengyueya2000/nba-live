@@ -106,6 +106,10 @@ class HttpClient(
             body != null -> FetchResult.Ok(body)
             // 403/429 是源站明确拒绝：再打只会加剧限流
             status == 403 || status == 429 -> FetchResult.Rejected(status)
+            // ⚠️ 404/410 单独归类（review/optimization-review.md D3）：
+            // 它们不是"网络层失败"，把它塞进 Unreachable 会让仓库层
+            // 把一个健康域名登记成"挂了"，之后整个会话都先敲镜像。
+            status == 404 || status == 410 -> FetchResult.NotFound(status)
             status > 0 -> FetchResult.Unreachable("HTTP $status")
             else -> FetchResult.Unreachable(null)
         }

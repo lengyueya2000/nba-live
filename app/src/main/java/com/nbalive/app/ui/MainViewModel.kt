@@ -1,6 +1,6 @@
 package com.nbalive.app.ui
 
-import android.util.Log
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,25 +13,40 @@ import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.remote.EspnScoreboard
 import com.nbalive.app.data.remote.FetchResult
 import com.nbalive.app.data.remote.HttpClient
+import com.nbalive.app.data.remote.ReleaseRepository
 import com.nbalive.app.data.remote.debugLog
 import com.nbalive.app.data.repository.MatchRepository
 import com.nbalive.app.data.repository.ScoreboardRepository
 import com.nbalive.app.data.remote.StreamUrlResolver
 import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.data.remote.safeMessage
+import java.time.ZonedDateTime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** 页面路由 */
 enum class Route { LIST, DETAIL, PLAYER }
 
+/**
+ * 列表页状态（U6：标 `@Immutable`）。
+ *
+ * ⚠️ 含 `List`/`Map` 字段，而它们是**接口**类型：不标注时 Compose 会把整个类
+ * 推断为 unstable，以它为参数的 composable 无法进入 skip 路径 —— 任何父级失效
+ * 都要重跑它的函数体。数据层（`Match`/`StreamSource`）早就用了同一手段，
+ * 这里的字段都是构造时一次性算出来的派生值，标注是诚实的。
+ */
+@Immutable
 data class MatchListUiState(
     /** 首载中（还没有任何数据）：整屏 loading */
     val loading: Boolean = true,
@@ -84,6 +99,8 @@ data class MatchListUiState(
     )
 }
 
+/** 详情页状态（U6：标 `@Immutable`，理由见 [MatchListUiState]）。 */
+@Immutable
 data class MatchDetailUiState(
     val match: Match? = null,
     val signals: List<StreamSource> = emptyList(),
@@ -92,6 +109,8 @@ data class MatchDetailUiState(
     val error: String? = null,
 )
 
+/** 播放页状态（U6：标 `@Immutable`，理由见 [MatchListUiState]）。 */
+@Immutable
 data class PlayerUiState(
     val match: Match? = null,
     val signals: List<StreamSource> = emptyList(),
@@ -169,10 +188,17 @@ class MainViewModel(
      *
      * 生产默认走它：单源失败不再是只写一行 Log.w 的静默缺数据，
      * 调用方能把"JRS 源暂时不可用，仅显示部分场次"如实告诉用户。
+     *
+     * ⚠️ `forceRefresh` 必须一路传下去（fix-data 的 30 秒列表短缓存，D5）：
+     * 只收 `enabled` 时用户下拉刷新会拿到最多 30 秒前的列表 ——
+     * 用户的显式操作被缓存吞掉，是这一轮引入的回归。
+     *  - 下拉刷新 / 顶栏刷新 / 「重试」按钮 / 换数据源 → `true`
+     *  - 冷启动与进程重建恢复 → `false`（命中缓存连一次 HTTP 都不发）
      */
-    private val loadOutcome: suspend (Set<Provider>) -> MatchRepository.LoadOutcome = { enabled ->
-        repository.loadMatchesOutcome(enabled)
-    },
+    private val loadOutcome: suspend (Set<Provider>, Boolean) -> MatchRepository.LoadOutcome =
+        { enabled, forceRefresh ->
+            repository.loadMatchesOutcome(enabled = enabled, forceRefresh = forceRefresh)
+        },
     /**
      * 信号加载入口。测试注入它以驱动"进场期间返回/抛异常"等时序，
      * 也覆盖 loadSignals 的取消与失败路径（与 [loadMatches] 同一个理由）。
@@ -205,6 +231,54 @@ class MainViewModel(
      * 测试/预览走默认的 [InMemoryPrefsStore]，一行 Android 代码都不用碰。
      */
     private val prefs: PrefsStore = InMemoryPrefsStore(),
+    /**
+     * 比分源（U5）。
+     *
+     * ⚠️ 原来是在类体里就地 `ScoreboardRepository()`：`ScoreboardRepository` 自己
+     * 有 `fetch` 注入点（见它的 KDoc），但这个注入点在生产路径上**不可达** ——
+     * 比分快照映射、失败静默两条链都没法在 JVM 单测里驱动。
+     */
+    private val scoreboard: ScoreboardRepository = ScoreboardRepository(),
+    /**
+     * 单调时钟（毫秒）：不受用户改系统时间影响，给 [SourceFailureBook] 用（U5）。
+     *
+     * 抽成注入形参而不是私有 `System.nanoTime()` 调用，是为了让"拉黑/解封"
+     * 这类与时间有关的判据能在单测里推进。
+     */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000L },
+    /**
+     * 墙钟（毫秒）：给 [SniffedPlaylistCache] 用（U5）。
+     *
+     * 缓存有效期来自源站签名的**绝对时间戳**（`expire`），必须与墙钟同基准；
+     * 用单调时钟会把 2026 年的时间戳当成"几亿毫秒后"。
+     */
+    private val wallClock: () -> Long = { System.currentTimeMillis() },
+    /**
+     * 状态老化判定的**当前时刻**（U5 / U16）。
+     *
+     * 原来在 [ageListStatuses] 里直接 `ZonedDateTime.now()`，于是
+     * 「3.5 小时窗口」这条边界在 JVM 单测里钉不住。
+     */
+    private val now: () -> ZonedDateTime = { ZonedDateTime.now() },
+    /**
+     * 检查更新的 HTTP 入口（U5）。
+     *
+     * ⚠️ 默认值就是生产路径（`HttpClient.shared.fetch(..., fastFail = true)`）：
+     * 既保持"UI 层不自己 new 客户端"的口径，也让既有接线守卫
+     *（`NewFeaturesWiringTest` 要求 VM 源码里出现 `HttpClient.shared.fetch(`）继续成立。
+     */
+    private val fetchRelease: suspend (String) -> FetchResult = {
+        HttpClient.shared.fetch(it, null, fastFail = true)
+    },
+    /**
+     * 检查更新的**解析层**（U12）。
+     *
+     * 原来 47 行的 `jsonString` 字符串状态机长在 ViewModel 里：`ui/` 直接发 HTTP
+     * 又手写 JSON 取值，越过 `data/` 边界。现在取值在 [ReleaseRepository]
+     *（用 `EspnScoreboard.JsonCursor`，D15 的"两份手写取值器"也收敛了），
+     * VM 只留"删点/落状态"的状态机。
+     */
+    private val releaseRepository: ReleaseRepository = ReleaseRepository(fetch = fetchRelease),
 ) : ViewModel() {
 
     companion object {
@@ -322,7 +396,7 @@ class MainViewModel(
 
     // ---------- 比赛比分（2026-10-31 用户需求） ----------
 
-    private val scoreboard = ScoreboardRepository()
+    // scoreboard 改为构造注入（U5），这里不再就地 new。
 
     /**
      * 比分快照：`matchId` → 那一场的比分。
@@ -397,22 +471,36 @@ class MainViewModel(
      */
     private val sniffedPlaylists = SniffedPlaylistCache()
 
-    /** 单调时钟（毫秒）：不受用户改系统时间影响，与 [SourceFailureBook] 共用。 */
-    private fun nowMs(): Long = System.nanoTime() / 1_000_000L
+    /** 单调时钟（毫秒）：不受用户改系统时间影响，与 [SourceFailureBook] 共用（U5：走注入的 [clock]）。 */
+    private fun nowMs(): Long = clock()
 
     /**
-     * 墙钟（毫秒）：给 [SniffedPlaylistCache] 用。
+     * 墙钟（毫秒）：给 [SniffedPlaylistCache] 用（U5：走注入的 [wallClock]）。
      *
      * 缓存有效期来自源站签名的**绝对时间戳**（`expire`），必须与墙钟同基准；
      * 用单调时钟会把 2026 年的时间戳当成"几亿毫秒后"。
      */
-    private fun wallNowMs(): Long = System.currentTimeMillis()
+    private fun wallNowMs(): Long = wallClock()
 
     /** 这条线现在还能不能被自动选中。 */
     private fun isSourceFailed(pageUrl: String): Boolean = failedSources.isFailed(pageUrl, nowMs())
 
     private val _playerState = MutableStateFlow(PlayerUiState())
     val playerState: StateFlow<PlayerUiState> = _playerState.asStateFlow()
+
+    /**
+     * 顶栏播放页标题（两个队名）—— **U19 的窄状态**。
+     *
+     * ⚠️ 顶栏原来与 [RouteHost] 各收集一次完整的 [playerState]：播放页任何抖动
+     *（`resolving`/`errorId`/`streamUrl` 变化）会同时失效两个重启范围，
+     * 而顶栏只用到 `match` 的两个队名。
+     * 这里把"顶栏要的那点信息"提成独立状态：`distinctUntilChanged` 保证
+     * 队名没变时不发新值，顶栏不会跟着播放页抖动重组。
+     */
+    val playerTitle: StateFlow<String?> = _playerState
+        .map { st -> st.match?.let { "${it.homeTeam} VS ${it.awayTeam}" } }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
      * 已经**自动换线试过**的线路下标（线上黑屏修复，见 [onPlaybackSuspect]）。
@@ -538,76 +626,23 @@ class MainViewModel(
      *
      * ⚠️ 用 `releases/latest` 而不是 `/releases`：后者返回数组、还可能含 draft/prerelease，
      * 取第一个不等于"最新正式版"。
+     *
+     * ⚠️ U12：URL 由这里的仓库坐标常量拼（源码守卫要求 VM 里出现
+     * `REPO_OWNER`/`REPO_NAME`，避免"写两处改一处漏一处"），
+     * **取值**下沉到 [ReleaseRepository]（`data/remote`，用 `EspnScoreboard.JsonCursor`）——
+     * 原来这里有一段 47 行的 `jsonString` 手写状态机，已删除（D15 的重复取值器收敛）。
      */
     private suspend fun fetchLatestRelease(): UpdateCheckPolicy.Decision? {
         val url = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
-        val body = when (val r = HttpClient.shared.fetch(url, null, fastFail = true)) {
-            is FetchResult.Ok -> r.body
-            else -> return null
-        }
-        // 手写取字段（本工程没有 JSON 库，见 EspnScoreboard 的同款理由）
-        val tag = jsonString(body, "tag_name")
-        val html = jsonString(body, "html_url").orEmpty()
-        val notes = jsonString(body, "body").orEmpty()
-        if (tag.isNullOrBlank()) return null
-        val downloadUrl = html.ifBlank {
-            UpdateCheckPolicy.fallbackReleaseUrl(REPO_OWNER, REPO_NAME, tag)
+        val release = releaseRepository.latest(url) ?: return null
+        val downloadUrl = release.htmlUrl.ifBlank {
+            UpdateCheckPolicy.fallbackReleaseUrl(REPO_OWNER, REPO_NAME, release.tag)
         }
         return UpdateCheckPolicy.decide(
-            remoteTag = tag,
+            remoteTag = release.tag,
             localVersion = BuildConfig.VERSION_NAME,
             downloadUrl = downloadUrl,
-            notes = notes,
         )
-    }
-
-    /** 从 JSON 文本里取一个顶层字符串字段（找不到返回 null）。 */
-    private fun jsonString(json: String, key: String): String? {
-        val needle = "\"$key\""
-        var from = 0
-        while (true) {
-            val at = json.indexOf(needle, from)
-            if (at < 0) return null
-            var i = at + needle.length
-            while (i < json.length && json[i].isWhitespace()) i++
-            if (i < json.length && json[i] == ':') {
-                i++
-                while (i < json.length && json[i].isWhitespace()) i++
-                if (i < json.length && json[i] == '"') {
-                    i++
-                    val sb = StringBuilder()
-                    while (i < json.length) {
-                        val c = json[i]
-                        when {
-                            c == '\\' && i + 1 < json.length -> {
-                                val n = json[i + 1]
-                                sb.append(
-                                    when (n) {
-                                        'n' -> '\n'
-                                        't' -> '\t'
-                                        'r' -> '\r'
-                                        'u' -> {
-                                            val hex = json.substring(i + 2, minOf(i + 6, json.length))
-                                            i += 4
-                                            hex.toIntOrNull(16)?.toChar() ?: ' '
-                                        }
-                                        else -> n
-                                    },
-                                )
-                                i += 2
-                            }
-                            c == '"' -> return sb.toString()
-                            else -> {
-                                sb.append(c)
-                                i++
-                            }
-                        }
-                    }
-                    return null
-                }
-            }
-            from = at + needle.length
-        }
     }
 
     /**
@@ -663,12 +698,29 @@ class MainViewModel(
     }
 
     init {
-        refresh()
+        // 冷启动：**不**强制刷新 —— 命中 fix-data 的 30 秒列表短缓存时
+        // 连一次 HTTP 都不发（进程重建/快速回前台属于同一类"系统行为"）
+        refreshWith(forceRefresh = false)
     }
 
     // ---------- 列表 ----------
 
-    fun refresh() {
+    /**
+     * 用户**主动**刷新：下拉刷新 / 顶栏刷新按钮 / 「重试」按钮 / 切换数据源。
+     *
+     * ⚠️ 必须 `forceRefresh = true`：数据层有 30 秒的列表短缓存（D5），
+     * 不穿透的话用户点了刷新却可能拿到 30 秒前的列表 ——
+     * 显式操作被缓存吞掉（fix-data 把 `forceRefresh` 暴露出来正是为了这个）。
+     */
+    fun refresh() = refreshWith(forceRefresh = true)
+
+    /**
+     * 刷新实现。
+     *
+     * @param forceRefresh 绕过数据层的 30 秒短缓存与 single-flight（用户显式刷新）；
+     *   冷启动/自动恢复传 false。
+     */
+    private fun refreshWith(forceRefresh: Boolean) {
         // 取消上一次：连点刷新会让多次 loadMatches 并发跑，
         // 每次都要为直播中的场次并发拉详情页，对源站是成倍的请求量
         refreshJob?.cancel()
@@ -711,7 +763,8 @@ class MainViewModel(
                 } else {
                     // ⚠️ 把**当前**开关状态传下去：关掉的源在数据层就不发请求
                     // （用户说的是"不解析"，不是"解析完再过滤"）
-                    val outcome = loadOutcome(prefs.enabledProviders.value)
+                    // ⚠️ forceRefresh 也要一路传下去（下拉刷新必须穿透 30s 短缓存）
+                    val outcome = loadOutcome(prefs.enabledProviders.value, forceRefresh)
                     _listState.update {
                         it.copy(
                             loading = false,
@@ -765,16 +818,41 @@ class MainViewModel(
      * 用户不手动刷新，早上 10:00 开赛的比赛到晚上还挂着「直播中」。
      * 这里做**纯内存**重算：零网络请求，不违反"不轮询源站"的取舍。
      *
-     * 由界面在列表可见时每分钟调一次（切后台自动停，见 NbaLiveApp）。
+     * 由界面在列表可见时每分钟调一次（lifecycle 驱动，见 `AppListStatusAgeEffect`）。
+     *
+     * ⚠️ U16：老化**同时**更新 [detailState]/[playerState] 里持有的那份 `Match` 副本。
+     * 它们是从列表拿的旧对象（`playMatch`/`restorePendingDetail` 各存一份），
+     * 只老化列表会让用户的详情页/播放页一直显示那份过期的「直播中」
+     *（需要停留跨越 3.5 小时窗口才可见，属少数场景，但修法只是顺带同步）。
      */
     fun ageListStatuses() {
         val current = _listState.value.matches
         if (current.isEmpty()) return
-        val aged = repository.agedMatches(current, java.time.ZonedDateTime.now())
+        val aged = repository.agedMatches(current, now())
         // agedMatches 没变化时会返回原引用，这里再挡一层 equals，
         // 避免 StateFlow 收到"内容相同但实例不同"的列表触发全列表重组
         if (aged != current) {
             _listState.update { it.copy(matches = aged) }
+            syncAgedMatchToDetailAndPlayer(aged)
+        }
+    }
+
+    /**
+     * 把老化后的比赛对象同步给详情页/播放页（U16）。
+     *
+     * ⚠️ 只按 id 替换**已经持有的那一场**：路由不在 DETAIL/PLAYER 时那两个状态里
+     * 的 match 可能是上一场（`back()` 会清播放地址但留着 match），
+     * 这里更新它无害（它们本来就要跟着列表数据走）。
+     */
+    private fun syncAgedMatchToDetailAndPlayer(aged: List<Match>) {
+        val updated = aged.associateBy { it.id }
+        _detailState.update { st ->
+            val fresh = st.match?.let { m -> updated[m.id] }
+            if (fresh == null || fresh === st.match) st else st.copy(match = fresh)
+        }
+        _playerState.update { st ->
+            val fresh = st.match?.let { m -> updated[m.id] }
+            if (fresh == null || fresh === st.match) st else st.copy(match = fresh)
         }
     }
 
@@ -1164,7 +1242,10 @@ class MainViewModel(
         // 这里再加一道：嗅探到的流的 Referer 必须属于当前播放页，
         // 否则忽略（拿不到 referer 时放行 —— 不能因为缺信息就丢掉真流）。
         if (referer != null && !belongsToPage(referer, state.webFallbackUrl!!)) {
-            Log.w("MainViewModel", "忽略不属于当前播放页的嗅探结果（P2-4）")
+            // ⚠️ U20：这里是 src/main 里最后一处裸 Log.w。文案是纯字面量、无泄漏风险，
+            // 但纪律要一致：`LoggingDisciplineTest` 只拦"，t"这种直传 throwable 的形态，
+            // 将来有人照着它把带签名的 URL 拼进第二参数，守卫拦不住。
+            safeLogWarn("MainViewModel", "忽略不属于当前播放页的嗅探结果（P2-4）")
             return
         }
         _playerState.update {
@@ -1283,6 +1364,25 @@ class MainViewModel(
         if (state.playbackSuspect) return
         _playerState.update { it.markPlaybackSuspect(true) }
         advanceAfterNoSignal(state, WebPageDeadEndPolicy.advanceNote())
+    }
+
+    /**
+     * 网页死胡同的**恢复条出现**时只上报"疑似"（P18，fix-player 的接线点）。
+     *
+     * ## 与 [onPageDeadEnd] / [onPlaybackSuspect] 的区别 —— 这里**绝不换线**
+     *
+     * `WebPageDeadEndPolicy` 探到错误后先给用户一条恢复条（约 1.5 秒出现），
+     * 到 9.5 秒才由 [onPageDeadEnd] 自动换线。这中间的**8 秒**里
+     * `playbackSuspect` 还是 false，于是用户按 Home 仍会进一块坏小窗
+     *（`PlaybackHealth.blocksAutoEnterPip` 只看这个标记）。
+     *
+     * ⚠️ **不能**复用 [onPlaybackSuspect]：它后面紧跟 `advanceAfterNoSignal(...)`，
+     * 复用会让恢复条与那 8 秒的选择窗口当场消失（用户还没看到恢复条就被换线）。
+     * 所以这里只做一个纯粹的标记写入：不换线、不提示、不改线路。
+     */
+    fun onDeadEndSuspectOnly() {
+        if (_playerState.value.playbackSuspect) return
+        _playerState.update { it.markPlaybackSuspect(true) }
     }
 
     /**

@@ -135,9 +135,12 @@ internal fun bottomTabIcon(tab: NavTab, active: Boolean): ImageVector = when (ta
 /**
  * 顶栏宿主：按路由选顶栏内容（品牌顶栏 / 二级页顶栏）。
  *
- * ⚠️ 播放页的标题来自 `playerState.match`，所以 `playerState` 收集在**这里**
- * 而不是根节点：根节点只认路由，任何一次"解析中/换线路"的状态抖动都不需要
- * 推动整棵树重组（review/03-ui.md P2-15）。
+ * ⚠️ 播放页的标题来自 `playerState.match`，所以顶栏**只读它要的窄状态**
+ *（`viewModel.playerTitle`：两个队名）而不是整份 `PlayerUiState`。
+ * 旧实现与 `RouteHost` 各收集一次完整的 `playerState`（review/03-ui.md P2-15
+ * 的后续，U19）：播放页任何抖动（`resolving`/`errorId`/`streamUrl` 变化）
+ * 都会同时失效两个重启范围，而顶栏其实只用到两个队名。
+ * 窄状态由 `distinctUntilChanged` 收口：队名没变就不发新值。
  */
 @Composable
 internal fun AppTopBar(
@@ -149,7 +152,7 @@ internal fun AppTopBar(
     onRefresh: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val playerState by viewModel.playerState.collectAsStateWithLifecycle()
+    val playerTitle by viewModel.playerTitle.collectAsStateWithLifecycle()
     when (route) {
         Route.LIST -> BrandTopBar(
             darkMode = darkMode,
@@ -163,7 +166,7 @@ internal fun AppTopBar(
             moreItems = listOf("刷新线路" to viewModel::refreshSignals),
         )
         Route.PLAYER -> SubPageTopBar(
-            title = playerState.match?.let { "${it.homeTeam} VS ${it.awayTeam}" } ?: "播放",
+            title = playerTitle ?: "播放",
             onBack = onBack,
         )
     }

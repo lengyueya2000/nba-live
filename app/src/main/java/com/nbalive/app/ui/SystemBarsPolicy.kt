@@ -76,11 +76,26 @@ object SystemBarsPolicy {
      * 若面板开着期间计时器已经触发过（或用户手动收起了栏），
      * 关闭面板时必须有一步显式恢复，否则栏不会自己回来。
      *
+     * ## ⚠️ 为什么必须区分"这次变化的方向"（P6，`player.md` 第 6 条）
+     *
+     * 旧判据只看**当前**状态（`fullscreen && !pickerOpen && !livePanelOpen`），
+     * 于是"**进入**全屏"这一次变化也命中：另一个 `LaunchedEffect(fullscreen)`
+     * 刚把 `controlsVisible` 写成 false，回补那个 effect 又写回 true ——
+     * 净效果取决于 Compose 启动两个 effect 的顺序（`AppEffects` 自己批评过这种依赖），
+     * 观感是全屏后浮层**没有**立刻收起、要等 10 秒自动隐。
+     *
+     * 现在把"面板是否**刚刚关闭**"作为显式输入：只有真的从"面板开着"变到"面板关了"
+     * 才回补；进全屏那一次没有这种变化，就不会抵消"进全屏收起"。
+     *
      * @param fullscreen 只有全屏才有"自动收起的栏"这回事
+     * @param panelWasOpen 上一次组合时面板是否开着。
+     *   ⚠️ 默认 `true` = 保持 P2-8 的原始语义（等价于旧写法），
+     *   让不追踪历史的调用方退化成旧行为而不是静默丢失回补。
      */
     fun shouldRestoreControlsOnPanelClose(
         pickerOpen: Boolean,
         livePanelOpen: Boolean,
         fullscreen: Boolean,
-    ): Boolean = fullscreen && !pickerOpen && !livePanelOpen
+        panelWasOpen: Boolean = true,
+    ): Boolean = fullscreen && !pickerOpen && !livePanelOpen && panelWasOpen
 }

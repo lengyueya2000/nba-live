@@ -38,6 +38,22 @@ class JrsParser {
         /** 源站使用的播放器域名特征（已验证：play.sportsteam368.com 等）。 */
         private val PLAYER_HOST_MARKERS = listOf("sportsteam", "jrkan", "jrs")
 
+        // ⚠️ 热路径正则一律提成常量（review/optimization-review.md D13）：
+        // 旧实现每解析一个列表项/详情页都新建 `Regex`（一次刷新几十场就是几十次
+        // `Pattern` 编译）。与 `MatchMerger.WHITESPACE`（02-P2-12 的同类修复）保持同一纪律。
+
+        /** 列表项 href 里的详情页 id（只接受 `/live/{数字}.html`）。 */
+        private val LIVE_ID = Regex("""/live/(\d+)\.html""")
+
+        /** 计划开赛时间里的 `HH:mm`（带捕获组，校正用）。 */
+        private val HHMM = Regex("""(\d{1,2}):(\d{2})""")
+
+        /** 只判"有没有 HH:mm"时用的宽松形态（不捕获）。 */
+        private val HHMM_LOOSE = Regex("""\d{1,2}:\d{2}""")
+
+        /** 列表分组标题里的日期（容忍 `2026-10-21 星期三` / `2026/10/21` 等变体）。 */
+        private val DATE = Regex("""(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})""")
+
         /** 队徽相对路径的补全基准（源站目前给的是绝对 URL，这里只是兜底） */
         private const val SITE_ORIGIN = "https://jrszbt.com"
 
@@ -66,7 +82,7 @@ class JrsParser {
                 val timeRaw = anchor.selectFirst(".list-info-time")?.text()?.trim().orEmpty()
                 // 只接受 /live/{数字}.html；javascript: 等异常 href 会得到空 id，
                 // 而空 id 会让 LazyVerticalGrid 的 key 重复并崩溃，必须跳过
-                val id = Regex("""/live/(\d+)\.html""").find(path)?.groupValues?.get(1)
+                val id = LIVE_ID.find(path)?.groupValues?.get(1)
                 if (id == null) {
                     Log.w(TAG, "JRS 列表项 href 不合预期，跳过：${redactText(path)}")
                     return@forEach
@@ -179,7 +195,7 @@ class JrsParser {
             Jsoup.parse(html).selectFirst(".match-info-time")?.text()
         }.getOrNull() ?: return null
         // 文案型内容（"直播中"）拿不到 HH:mm 就返回 null —— 不猜、不误杀
-        return Regex("""\d{1,2}:\d{2}""").find(text)?.value
+        return HHMM_LOOSE.find(text)?.value
     }
 
     /**
@@ -206,7 +222,7 @@ class JrsParser {
         val day = match.startAtMillis?.let {
             java.time.Instant.ofEpochMilli(it).atZone(MatchStatusClock.SOURCE_ZONE).toLocalDate()
         } ?: return null
-        val hm = Regex("""(\d{1,2}):(\d{2})""").find(scheduledTime) ?: return null
+        val hm = HHMM.find(scheduledTime) ?: return null
         val hour = hm.groupValues[1].toIntOrNull() ?: return null
         val minute = hm.groupValues[2].toIntOrNull() ?: return null
         val base = runCatching {
@@ -247,11 +263,11 @@ class JrsParser {
     private fun parseDateTime(dateLabel: String?, timeLabel: String): Long? {
         if (dateLabel.isNullOrBlank()) return null
         // 宽松提取日期：容忍 "2026-10-21 星期三"、"2026/10/21" 等变体
-        val dm = Regex("""(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})""").find(dateLabel) ?: return null
+        val dm = DATE.find(dateLabel) ?: return null
         val date = runCatching {
             java.time.LocalDate.of(dm.groupValues[1].toInt(), dm.groupValues[2].toInt(), dm.groupValues[3].toInt())
         }.getOrNull() ?: return null
-        val hm = Regex("""(\d{1,2}):(\d{2})""").find(timeLabel)
+        val hm = HHMM.find(timeLabel)
         val h = hm?.groupValues?.get(1)?.toIntOrNull() ?: 0
         val m = hm?.groupValues?.get(2)?.toIntOrNull() ?: 0
         // 直播中行没有 HH:mm：退回当天 00:00，至少分组/排序落在正确的一天

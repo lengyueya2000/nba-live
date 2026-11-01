@@ -136,10 +136,23 @@ class HttpClientFetchTest {
     }
 
     @Test
-    fun `404 判为 Unreachable 可以重试`() = runBlocking {
+    fun `404 判为 NotFound 既不重试也不登记 host 失败`() = runBlocking {
         serve(404, "not found")
         val r = client.fetch(url())
-        assertTrue("404 是线路下线，值得换一条重试，实际: $r", r is FetchResult.Unreachable)
+        assertTrue(
+            "404 是「这个页面没了」，不是「网络层失败」：归 Unreachable 会让仓库层把" +
+                "健康域名登记成挂了、之后整个会话都先敲镜像（review D3），实际: $r",
+            r is FetchResult.NotFound,
+        )
+        assertEquals(404, (r as FetchResult.NotFound).code)
+    }
+
+    @Test
+    fun `410 同样判为 NotFound`() = runBlocking {
+        serve(410, "gone")
+        val r = client.fetch(url())
+        assertTrue("410（已删除）与 404 同族，实际: $r", r is FetchResult.NotFound)
+        assertEquals(410, (r as FetchResult.NotFound).code)
     }
 
     @Test

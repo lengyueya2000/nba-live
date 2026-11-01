@@ -47,6 +47,187 @@ internal object GuardSourceScan {
             .toString()
 
     /**
+     * **只剔注释、保留字符串字面量**（review/optimization-review.md H2）。
+     *
+     * ## 为什么需要第二个剔除法
+     *
+     * [stripNonCode] 连字符串一起剔，所以它**没法**断言"构建脚本里必须出现
+     * `endsWith("-unsigned.apk")`"这类判据 —— 那个字面量本身就在字符串里，
+     * 剔掉之后断言恒假。于是这些判据只能去查**原始文本**，
+     * 而原始文本里**注释也会命中**：实测 `app/build.gradle.kts:81`
+     * 与 `:174` 的注释里就逐字写着 `app-UNSIGNED-` 与 `PackageAndroidArtifact`，
+     * 于是把真改名逻辑（`:135`/`:160`）删掉，守卫照样是绿的
+     * （正是 `GuardHygieneTest` 明文讨伐的"断言命中注释"形态）。
+     *
+     * 这里把**注释**换成空格、其余原样保留，于是"注释里提一句"不能再满足判据，
+     * 而字符串字面量仍然可匹配。用途：构建脚本/YAML 这类"判据里必然含字符串"的场景。
+     */
+    fun stripComments(text: String): String {
+        val out = StringBuilder(text.length)
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            when {
+                c == '/' && text.getOrNull(i + 1) == '/' -> {
+                    while (i < text.length && text[i] != '\n') {
+                        out.append(' ')
+                        i++
+                    }
+                }
+                c == '/' && text.getOrNull(i + 1) == '*' -> i = skipBlockComment(text, i, out)
+                c == '"' -> i = copyStringLiteral(text, i, out)
+                c == '\'' -> i = copyCharLiteral(text, i, out)
+                else -> {
+                    out.append(c)
+                    i++
+                }
+            }
+        }
+        return out.toString()
+    }
+
+    /** 块注释（Kotlin 允许嵌套）→ 空格；返回块注释**结束符之后**的下标。 */
+    private fun skipBlockComment(s: String, start: Int, out: StringBuilder): Int {
+        out.append("  ")
+        var i = start + 2
+        var depth = 1
+        while (i < s.length && depth > 0) {
+            when {
+                s[i] == '/' && s.getOrNull(i + 1) == '*' -> {
+                    depth++
+                    out.append("  ")
+                    i += 2
+                }
+                s[i] == '*' && s.getOrNull(i + 1) == '/' -> {
+                    depth--
+                    out.append("  ")
+                    i += 2
+                }
+                else -> {
+                    out.append(if (s[i] == '\n') '\n' else ' ')
+                    i++
+                }
+            }
+        }
+        return i
+    }
+
+    /**
+     * 原样复制字符串字面量（含 `"""…"""` 与其中的 `${…}`）。
+     *
+     * ⚠️ 必须原样复制：本仓库的 JS 注入脚本就写在原样字符串里，
+     * 里面含 JS 的块注释（星号斜杠那种）。若在这里顺手剔注释，
+     * 那些本来属于字符串内容的字符会被吃掉，判据的匹配对象就不是原文了。
+     *
+     * ⚠️ 本文件的注释里**不要**写出块注释的开始符 —— Kotlin 允许块注释嵌套，
+     * 写出来会让整段 KDoc 提前"打开"一层嵌套注释并吞掉后面所有代码
+     * （本轮真的踩了：一个反斜杠转义的结束符骗不过词法器，最后报 "Unclosed comment"）。
+     */
+    private fun copyStringLiteral(s: String, start: Int, out: StringBuilder): Int {
+        if (s.getOrNull(start + 1) == '"' && s.getOrNull(start + 2) == '"') {
+            out.append("\"\"\"")
+            var i = start + 3
+            while (i < s.length) {
+                if (s[i] == '"' && s.getOrNull(i + 1) == '"' && s.getOrNull(i + 2) == '"') {
+                    out.append("\"\"\"")
+                    return i + 3
+                }
+                out.append(s[i])
+                i++
+            }
+            return i
+        }
+        out.append('"')
+        var i = start + 1
+        while (i < s.length) {
+            when {
+                s[i] == '\\' && i + 1 < s.length -> {
+                    out.append(s[i]).append(s[i + 1])
+                    i += 2
+                }
+                s[i] == '$' && s.getOrNull(i + 1) == '{' -> {
+                    out.append("${'$'}{")
+                    i = copyInterpolation(s, i + 2, out)
+                }
+                s[i] == '"' -> {
+                    out.append('"')
+                    return i + 1
+                }
+                // 未闭合（写错了）：到行尾收手，不吞掉整个文件
+                s[i] == '\n' -> return i
+                else -> {
+                    out.append(s[i])
+                    i++
+                }
+            }
+        }
+        return i
+    }
+
+    /**
+     * 原样复制 `${…}` 内部（可能含嵌套字符串、注释与花括号），
+     * 返回已消费 `}` 之后的下标。
+     */
+    private fun copyInterpolation(s: String, start: Int, out: StringBuilder): Int {
+        var i = start
+        var depth = 1
+        while (i < s.length) {
+            val c = s[i]
+            when {
+                c == '{' -> {
+                    depth++
+                    out.append(c)
+                    i++
+                }
+                c == '}' -> {
+                    depth--
+                    out.append(c)
+                    i++
+                    if (depth == 0) return i
+                }
+                c == '"' -> i = copyStringLiteral(s, i, out)
+                c == '\'' -> i = copyCharLiteral(s, i, out)
+                c == '/' && s.getOrNull(i + 1) == '/' -> {
+                    while (i < s.length && s[i] != '\n') {
+                        out.append(' ')
+                        i++
+                    }
+                }
+                c == '/' && s.getOrNull(i + 1) == '*' -> i = skipBlockComment(s, i, out)
+                else -> {
+                    out.append(c)
+                    i++
+                }
+            }
+        }
+        return i
+    }
+
+    /** 原样复制字符字面量（`'a'` / `'\n'`）。 */
+    private fun copyCharLiteral(s: String, start: Int, out: StringBuilder): Int {
+        out.append('\'')
+        var i = start + 1
+        while (i < s.length) {
+            when {
+                s[i] == '\\' && i + 1 < s.length -> {
+                    out.append(s[i]).append(s[i + 1])
+                    i += 2
+                }
+                s[i] == '\'' -> {
+                    out.append('\'')
+                    return i + 1
+                }
+                s[i] == '\n' -> return i
+                else -> {
+                    out.append(s[i])
+                    i++
+                }
+            }
+        }
+        return i
+    }
+
+    /**
      * XML 注释 `<!-- … -->` → 空格（保留换行），**支持跨行**。
      *
      * 为什么不能用"逐行找 `<!--`"：`res/values/themes.xml` 顶部的说明块就是
@@ -417,6 +598,15 @@ internal object GuardSourceScan {
                             out.append("   ")
                             i += 3
                             break
+                        }
+                        // ⚠️ 原样字符串里的 `${…}` 是**代码**（review/optimization-review.md B13）：
+                        // 以前这里整段按字符串剔掉，于是写在模板里的调用（本仓已有 JS 注入脚本这种形态）
+                        // 会被数成 0 —— "必须有调用点"的守卫假红、"不许出现 X"的守卫假绿。
+                        if (s[i] == '$' && s.getOrNull(i + 1) == '{') {
+                            out.append("  ")
+                            i += 2
+                            i = appendStripped(s, i, out, stopAtCloseBrace = true)
+                            continue
                         }
                         out.append(if (s[i] == '\n') '\n' else ' ')
                         i++

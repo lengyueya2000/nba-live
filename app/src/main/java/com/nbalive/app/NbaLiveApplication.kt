@@ -2,6 +2,7 @@ package com.nbalive.app
 
 import android.app.Application
 import android.webkit.WebView
+import com.nbalive.app.ui.PrefsPreload
 
 /**
  * 应用入口。
@@ -14,6 +15,14 @@ class NbaLiveApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // ⚠️ U8：三份 SharedPreferences 的**首次磁盘读**在这里预热到后台线程。
+        // 时机很关键：Application.onCreate 早于 MainActivity.onCreate，
+        // 所以 MainActivity 里 `prefs.init()` 读到的通常已是内存里加载好的值
+        // —— 冷启动不再在 setContent 之前被主线程磁盘 IO 挡住
+        //（原来 `AppPrefs.attach` 里那句 `sp.contains(...)` 会 awaitLoadedLocked）。
+        // 未 attach 直接 error() 的纪律不受影响：注入 Context 仍是同步的。
+        PrefsPreload.warmUp(this)
+
         // 仅 debug 包开启 WebView 远程调试。
         //
         // 为什么需要：网页兜底播放时源站的比分条/控制条被挤出视口，

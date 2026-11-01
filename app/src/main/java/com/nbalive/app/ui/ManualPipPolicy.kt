@@ -61,8 +61,25 @@ object ManualPipPolicy {
  */
 object PipAspectReset {
 
-    /** 切场时是否要把视频尺寸清零。恒为 true —— 留着这个函数是为了让规则可被测试引用。 */
-    fun shouldResetOnMatchSwitch(): Boolean = true
+    /**
+     * 切场时是否要把小窗视频尺寸清零（P17，`player.md` 第 17 条）。
+     *
+     * ## 为什么不再是恒真函数
+     *
+     * 原实现写死 `= true`，调用点于是成了 `if (恒真)` —— 读代码的人以为这里有分支，
+     * 测试断言的其实是一个常量（"测试给假安全感"这一类）。
+     *
+     * 真判据是"**有没有东西需要复位**"：`PipState.videoSize` 只在
+     * `onVideoSizeChanged` 里写，如果上一场压根没上报过宽高（`0, 0`），
+     * 再写一次 `setVideoSize(0, 0)` 是空操作 —— 跳过它不影响任何可观察状态。
+     * 于是清零只在上一次真的记过尺寸时才做。
+     *
+     * @param hasRecordedVideoSize 上一次是否记录过真实视频宽高
+     *   （调用方用 `PipState.videoSize.value.width > 0` 现查）。
+     *   ⚠️ 默认 `true` = 调用方拿不到信息时**保守地复位**，
+     *   保持 01-player.md P2-5 的原始语义（新场次首帧到达前按 16:9 显示）。
+     */
+    fun shouldResetOnMatchSwitch(hasRecordedVideoSize: Boolean = true): Boolean = hasRecordedVideoSize
 
     /**
      * 由宽高算小窗比例。

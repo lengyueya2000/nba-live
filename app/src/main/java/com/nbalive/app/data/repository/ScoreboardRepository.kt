@@ -3,10 +3,11 @@ package com.nbalive.app.data.repository
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.Provider
+import com.nbalive.app.data.model.TeamNameBridge
 import com.nbalive.app.data.remote.EspnScoreboard
 import com.nbalive.app.data.remote.FetchResult
 import com.nbalive.app.data.remote.HttpClient
-import com.nbalive.app.ui.TeamNameBridge
+import com.nbalive.app.data.remote.debugLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -48,11 +49,23 @@ class ScoreboardRepository(
         val games: List<EspnScoreboard.GameScore>,
         /** 抓取成功的联赛；失败/无数据的联赛不在这里 */
         val leagues: Set<League>,
+        /**
+         * 这份比分**成功抓到**的时刻（墙钟 epoch millis）；[EMPTY] 与"从未成功"为 0。
+         *
+         * ⚠️ 用墙钟而不是 `nanoTime`：它的消费方是界面（判断"比分是不是几分钟前的"），
+         * 而 TTL 用的是单调钟（见 [load] 里的 `cachedAt`）——
+         * 两者的用途不同，混用会让"用户调系统时间"与"比分陈旧"互相干扰。
+         *
+         * 加这个字段是为了让 UI 能剔除**陈旧比分**（review/optimization-review.md D7）：
+         * 失败不再覆盖 last-good 之后，卡片上挂着的可能是几分钟前的比分，
+         * 没有时间戳就只能靠猜。
+         */
+        val fetchedAtMs: Long = 0L,
     ) {
         fun isEmpty(): Boolean = games.isEmpty()
 
         companion object {
-            val EMPTY = Snapshot(emptyList(), emptySet())
+            val EMPTY = Snapshot(emptyList(), emptySet(), fetchedAtMs = 0L)
         }
     }
 
@@ -65,6 +78,15 @@ class ScoreboardRepository(
      * @param enabled 用户开着的数据源（「我的」页开关）—— 全关掉时也没必要拉比分
      */
     suspend fun load(enabled: Set<Provider> = Provider.entries.toSet()): Snapshot {
+        // ⚠️ D8：`enabled` 必须真的被消费（review/optimization-review.md D8）。
+        // 旧实现只在签名里收下它、函数体一次都没读，KDoc 却写"全关掉时也没必要拉比分"——
+        // 声明与实现相反，两源全关的过渡态仍会打 ESPN。
+        // 空集直接返回 EMPTY：**不发请求、不写缓存**（缓存写进去会把"没开源的正常状态"
+        // 冒充成"ESPN 抓到的空比分板"，之后 TTL 内的真实调用会拿到它）。
+        if (enabled.isEmpty()) {
+            debugLog("Scores", "所有数据源都关掉了，跳过 ESPN 比分板")
+            return Snapshot.EMPTY
+        }
         val now = System.nanoTime() / 1_000_000L
         cached?.let { if (now - cachedAt < ttlMs) return it }
         val snap = withContext(Dispatchers.IO) {
@@ -84,7 +106,17 @@ class ScoreboardRepository(
                     ok += league
                 }
             }
-            Snapshot(games, ok)
+            Snapshot(games, ok, fetchedAtMs = System.currentTimeMillis())
+        }
+        // ⚠️ D7：失败（空快照）**不许覆盖 last-good**（review/optimization-review.md D7）。
+        // 旧实现把空快照写进 20 秒 TTL 缓存，于是 ESPN 不通期间卡片一直挂着
+        // 上一次成功、且是**几分钟前**的比分，界面上没有任何时效标记。
+        // 现在的纪律：失败时原样返回上一次成功的那份（连 `fetchedAtMs` 都不动），
+        // 由 UI 用 [Snapshot.fetchedAtMs] 决定要不要把它标成陈旧/剔除。
+        val last = cached
+        if (snap.isEmpty() && last != null) {
+            debugLog("Scores", "ESPN 比分板为空，保留上一次成功快照（fetchedAtMs 不变）")
+            return last
         }
         cached = snap
         cachedAt = now

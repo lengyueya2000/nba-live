@@ -104,14 +104,49 @@ class AppStructureGuardTest {
     // ---------------- 2. 根节点的状态收集数（P2-15） ----------------
 
     @Test
-    fun `根节点里的状态收集不得超过 2 处`() {
-        val collects = rootCollects(source("NbaLiveApp.kt"))
+    fun `根节点状态面必须收敛在显式对象里 且容量有上限`() {
+        // ⚠️ 这条守卫在 2026-11-01 被**重写**（review/optimization-review.md H5）。
+        //
+        // 旧版只数 `fun NbaLiveApp(` 体内的 `collectAsStateWithLifecycle(` 个数（上限 2）。
+        // P2-15 的修复把 5 条 flow 搬进了 `rememberAppUiState`，根函数体内只剩 1 处 ——
+        // 于是这条守卫**不可能再红**：再来一次"搬到别的文件"就能绕过，
+        // 它度量的是"某个函数里的调用点个数"，而不是它声称守住的"根作用域订阅了几条 flow"。
+        // 现在改成三件**搬不动**的事：根体内的直接收集数（上限 1，只留给进程级 PipState）、
+        // 根节点必须真的经 rememberAppUiState 取状态、以及 AppUiState 的**状态面上限**。
+        val appSource = source("NbaLiveApp.kt")
+        val direct = rootCollects(appSource)
         assertTrue(
-            "fun NbaLiveApp( 里 collectAsStateWithLifecycle( 出现了 $collects 处（上限 2）：" +
-                "review/03-ui.md P2-15 —— 根节点每多收集一条 flow，它的每次变化都会" +
+            "fun NbaLiveApp( 体内直接收集了 $direct 条 flow（上限 1：只允许进程级 PipState.inPip）：" +
+                "review/03-ui.md P2-15 —— 根节点每多订阅一条 flow，它的每次变化都会" +
                 "重新走一遍 Scaffold/顶栏/底栏。\n" +
-                "请在 RouteHost（列表/详情/播放状态）或 AppTopBar/SearchOverlay 内部收集。",
-            collects <= 2,
+                "请把根作用域的状态收进 AppUiState/rememberAppUiState，" +
+                "或下沉到 RouteHost/AppTopBar/SearchOverlay 内部收集。\n" +
+                "（若你把收集搬到**别的文件**来让这条变绿，下面的状态面上限会拦住你。）",
+            direct <= 1,
+        )
+        assertTrue(
+            "根节点没有再经 rememberAppUiState(viewModel) 取状态 —— 上面那条可以靠" +
+                "「把收集整段删掉」骗过去（改读全局单例照样能编译）",
+            GuardSourceScan.stripNonCode(appSource).contains("rememberAppUiState("),
+        )
+
+        val uiStateSource = source("AppUiState.kt")
+        val fields = appUiStateFields(uiStateSource)
+        assertTrue(
+            "AppUiState 的状态面已涨到 $fields 个字段（上限 6）：根作用域每多一条 flow，" +
+                "它的每次变化都要在根节点的重组里重走 Scaffold/顶栏/底栏（P2-15）。" +
+                "新状态请下沉到各路由 composable 内部收集，而不是往这个对象上继续挂。",
+            fields in 1..6,
+        )
+        val collects = helperCollects(uiStateSource)
+        assertTrue(
+            "rememberAppUiState 收集了 $collects 条 flow，但 AppUiState 只暴露 $fields 个字段 —— " +
+                "收集数不得超过字段数（多订阅而不使用 = 白订阅，正是 P2-15 要拦的形态）",
+            collects <= fields,
+        )
+        assertTrue(
+            "rememberAppUiState 一条 flow 都没收集（判据退化成摆设）：它必须至少订阅 AppUiState 暴露的状态",
+            collects >= 1,
         )
     }
 
@@ -316,6 +351,45 @@ class AppStructureGuardTest {
     private fun rootCollects(rawSource: String): Int {
         val body = GuardSourceScan.functionBody(rawSource, "fun NbaLiveApp(")
         return Regex("""collectAsStateWithLifecycle\s*\(""").findAll(body).count()
+    }
+
+    /**
+     * `rememberAppUiState(` 体内的收集点数量（已剔注释与字符串）。
+     *
+     * ⚠️ 这是 H5 重写后的**搬不动**的那一半：根函数体可以不含收集，
+     * 但"这些收集必须真的喂给 AppUiState 的字段"，所以两边一起数。
+     */
+    private fun helperCollects(rawSource: String): Int =
+        Regex("""collectAsStateWithLifecycle\s*\(""")
+            .findAll(GuardSourceScan.functionBody(rawSource, "fun rememberAppUiState("))
+            .count()
+
+    /**
+     * `data class AppUiState(` 的构造参数个数 = **根作用域的状态面**。
+     *
+     * 为什么用字段数而不是"某个文件里的调用点个数"：字段数是**结构事实**，
+     * 谁想再往根作用域挂一条状态，就必须改这个声明，绕不过去。
+     * 找不到声明或括号不配对一律 `error()`（守卫静默失效比误报更危险）。
+     */
+    private fun appUiStateFields(rawSource: String): Int {
+        val code = GuardSourceScan.stripNonCode(rawSource)
+        val decl = Regex("""data\s+class\s+AppUiState\s*\(""").find(code)
+            ?: error("找不到 `data class AppUiState(` —— 守卫会静默失效，所以直接失败")
+        var parens = 0
+        var cursor = decl.range.last
+        while (cursor < code.length) {
+            when (code[cursor]) {
+                '(' -> parens++
+                ')' -> {
+                    parens--
+                    if (parens == 0) break
+                }
+            }
+            cursor++
+        }
+        if (cursor >= code.length) error("`data class AppUiState(` 的参数表括号没配对")
+        val params = code.substring(decl.range.last + 1, cursor)
+        return Regex("""\bval\s+\w+""").findAll(params).count()
     }
 
     /** 外壳/搜索层实现是否还在根文件里（返回违规说明，空 = 达标）。 */

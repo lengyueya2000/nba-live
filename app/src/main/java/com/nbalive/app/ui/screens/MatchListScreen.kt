@@ -54,6 +54,7 @@ import com.nbalive.app.data.remote.EspnScoreboard
 import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.FullScreenErrorState
 import com.nbalive.app.ui.components.LeagueChip
+import com.nbalive.app.ui.components.LoadingState
 import com.nbalive.app.ui.components.RetryErrorBanner
 import com.nbalive.app.ui.components.LeagueStrip
 import com.nbalive.app.ui.components.SignalBadge
@@ -63,7 +64,11 @@ import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.ui.ListNotice
 import com.nbalive.app.ui.ListNoticePolicy
 import com.nbalive.app.ui.DAY_LABEL_TICK_MS
-import com.nbalive.app.ui.TeamNameBridge
+// ⚠️ D11 收尾（review/optimization-review.md D11）：队名映射归数据层，
+// `ui.TeamNameBridge` 转发件已删除 —— 这里直接引用实现体，
+// 调用点仍是简单名 `TeamNameBridge.xxx(...)`（不要改成全限定或局部别名：
+// `NewFeaturesTest` 有一条接线判据断言本文件里出现 `TeamNameBridge.`）。
+import com.nbalive.app.data.model.TeamNameBridge
 import com.nbalive.app.ui.dayLabel
 import com.nbalive.app.ui.groupByDay
 import com.nbalive.app.ui.hhmm
@@ -110,12 +115,17 @@ fun MatchListScreen(
      */
     scores: Map<String, EspnScoreboard.GameScore> = emptyMap(),
 ) {
+    // 刷新反馈的呈现方式（H9 的判据，纯函数 + 单测）：
+    val feedback = refreshingFeedbackFor(refreshing, loading, matches.size)
     // 下拉刷新（2026-10-31 用户需求）：
     // 之前只有右上角那个小按钮，看球时单手够不到、也不知道能拉。
-    // ⚠️ isRefreshing 只在**已有数据**时为 true：首载（整屏 loading）时下拉指示器
-    // 会和整屏转圈叠在一起，观感像卡住。
+    // ⚠️ H9：isRefreshing 的门槛**不再**看"页内列表是否非空"。
+    // 联赛筛选到 0 场（或直播页非比赛时段）时页面收到的是空列表，
+    // 旧写法 `refreshing && matches.isNotEmpty()` 会让指示器与 RefreshingBar
+    // 同时消失 —— 用户点刷新整屏毫无变化（而请求确实在跑）。
+    // 唯一保留的抑制条件是"首载整屏 loading 已经在转圈"（避免两个指示器叠加）。
     PullToRefreshBox(
-        isRefreshing = refreshing && matches.isNotEmpty(),
+        isRefreshing = shouldShowRefreshing(refreshing, loading, matches.size),
         onRefresh = onRetry,
         modifier = modifier.fillMaxSize(),
     ) {
@@ -126,15 +136,18 @@ fun MatchListScreen(
                 onSelect = onLeagueSelected,
             )
             when {
-                // 首载：还没有任何数据，整屏 loading
-                loading -> LoadingState()
+                // 首载：还没有任何数据，整屏 loading（共享组件，U21）
+                loading -> LoadingState(text = "正在加载赛事…")
                 // 刷新失败：给出错误 + 重试（但已有列表还在下面，不清空）
                 error != null && matches.isEmpty() -> ErrorState(error = error, onRetry = onRetry)
-                matches.isEmpty() -> EmptyState()
+                // ⚠️ H9：空态分支也要能显示刷新反馈 —— 这是"点了没反应"的那一屏
+                matches.isEmpty() -> EmptyState(
+                    refreshing = feedback == RefreshingFeedback.EmptyPlaceholder,
+                )
                 else -> {
                     // 刷新中：保留旧列表，只在顶部挂一条细进度条。
                     // 原来刷新时整屏换成转圈，已有卡片全消失、滚动位置也丢。
-                    if (refreshing) RefreshingBar()
+                    if (feedback == RefreshingFeedback.Bar) RefreshingBar()
                     // 有旧数据：错误提示要看得见（还能点重试）；
                     // 没有整次错误但某个源缺了数据时，也要让用户知道少了什么
                     // —— 规则见 ListNoticePolicy（纯判据，有单测）。
@@ -173,7 +186,13 @@ private fun LeagueSelector(
                     .minimumInteractiveComponentSize()
                     .height(44.dp)
                     .clip(RoundedCornerShape(Radius.btn))
-                    .clickable { onSelect(league) },
+                    // U9：这个胶囊也是"点了会筛选"，同样要有动作词，
+                    // 否则 TalkBack 只播"双击以激活"，视障用户不知道点了会做什么
+                    .clickable(
+                        onClickLabel = "筛选${league.displayName}",
+                        role = Role.Button,
+                        onClick = { onSelect(league) },
+                    ),
                 shape = RoundedCornerShape(Radius.btn),
                 color = if (active) Color.Transparent else MaterialTheme.colorScheme.surface,
                 border = androidx.compose.foundation.BorderStroke(
@@ -222,9 +241,13 @@ private fun MatchGrid(
     onMatchClick: (Match) -> Unit,
     scores: Map<String, EspnScoreboard.GameScore> = emptyMap(),
 ) {
-    val liveMatch = matches.firstOrNull { it.status == MatchStatus.LIVE }
+    // ⚠️ U13：`firstOrNull` + `filter` 是 O(n) 扫描 + 一次 List 分配，
+// 必须在 remember 里按 matches 缓存 —— 与 H8 叠加时这条路径可能每帧跑一次。
+    val liveMatch = remember(matches) { matches.firstOrNull { it.status == MatchStatus.LIVE } }
     // 直播中的比赛已用全宽 hero 卡呈现，网格里不再重复
-    val gridMatches = if (liveMatch != null) matches.filter { it.id != liveMatch.id } else matches
+    val gridMatches = remember(matches, liveMatch) {
+        if (liveMatch != null) matches.filter { it.id != liveMatch.id } else matches
+    }
     // 分组要 remember：里面读系统时钟，每次重组都重算既浪费。
     // ⚠️ key 用**绝对日期**而不是标签字符串：
     // 标签是"今天/明天/1月1日"这种展示文案，跨年时两个日期可能撞成同一个"1月1日"，
@@ -484,7 +507,9 @@ private fun HeroPill(
 ) {
     Row(
         modifier = Modifier
-            .height(26.dp)
+            // ⚠️ U7：HeroPill 原来是固定 `height(26.dp)`，而里面是随 fontScale
+            // 缩放的 labelSmall —— 大字号下同样会被裁掉。改为下限。
+            .heightIn(min = 26.dp)
             .clip(RoundedCornerShape(Radius.pill))
             // ⚠️ 与"立即观看"用同一个配方（AccentContrast.HeroPillBackground）：
             // 原来这里是字面量 Color(0x33000000)，与上面那个 Surface 是同一配方
@@ -522,7 +547,14 @@ private fun MatchCard(
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.card))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick),
+            // ⚠️ U9：网格卡原来也是裸 `clickable(onClick = onClick)` —— TalkBack 只播
+            // "双击以激活"，视障用户听完一长串队名/时间后不知道点了会发生什么。
+            // 统一走 CardSemantics 的动作词（有单测钉住"不许各写一份字面量"）。
+            .clickable(
+                onClickLabel = CardSemantics.ACTION_LABEL,
+                role = Role.Button,
+                onClick = onClick,
+            ),
     ) {
         LeagueStrip(league = match.league, modifier = Modifier.fillMaxWidth())
 
@@ -636,9 +668,14 @@ private fun GridTeam(name: String, logo: String?, modifier: Modifier = Modifier)
 
 // ---------- 三态 ----------
 
-/** 刷新中的细进度条：保留旧列表，只在最上方提示"正在刷新" */
+/**
+ * 刷新中的细进度条：保留旧列表，只在最上方提示"正在刷新"。
+ *
+ * ⚠️ internal（不是 private）：直播页的空态分支要复用它（H9），
+ * 两份副本会在"改一处漏一处"上重演这个仓库踩过的坑。
+ */
 @Composable
-private fun RefreshingBar() {
+internal fun RefreshingBar() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -718,22 +755,7 @@ private fun PartialBanner(message: String) {
 }
 
 @Composable
-private fun LoadingState() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(Space.lg))
-            Text(
-                text = "正在加载赛事…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun EmptyState() {
+private fun EmptyState(refreshing: Boolean) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
@@ -754,9 +776,65 @@ private fun EmptyState() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // ⚠️ H9：筛到 0 场时这里就是用户看到的那一屏。
+            // 旧实现直接 EmptyState()，刷新在跑也毫无反馈 → "点了没反应"。
+            if (refreshing) {
+                Spacer(Modifier.height(Space.lg))
+                RefreshingBar()
+            }
         }
     }
 }
+
+// ---------- 刷新反馈判据（H9） ----------
+
+/**
+ * 「刷新在跑」的反馈该怎么画（review/optimization-review.md H9 / U4）。
+ *
+ * ⚠️ 抽成纯函数的理由：这条判据的旧形态（`refreshing && matches.isNotEmpty()`）
+ * 是一个**看不见的**门槛 —— 代码照样编译、页面照样能用，只有在"筛到 0 场"时
+ * 用户点刷新才会发现整屏毫无变化。把它写成纯函数 + 单测，才能钉住
+ * 「visibleCount == 0 也必须给反馈」这条回归。
+ */
+internal enum class RefreshingFeedback {
+    /** 不给反馈：没在刷新，或首载整屏 loading 已经覆盖了 */
+    None,
+
+    /** 页内还有旧列表：顶部挂细进度条，保留列表别闪空 */
+    Bar,
+
+    /** 页内一条都没有：空态里补一条居中的"正在刷新…"（旧实现这里什么都没有） */
+    EmptyPlaceholder,
+}
+
+/**
+ * 刷新反馈的呈现方式。
+ *
+ * @param refreshing 刷新在飞（`listState.refreshing` / 页面收到的 `refreshing`）
+ * @param loading 首载整屏 loading：那时已经有整屏转圈，不叠加第二个指示器
+ * @param visibleCount **页内**（已按联赛筛选后）的条数 —— 只决定**画在哪**，
+ *   不再决定"要不要画"（这正是 H9 的根因）
+ */
+internal fun refreshingFeedbackFor(
+    refreshing: Boolean,
+    loading: Boolean,
+    visibleCount: Int,
+): RefreshingFeedback = when {
+    !refreshing || loading -> RefreshingFeedback.None
+    visibleCount > 0 -> RefreshingFeedback.Bar
+    else -> RefreshingFeedback.EmptyPlaceholder
+}
+
+/**
+ * 是否显示"刷新在跑"的反馈。
+ *
+ * ⚠️ **刻意不看页内列表条数**：`MainViewModel.refresh()` 的 `firstLoad` 看的是
+ * **未筛选**列表，而页面收到的是筛选后的列表 —— 联赛筛到 0 场时 `loading=false`、
+ * `refreshing=true`、页内 `matches` 为空，旧门槛把 `isRefreshing` 与 `RefreshingBar`
+ * 同时挡掉，用户点右上角刷新/下拉，整屏毫无变化。
+ */
+internal fun shouldShowRefreshing(refreshing: Boolean, loading: Boolean, visibleCount: Int): Boolean =
+    refreshingFeedbackFor(refreshing, loading, visibleCount) != RefreshingFeedback.None
 
 /**
  * 加载失败态（review/03-ui.md P2-20）。

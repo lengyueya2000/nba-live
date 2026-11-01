@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.ui.AspectMode
@@ -207,7 +208,14 @@ fun ProfileScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(Radius.btn))
-                    .clickable(enabled = !checkingUpdate, onClick = onCheckUpdate)
+                    // U9：动作词 + role —— 这一行是"检查更新"，
+                    // 旧实现只有裸 clickable，TalkBack 只播"双击以激活"
+                    .clickable(
+                        enabled = !checkingUpdate,
+                        onClickLabel = "检查更新",
+                        role = Role.Button,
+                        onClick = onCheckUpdate,
+                    )
                     .padding(vertical = Space.sm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -248,7 +256,13 @@ fun ProfileScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(Radius.btn))
-                        .clickable(onClick = { onOpenUrl(available.downloadUrl) })
+                        // U9：这一行会开系统浏览器下载 APK —— 动作词必须说清
+                        //（"打开浏览器"），否则读屏用户不知道点完会离开 App
+                        .clickable(
+                            onClickLabel = "打开浏览器下载",
+                            role = Role.Button,
+                            onClick = { onOpenUrl(available.downloadUrl) },
+                        )
                         .padding(vertical = Space.sm),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {

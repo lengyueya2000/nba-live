@@ -16,8 +16,18 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 object PipState {
 
-    /** 当前是否处于画中画窗口 */
-    val inPip = MutableStateFlow(false)
+    /**
+     * 当前是否处于画中画窗口。
+     *
+     * ⚠️ **只读**（P16，`player.md` 第 16 条）：原来它是对象里唯一一个
+     * `public MutableStateFlow`，外部直接 `PipState.inPip.value = …` 写它 ——
+     * 同一个对象里 `_playerActive/_videoSize/_expandRequests` 却是私有 + 写入口，
+     * 口径不一致的后果是后来者照抄 `inPip` 的写法，绕过"写入统一在这里"这条规则。
+     *
+     * 写入一律走 [setInPip]（`MainActivity` 的 3 个调用点已改为它）。
+     */
+    private val _inPip = MutableStateFlow(false)
+    val inPip = _inPip.asStateFlow()
 
     /**
      * 当前是否停留在播放页。
@@ -66,6 +76,16 @@ object PipState {
     /** 设置"是否停留在播放页" */
     fun setPlayerActive(active: Boolean) {
         _playerActive.value = active
+    }
+
+    /**
+     * 设置"是否处于画中画窗口"（P16，唯一写入口）。
+     *
+     * 调用点：`MainActivity.onPictureInPictureModeChanged` 与 `onCreate` 的重置。
+     * 提供入口而不是让外部直写 `inPip.value`，是为了和同对象的另外三个状态保持同一口径。
+     */
+    fun setInPip(value: Boolean) {
+        _inPip.value = value
     }
 
     /** 设置视频宽高（一对，原子更新） */

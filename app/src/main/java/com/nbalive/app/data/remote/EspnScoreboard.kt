@@ -45,8 +45,6 @@ object EspnScoreboard {
         val clock: String,
         /** 当前节次（1..4 / 加时为 5+）；0 = 未知 */
         val period: Int,
-        /** 开赛时间（epoch millis）；0 = 未知 */
-        val startAtMillis: Long,
     )
 
     /** 解析结果：成功时给场次列表，失败给 null（**静默失败**，见类说明）。 */
@@ -81,36 +79,9 @@ object EspnScoreboard {
                 state = state,
                 clock = status?.string("displayClock") ?: type?.string("shortDetail").orEmpty(),
                 period = status?.int("period") ?: 0,
-                startAtMillis = parseIso8601(event.string("date")) ?: 0L,
             )
         }
         return out
-    }
-
-    /**
-     * `2026-10-31T02:00Z` → epoch millis。
-     *
-     * ⚠️ 不用 `java.time.Instant.parse`：它在 minSdk 24 上需要 desugaring，
-     * 而本工程没开 coreLibraryDesugaring（开了会显著增大 APK）。
-     * 这个格式是**固定**的（ESPN 只给 UTC 的 `Z` 结尾），手写解析足够且零依赖。
-     */
-    fun parseIso8601(text: String?): Long? {
-        val t = text?.trim().orEmpty()
-        // ESPN 的真实形态是 `2026-10-31T02:00Z`（**17** 字符，没有秒）。
-        // ⚠️ 早先按"必须有秒"写成 `length < 20` + `substring(17,19)`，
-        // 于是每一个正常时间戳都越界抛异常（测试全红才发现）。秒是可选的。
-        if (t.length < 17) return null
-        val year = t.substring(0, 4).toIntOrNull() ?: return null
-        val month = t.substring(5, 7).toIntOrNull() ?: return null
-        val day = t.substring(8, 10).toIntOrNull() ?: return null
-        val hour = t.substring(11, 13).toIntOrNull() ?: return null
-        val minute = t.substring(14, 16).toIntOrNull() ?: return null
-        // 秒只在 `HH:mm:ssZ`（20 字符）里出现；缺省按 0
-        val second = if (t.length >= 19) t.substring(17, 19).toIntOrNull() ?: 0 else 0
-        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
-        cal.clear()
-        cal.set(year, month - 1, day, hour, minute, second)
-        return cal.timeInMillis
     }
 
     /**
@@ -118,6 +89,13 @@ object EspnScoreboard {
      *
      * 刻意不做完整解析：ESPN 的响应里有 `highlights`/`leaders`/`statistics` 等
      * 上百 KB 我们完全不需要的子树，建完整对象模型是纯浪费。
+     *
+     * ⚠️ 它是**进程内唯一的 JSON 取值器**（review/optimization-review.md D15）：
+     * 声明成 `internal` 是为了让同模块的其它取值点复用同一份实现 ——
+     * `ReleaseRepository`（`data/remote`，读 GitHub release）已在用它，
+     * 直接钉 `keyIndex` 边界校验的单测也用它；
+     * `keyIndex` 的"前一个非空白字符必须是 `{`/`,`"这道校验很细，
+     * 各写一份迟早在边界上分叉（命中更早出现的同名嵌套 key，静默取错值）。
      */
     internal class JsonCursor(private val src: String, private val start: Int = 0, private val end: Int = src.length) {
 

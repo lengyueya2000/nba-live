@@ -10,6 +10,16 @@ package com.nbalive.app.ui.screens
  *
  * 解析不到就返回 null —— 界面上不显示空的画质药丸。
  */
+/**
+ * 档位正则（P15，`player.md` 第 15 条）。
+ *
+ * ⚠️ 必须是**顶层 `private val`**：原来它写在 `findTier` 函数体里，
+ * 而调用点 `PlayerScreen.kt` 的 `VideoResolution.fromStreamUrl(it)` 在**重组路径**上 ——
+ * 直连线路"首帧宽高到达前"会被连着调用若干次，每次都重新编译一遍这条正则。
+ * 量级很小，但它是白花的钱，而且提出顶层没有任何语义变化。
+ */
+private val TIER_REGEX = Regex("""(?<![0-9])(2160|1440|1080|720|480|360|240)(p|P)?(?![0-9])""")
+
 object VideoResolution {
 
     /**
@@ -93,9 +103,9 @@ object VideoResolution {
         return null
     }
 
-    /** 在一段文本里找第一个已知档位 */
+    /** 在一段文本里找第一个已知档位（正则见文件顶层的 [TIER_REGEX]） */
     private fun findTier(text: String, requireP: Boolean): String? =
-        Regex("""(?<![0-9])(2160|1440|1080|720|480|360|240)(p|P)?(?![0-9])""")
+        TIER_REGEX
             .find(text)
             ?.let { tierOf(it.value, requireP) }
 

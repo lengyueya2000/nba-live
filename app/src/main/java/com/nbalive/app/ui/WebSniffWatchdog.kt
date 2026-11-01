@@ -97,3 +97,101 @@ object WebSniffWatchdog {
         else -> nowMs - pageFinishedAt >= AFTER_FINISH_MS
     }
 }
+
+/**
+ * 播放链路的单调时钟（P14）。
+ *
+ * ## 为什么要有它
+ *
+ * `PlayerScreen` 原来有 9 处直接调 `android.os.SystemClock.elapsedRealtime()` /
+ * `System.nanoTime()`。这些时刻正是"计时 / 复位"类缺陷（P4 跨导航不清零、
+ * P5 基准不重置、P6 效应互相抵消）最难被覆盖的原因 —— 只能上真机试。
+ * 抽成 `fun interface` 之后，纯逻辑（见 [WebSniffState]）可以在 JVM 单测里
+ * 注入一个假时钟，把"导航之后基准是否复位"钉成可失败的判据。
+ *
+ * ## 为什么默认实现必须是单调时钟
+ *
+ * `SystemClock.elapsedRealtime()` 不受用户改系统时间 / 跨时区影响。
+ * 换成墙钟（`currentTimeMillis()`）时，用户调一次时间就可能让计时永远不到点
+ * 或立刻到点 —— 看门狗要么永不触发、要么刚进页面就判「疑似无信号」。
+ */
+internal fun interface PlayerClock {
+
+    /** 当前单调时刻（毫秒）。 */
+    fun nowMs(): Long
+
+    companion object {
+        /** 默认实现：单调时钟（`android.os.SystemClock.elapsedRealtime()`）。 */
+        val System: PlayerClock = PlayerClock { android.os.SystemClock.elapsedRealtime() }
+    }
+}
+
+/**
+ * 一次 WebView 导航内的嗅探状态（P4 / P5 / P10）。
+ *
+ * ## 为什么必须有它
+ *
+ *  - **P4**：`sawMediaRequest` 原来是一个只 `set(true)` 的 `AtomicBoolean`（全仓无 `set(false)`）。
+ *    用户点「重新加载」或退回原播放页之后，这条 `WebSurface` 实例的嗅探看门狗
+ *    **永久失效** —— 页面再卡住也不会报「疑似无信号」。
+ *  - **P5**：`loadStartedAt` 原来只按 `url` remember，导航之后仍按**旧基准**算
+ *    [WebSniffWatchdog.HARD_DEADLINE_MS]；退回原页后刚加载的页面只等几秒就被判疑似。
+ *  - **P10**：这层状态原来只能靠真机试（3 条 `while(true)` + 6 个 effect 写在 composable 里）。
+ *    抽出来之后，"导航代次变化 → 状态复位"可以在 JVM 单测里钉住。
+ *
+ * ## 线程约定
+ *
+ * [markMediaRequest] 由 WebView 的**后台线程**（`shouldInterceptRequest`）调用，
+ * 其余方法都在主线程 —— 所以用原子类型而不是 Compose 快照状态
+ * （写 `mutableStateOf` 会跨线程触碰快照系统）。
+ *
+ * ## 为什么 `pageFinishedAt` / `pageErrorAt` 不在这里
+ *
+ * 它们是 `LaunchedEffect` 的 **key**（页面 finish / 首次探到错误时要立刻重跑那轮采样），
+ * 而 key 必须是 Compose 快照状态才会触发重启。这里持有的是看门狗真正要读的那两个量
+ * （媒体请求时刻、加载起点）与导航代次；两个时间戳由 `WebSurface` 在
+ * [onNavigationStarted] 的同一个入口里一起归零（见 `WebSurface.beginNavigation`）。
+ */
+internal class WebSniffState(private val clock: PlayerClock) {
+
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+    private val mediaRequestSeen = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val lastMediaRequestAt = java.util.concurrent.atomic.AtomicLong(0L)
+    private var loadStartedAt = clock.nowMs()
+
+    /** 导航代次：每次重新导航 +1（P10 的判据输入）。 */
+    val navigationGeneration: Int get() = generation.get()
+
+    /** 本次导航的加载起点（单调时刻）；随 [onNavigationStarted] 重置。 */
+    fun loadStartedAtMs(): Long = loadStartedAt
+
+    /** 本次导航内是否观察到过任何媒体请求。 */
+    fun sawMediaRequest(): Boolean = mediaRequestSeen.get()
+
+    /**
+     * 最近一次媒体请求的单调时刻；`0L` = 本次导航内还没见过。
+     *
+     * 消费点：`WebPageDeadEndPolicy` 的第一道否决（见 [PlaybackHealth.hasStreamNow]）。
+     */
+    fun lastMediaRequestAtMs(): Long = lastMediaRequestAt.get()
+
+    /**
+     * 每次导航（首次加载 / 回到原始壳页 / 退回原播放页）都必须调用：
+     * **P4 + P5 的唯一复位入口**。
+     *
+     * 不复位的后果不是"旧数据不好看"，而是看门狗与死胡同判据在**新页面上**读到
+     * 上一个页面的事实，于是要么永久沉默（P4）、要么按旧基准提前判疑似（P5）。
+     */
+    fun onNavigationStarted() {
+        generation.incrementAndGet()
+        mediaRequestSeen.set(false)
+        lastMediaRequestAt.set(0L)
+        loadStartedAt = clock.nowMs()
+    }
+
+    /** 观察到一条媒体请求（WebView 后台线程调用）。 */
+    fun markMediaRequest() {
+        mediaRequestSeen.set(true)
+        lastMediaRequestAt.set(clock.nowMs())
+    }
+}

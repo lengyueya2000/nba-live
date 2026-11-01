@@ -353,6 +353,51 @@ class ReleasePipelineGuardTest {
     private fun workflowText(): String = workflowFile().readText()
 
     /**
+     * review/optimization-review.md **H1**：产物版本号必须被**断言**，
+     * 而不是只贴进 Step Summary 当"给人看的附注"。
+     *
+     * ## 事故形态
+     *
+     * `versionCode` 是**手工**维护的。此前流水线只核对源码里的 `versionName`
+     * 与 tag 是否一致，而 `aapt2 dump badging` 读到的产物版本号只被 `head -1`
+     * 贴进 Summary —— 于是"只改 versionName、忘了 +1 versionCode"能整条流水线
+     * 全绿地发出去：versionCode 变小 → 已安装用户
+     * `INSTALL_FAILED_VERSION_DOWNGRADE`，永久收不到更新。
+     *
+     * 判据用**步骤块级**（[stepBlocks]）而不是文件级 `contains`：
+     * 文件里任何一处出现 `versionCode` 都不算数，必须是"读 badging 的那个步骤"
+     * 里真的做了硬失败。
+     */
+    @Test
+    fun `产物版本号必须被断言 而不是只贴进 Summary`() {
+        val code = stripYamlComments(workflowText())
+        val steps = stepBlocks(code)
+
+        val badgingSteps = steps.filter { it.contains("badging") }
+        assertTrue(
+            "workflow 里找不到读取产物 badging 的步骤 —— 版本核对会退回「只看源码」（H1）",
+            badgingSteps.isNotEmpty(),
+        )
+        val asserting = badgingSteps.filter { it.contains("versionCode") && it.contains("exit 1") }
+        assertTrue(
+            "读产物版本的步骤里没有针对 versionCode 的硬失败（只有 echo / 贴 Summary）：" +
+                "versionCode 不递增、或与产物不一致时，流水线会全绿地发出一个用户装不上的包（H1）。\n" +
+                "实际读 badging 的步骤块：\n" + badgingSteps.joinToString("\n---\n"),
+            asserting.isNotEmpty(),
+        )
+        // 反向：别为了让上面这条变绿而删掉"tag ↔ 源码 versionName"的核对。
+        assertTrue(
+            "tag 与源码 versionName 的一致性核对被删掉了（那是 H1 之外原有的防线）",
+            steps.any { it.contains("versionName") && it.contains("GITHUB_REF_NAME") },
+        )
+        // 单调性判据的关键输入必须真的被解析出来（而不是写个常量糊过去）。
+        assertTrue(
+            "没有从 badging 文本里解析产物 versionCode —— 上面那条可以靠写死常量骗过",
+            asserting.any { it.contains("PROD_VCODE") },
+        )
+    }
+
+    /**
      * `.github/workflows/release.yml`。
      *
      * Gradle 单测的 cwd 是 `app/`，所以先试 `../.github/...`；

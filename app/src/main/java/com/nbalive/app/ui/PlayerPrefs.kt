@@ -56,10 +56,25 @@ object PlayerPrefs {
     private val _aspect = MutableStateFlow(AspectMode.FIT)
     val aspect: StateFlow<AspectMode> = _aspect.asStateFlow()
 
-    /** 平台层注入 `applicationContext`（**唯一**需要 Context 的地方）并立刻读一次。 */
+    /**
+     * 平台层注入 `applicationContext`（**唯一**需要 Context 的地方）并立刻读一次。
+     *
+     * ⚠️ U8：`attach` = [attachStore] + [init]；想不阻塞主线程就分开调
+     *（`attachStore` 不读盘），见 `PrefsStore.kt` 的 `PrefsPreload`。
+     */
     fun attach(context: Context) {
-        store = context.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+        attachStore(context)
         init()
+    }
+
+    /**
+     * **只**注入 `applicationContext`，不读盘（U8，授权范围仅此一处）。
+     *
+     * ⚠️ 与 `AppPrefs.attachStore` 同款：`getSharedPreferences` 异步开始解析 XML，
+     * 阻塞只发生在第一次数据访问；未 attach 时 [sp] 仍直接 `error()`。
+     */
+    fun attachStore(context: Context) {
+        store = context.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
     }
 
     fun init() {

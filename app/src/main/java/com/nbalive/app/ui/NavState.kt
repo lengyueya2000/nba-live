@@ -109,11 +109,23 @@ internal fun NavState.toStoredFields(): Map<String, String?> = mapOf(
     KEY_BEFORE_PLAYER to beforePlayer.name,
 )
 
+/**
+ * 存档字段名 → `SavedStateHandle` 的键（U17）。
+ *
+ * ⚠️ 旧实现的兜底是 `else -> KEY_BEFORE_PLAYER`：把 `"match"` 打成 `"macth"`
+ * 时会安静地返回 `beforePlayer` 的键 —— 重建时读到**另一个字段**的值，
+ * `navStateFromStored` 自己还有兜底所以不会崩，只会恢复成错的路由/比赛。
+ * 一个错字换来"看起来能跑但恢复错了"的静默降级。
+ *
+ * 现在 `"beforePlayer"` 是显式分支（它本来就是合法字段，此前靠兜底命中），
+ * 其余一律 [error]：字段名写错必须当场炸，而不是静默取错。
+ */
 internal fun navStateKeyFor(field: String): String = when (field) {
     "tab" -> KEY_TAB
     "route" -> KEY_ROUTE
     "match" -> KEY_MATCH
-    else -> KEY_BEFORE_PLAYER
+    "beforePlayer" -> KEY_BEFORE_PLAYER
+    else -> error("未知的导航存档字段：$field（U17：不许用兜底静默取错字段）")
 }
 
 /**

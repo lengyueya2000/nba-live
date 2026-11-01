@@ -121,9 +121,92 @@ internal class AndroidPrefsStore(context: Context) : PrefsStore {
 
     override fun setProviderEnabled(enabled: Set<Provider>) = SourcePrefs.setEnabled(enabled)
 
+    /**
+     * 平台层初始化（U8）。
+     *
+     * ## 为什么要拆成"注入"与"读一次"两步
+     *
+     * `getSharedPreferences` **不阻塞**：它只登记文件并异步起一个加载线程；
+     * 阻塞发生在**第一次数据访问**（`contains`/`getBoolean`/`getStringSet`
+     * → `awaitLoadedLocked` 等 XML 解析完）。所以：
+     *  - ① 注入 Context 是廉价的，可以留在主线程（顺带保证"未 attach 直接 error()"
+     *    这条纪律立刻生效，偏好读写永远不会静默失效）；
+     *  - ② 首次读盘交给 [PrefsPreload]：`NbaLiveApplication.onCreate` 已经预热过，
+     *    这里通常直接返回 —— 主线程一次磁盘 IO 都不做。
+     *
+     * ⚠️ 若预热**尚未完成**（罕见：Application 与 Activity 之间只隔几毫秒），
+     * 这里退回**同步读**（= 改动前的行为）。这是有意的取舍：宁可偶尔慢一次，
+     * 也不能让主题/画面模式先按默认值渲染一帧再跳变（`darkPref = null` 会被
+     * [resolveDarkMode] 解释成深色，浅色用户会看到闪一下）。
+     */
     override fun init() {
-        AppPrefs.attach(appContext)
-        PlayerPrefs.attach(appContext)
-        SourcePrefs.attach(appContext)
+        AppPrefs.attachStore(appContext)
+        PlayerPrefs.attachStore(appContext)
+        SourcePrefs.attachStore(appContext)
+        if (PrefsPreload.isFinished) return
+        PrefsPreload.readAll()
+    }
+}
+
+/**
+ * 三份 `SharedPreferences` 首次磁盘读的**预热点**（review/optimization-review.md U8）。
+ *
+ * ## 它解决什么
+ *
+ * `MainActivity.onCreate` 里同步跑 `AndroidPrefsStore(...) + init()`，
+ * 而 `init()` 的第一次 `contains/getBoolean/getStringSet` 会阻塞到三份 XML
+ * 解析完 —— 冷启动在 `setContent` **之前**被主线程磁盘 IO 挡住
+ *（StrictMode 记为 `DiskReadViolation`）。
+ *
+ * 现在 `NbaLiveApplication.onCreate` 调一次 [warmUp]：**注入**留在主线程，
+ * **读一次**丢到单线程 executor —— 主线程不再等磁盘。
+ *
+ * ## 为什么不干脆"未就绪时先用默认值"
+ *
+ * 那会让主题/画面模式按默认值先渲染再跳变（浅色用户冷启动闪一下深色）。
+ * 这里选择"预热 + 未就绪时同步兜底"：性能收益照拿，语义一点都不变。
+ *
+ * ⚠️ 线程是 daemon：不阻止进程退出；executor 只跑一次 `readAll()`，不排队新任务。
+ */
+internal object PrefsPreload {
+
+    private const val THREAD_NAME = "prefs-preload"
+
+    private val executor: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, THREAD_NAME).apply { isDaemon = true }
+        }
+
+    /** 三份偏好是否已经读过一次（`@Volatile`：主线程与预热线程跨线程通信）。 */
+    @Volatile
+    private var finished: Boolean = false
+
+    val isFinished: Boolean get() = finished
+
+    /**
+     * 主体：**注入 Context（不读盘）+ 后台读一次**。
+     *
+     * 调用点：`NbaLiveApplication.onCreate`（越早越好，让异步 XML 加载先跑起来）。
+     */
+    fun warmUp(context: Context) {
+        val appContext = context.applicationContext
+        AppPrefs.attachStore(appContext)
+        PlayerPrefs.attachStore(appContext)
+        SourcePrefs.attachStore(appContext)
+        executor.execute(::readAll)
+    }
+
+    /**
+     * 同步读一次三份偏好。
+     *
+     * ⚠️ 允许被调用两次（预热线程 + 主线程兜底）：SharedPreferences 的读取幂等，
+     * 且写入走 `apply()` 会**同步**更新内存里的值，所以后读的一次不会把
+     * 用户刚写的设置冲回旧值。
+     */
+    fun readAll() {
+        AppPrefs.init()
+        PlayerPrefs.init()
+        SourcePrefs.init()
+        finished = true
     }
 }

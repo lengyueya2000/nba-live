@@ -1,0 +1,79 @@
+# 日常 CI（review/optimization-review.md **B6** 的落地）
+#
+# ## 为什么需要它
+#
+# 在此之前仓库**只有**一个工作流 `release.yml`，而它是 `v*` tag 触发的：
+# 714 条用例在两次发版之间一次都不跑，某次重构弄红几十条要到发版当天才暴露 ——
+# 而那时 tag 已经推出去、`release: vX.Y.Z` 已经在写，修复路径变成删 tag/重推。
+# 另外 release 流水线从不跑 `assembleDebug`：`debugImplementation("…ui-tooling")`
+# 这类只在 debug 存在的依赖、debug 的多 dex 合并坏了，CI 也是绿的。
+#
+# ## 成本
+#
+# 实测：714 条用例合计执行 19.8 s，全流程（含依赖解析与两变体编译）约 1~2 分钟。
+# 对"两次发版之间的每一次改动"来说，这是最便宜的一道防线。
+name: CI（push / PR）
+
+on:
+  push:
+  pull_request:
+
+# 只读即可：这个工作流不写任何东西（mapping/APK 都只作 artifact）
+permissions:
+  contents: read
+
+# 同一分支的新推送取消上一次：日常 CI 不该排队等旧提交跑完
+# （与 release.yml 的 `cancel-in-progress: false` 相反 —— 那里是"发版不许被打断"）
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 单测（debug+release）+ debug 打包 + lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠️ 与 release.yml 同款：`gradlew` 在 git 里的模式位若不是 100755，
+      # ubuntu 上 `./gradlew` 会直接 Permission denied（exit 126）。
+      - name: 确保 gradlew 可执行
+        shell: bash
+        run: chmod +x gradlew
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 配置 Gradle（含依赖与构建缓存）
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 校验 Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      # 与 release.yml 完全相同的两个变体：只跑 debug 会让 release 侧
+      # 的 BuildConfig / 压缩路径改动漏网（release.yml 的注释里已写明这条教训）
+      - name: 全量单测（debug + release 两变体）
+        run: ./gradlew :app:testDebugUnitTest :app:testReleaseUnitTest --stacktrace
+
+      - name: debug 变体打包
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      # B7：lint 此前不是闸（只有 assembleRelease 带的 lintVital，fatal-only），
+      # 唯一一份完整报告是几天前手工跑的。这里让 warning/information 也留档可查。
+      - name: lint（debug 变体）
+        run: ./gradlew :app:lintDebug --stacktrace
+
+      - name: 上传 lint 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report-${{ github.sha }}
+          path: |
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+            app/build/reports/lint-results-debug.txt
+          if-no-files-found: warn

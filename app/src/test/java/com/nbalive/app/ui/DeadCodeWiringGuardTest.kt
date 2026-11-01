@@ -207,7 +207,7 @@ class DeadCodeWiringGuardTest {
         }
         val videoBody = GuardSourceScan.functionBody(rawPlayer, "fun VideoSurface(")
         if (GuardSourceScan.callSites(videoBody, "PipAspectReset.shouldResetOnMatchSwitch") == 0) {
-            out += "`fun VideoSurface(` 体内没有 `PipAspectReset.shouldResetOnMatchSwitch()` 调用：" +
+            out += "`fun VideoSurface(` 体内没有 `PipAspectReset.shouldResetOnMatchSwitch(…)` 调用：" +
                 "切场不复位小窗尺寸，新场次首帧到达前按上一场比例显示（01-P2-5）"
         }
         return out
@@ -507,7 +507,7 @@ class DeadCodeWiringGuardTest {
             @Composable
             private fun VideoSurface(streamUrl: String?) {
                 LaunchedEffect(streamUrl) {
-                    if (PipAspectReset.shouldResetOnMatchSwitch()) {
+                    if (PipAspectReset.shouldResetOnMatchSwitch(hasRecordedVideoSize = true)) {
                         PipState.setVideoSize(0, 0)
                     }
                 }
@@ -534,7 +534,7 @@ class DeadCodeWiringGuardTest {
             @Composable
             private fun VideoSurface(streamUrl: String?) {
                 LaunchedEffect(streamUrl) {
-                    if (PipAspectReset.shouldResetOnMatchSwitch()) {
+                    if (PipAspectReset.shouldResetOnMatchSwitch(hasRecordedVideoSize = true)) {
                         PipState.setVideoSize(0, 0)
                     }
                 }

@@ -20,6 +20,19 @@ package com.nbalive.app.ui.screens
  */
 object PlayerPageResolver {
 
+    /**
+     * 拉壳页的超时（P13，`review/opt/player.md` 第 13 条）。
+     *
+     * 原来是 `WebSurface` 里的裸字面量 `2_000L`。这条请求是**额外**的一次 OkHttp 拉取
+     * （WebView 同时在加载同一个壳页），失败/超时只是回退到原播放页 ——
+     * 所以超时越短越划算：弱网下 2 秒会把"进网页线路"整体拖慢 2 秒，
+     * 而收益（跳过 parser-blocking 的 `t.js`）依赖解析成功。
+     *
+     * **900ms**：壳页是 KB 级、通常几百毫秒内返回，给弱网留约一倍余量，
+     * 同时把最坏等待压到 1 秒以内。
+     */
+    const val SHELL_FETCH_TIMEOUT_MS: Long = 900L
+
     private val PLAYER_URL_BASE64 = Regex("""playerUrlBase64["']?\s*[:=]\s*["']([^"']+)["']""")
     private val ENCODED_STR = Regex("""encodedStr\s*=\s*["']([^"']+)["']""")
 

@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.SignalCellularAlt
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -146,11 +147,25 @@ fun TeamLogo(
         return
     }
 
+    // ⚠️ U10：`ImageRequest` 必须 `remember(url)` —— 原来每次重组都新建一个对象
+    //（列表页每张卡 2 个队徽，hero 卡、网格卡、搜索结果、直播卡全在内）。
+    // 与 H8 叠加时这个分配会变成"每帧每个可见队徽一次"。
+    //
+    // ⚠️ `LocalContext.current` 是 **@Composable 读取**，不能出现在 `remember` 的
+    // 普通 lambda 里（编译期直接报错：Composable 调用只能发生在 @Composable 上下文）。
+    // 所以先读进局部 `val context`，再把它当 remember 的**键** ——
+    // Activity 重建后 Context 变了会重建请求，不会拿旧 Context。
+    // 这里写成"局部 val + 实参位置的 remember"而不是 `val req = remember(url) { … }`：
+    // `ComponentPerfTest` 的"组合期不得新建回退 lambda"判据按 `val x = … {` 形态匹配。
+    val context = LocalContext.current
+
     SubcomposeAsyncImage(
-        model = ImageRequest.Builder(LocalContext.current)
-            .data(url)
-            .crossfade(true)
-            .build(),
+        model = remember(url, context) {
+            ImageRequest.Builder(context)
+                .data(url)
+                .crossfade(true)
+                .build()
+        },
         contentDescription = contentDescription,
         contentScale = ContentScale.Fit,
         modifier = modifier
@@ -364,7 +379,12 @@ fun LeagueChip(
 ) {
     Box(
         modifier = modifier
-            .height(20.dp)
+            // ⚠️ U7：`heightIn(min = …)` 而不是固定 `height(...)`。
+            // 里面的 9.5sp 会随系统 fontScale 放大，而固定 dp 不放大
+            // （AndroidManifest 的 configChanges 显式含 fontScale，即"照旧缩放"）：
+            // fontScale 1.3 时行高就把 20dp 的容器撑满并裁掉文字。
+            // 下限仍是设计稿的 20dp，所以正常字号下像素级不变。
+            .heightIn(min = 20.dp)
             .clip(RoundedCornerShape(Radius.chip))
             .background(
                 // 9.5sp 白字：必须用压暗过的白字安全版，原始渐变只有 3.2~3.6:1
@@ -393,7 +413,8 @@ fun LeagueChip(
 fun SignalBadge(count: Int, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
-            .height(20.dp)
+            // U7：同 LeagueChip —— 固定 dp 会裁掉随 fontScale 放大的 9.5sp 文字
+            .heightIn(min = 20.dp)
             .clip(RoundedCornerShape(Radius.chip))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 7.dp),
@@ -426,7 +447,15 @@ fun SignalBadge(count: Int, modifier: Modifier = Modifier) {
 fun StatusChip(
     status: MatchStatus,
     modifier: Modifier = Modifier,
-    liveLabel: String = "直播中",
+    /**
+     * 覆盖「直播中」的文案（U15）。
+     *
+     * ⚠️ **null = 走 [StatusLabel.of] 这个唯一文案来源**。旧实现的默认值是
+     * 字面量 `"直播中"`，并在下面提前分支，于是 `StatusLabel.of(LIVE)` 在生产里
+     * **不可达** —— 改 `StatusLabel` 的 LIVE 文案不会影响任何界面（只有单测在覆盖）。
+     * 现在 LIVE 也走 `StatusLabel.of`，这个参数退化成纯粹的**覆盖**入口。
+     */
+    liveLabel: String? = null,
     /**
      * 源站是否标注了延期/推迟/待定（`Match.isPostponed`）。
      *
@@ -465,14 +494,23 @@ fun StatusChip(
     // 延期场次的状态是 UPCOMING，原来一律显示「未开赛」——
     // 用户按时间找过去发现没有直播，以为数据错了。
     // 规则抽在 StatusLabel（有单测），这里只负责渲染。
-    val label = if (status == MatchStatus.LIVE) {
-        liveLabel
-    } else {
-        StatusLabel.of(status, isPostponed)
-    }
+    //
+    // ⚠️ U15：**LIVE 也走 StatusLabel.of**（不再提前分支），`liveLabel` 只作覆盖参数；
+    // 覆盖只对「直播中」生效 —— 延期/已结束的文案不许被调用方改掉
+    // （见 StatusLabel.of 的参数说明），所以非 LIVE 一律传 null。
+    val label = StatusLabel.of(
+        status = status,
+        isPostponed = isPostponed,
+        liveLabel = if (status == MatchStatus.LIVE) {
+            liveLabel
+        } else {
+            null
+        },
+    )
     Row(
         modifier = modifier
-            .height(24.dp)
+            // U7：固定 24dp 会裁掉随 fontScale 放大的 10.5sp（fontScale 1.3 时行高已 26dp）
+            .heightIn(min = 24.dp)
             .clip(RoundedCornerShape(Radius.chipLg))
             .background(bg)
             .border(1.dp, border, RoundedCornerShape(Radius.chipLg))
@@ -555,16 +593,32 @@ fun AspectModeSelector(
  * 通过 CompositionLocal 下发；所有红点复用同一个值。
  * 好处不只是省电：所有红点相位一致，视觉上也更整齐。
  *
- * ⚠️ 默认值是 `1f`（不呼吸）而不是 0.35f：没有 Provider 时
+ * ## ⚠️ H8：下发的必须是**稳定引用**，不是每帧变化的 Float
+ *
+ * 旧实现是 `staticCompositionLocalOf { 1f }`，而 [LiveDotPhase] 每帧
+ * `provides` 一个新的 Float —— `staticCompositionLocalOf` 的语义是
+ * "值变化 ⇒ 提供者内的**整棵子树**标记失效"，而它包着「赛事/直播/我的」
+ * 三个标签页（`AppChrome.kt` 的 `ListBranch`）。于是列表页静止时，
+ * 连一颗红点都没有的「我的」页也被每帧卷进同一棵失效树。
+ *
+ * 现在这里传的是 `() -> Float` 这个**闭包引用**（在 `remember` 里创建，
+ * 永远同一个实例），`LiveDot` 在 `graphicsLayer { }` 的 **draw 期**调用它 ——
+ * 读动画 State 只让绘制层失效，不再触发任何重组。
+ *
+ * ⚠️ 默认值仍返回 `1f`（不呼吸）而不是 0.35f：没有 Provider 时
  * （比如详情页单独用 LiveDot）红点应该是稳定可见的，不能一上来就是暗的。
  */
-val LocalLiveDotAlpha = androidx.compose.runtime.staticCompositionLocalOf { 1f }
+val LocalLiveDotAlpha = androidx.compose.runtime.staticCompositionLocalOf<() -> Float> { { 1f } }
 
 /**
  * 提供共享呼吸相位的容器（在列表/页面层级用一次）。
  *
  * 内部只建**一个** `rememberInfiniteTransition`，子树的红点全部复用它。
- * 透明度走 [graphicsLayer] 的 lambda，只在绘制阶段读状态、不触发重组。
+ *
+ * ⚠️ H8：下发的 lambda 用 `remember` 固定成**同一个实例**（它内部读的
+ * `a` 是动画 State 的委托读取，每次调用取当次值）—— 这样 CompositionLocal
+ * 的值在组合期恒定不变，提供者子树不会被每帧标记失效；
+ * 透明度真正生效的地方是 [LiveDot] 的 `graphicsLayer { }`（绘制期读）。
  */
 @Composable
 fun LiveDotPhase(content: @Composable () -> Unit) {
@@ -575,7 +629,10 @@ fun LiveDotPhase(content: @Composable () -> Unit) {
         animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
         label = "alpha",
     )
-    androidx.compose.runtime.CompositionLocalProvider(LocalLiveDotAlpha provides a) {
+    // ⚠️ remember 的 key 用 t：换一个动画实例时才重建 lambda。
+    // lambda 里读的是 `a` 这个委托（State），调用时才取值 —— 组合期不读动画值。
+    val phase = remember(t) { { a } }
+    androidx.compose.runtime.CompositionLocalProvider(LocalLiveDotAlpha provides phase) {
         content()
     }
 }
@@ -585,21 +642,49 @@ fun LiveDotPhase(content: @Composable () -> Unit) {
  *
  * ⚠️ 透明度走 [graphicsLayer] 的 lambda 而不是 `Modifier.alpha(a)`：
  * 前者只在**绘制阶段**读状态，不触发重组；后者每帧都会重组这个节点。
+ * H8 之后 `phase()` 也在**同一个绘制 lambda 内部**求值 —— 这才是
+ * "只在绘制阶段读状态"（组合期只读到一个恒定不变的 lambda 引用）。
  *
  * ⚠️ 动画相位来自 [LocalLiveDotAlpha]（由 [LiveDotPhase] 提供），
  * 不在函数内部自建 —— 否则每颗红点一份无限动画（P2-13）。
  *
- * @param alpha 透明度；默认读共享相位，显式传入可用于静态展示（如截图/测试）
+ * @param alpha 显式透明度；**null** = 读共享相位（默认）。
+ *   显式传入用于静态展示（截图/测试）以及不希望呼吸的场合。
  */
 @Composable
-fun LiveDot(size: Dp = 6.dp, alpha: Float = LocalLiveDotAlpha.current) {
+fun LiveDot(size: Dp = 6.dp, alpha: Float? = null) {
+    val phase = LocalLiveDotAlpha.current
     Box(
         Modifier
             .size(size)
-            .graphicsLayer { this.alpha = alpha }
+            .graphicsLayer { this.alpha = alpha ?: phase() }
             .clip(CircleShape)
             .background(Color.White),
     )
+}
+
+/**
+ * 首屏 loading 态（U21）。
+ *
+ * 「赛事」页原来有转圈 + 文案，「直播」页只有一行静止文字；同一次冷启动
+ * 在两页看到两种样子，后者看起来像"这页挂了"（首载要 1~3 秒）。
+ * 抽成共享组件后，三页的间距/字号/进度指示由同一处保证。
+ *
+ * @param text 说明文案（各页可写自己的场景，如"正在加载赛事…"）
+ */
+@Composable
+fun LoadingState(text: String) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(Space.lg))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 /**

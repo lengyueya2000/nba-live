@@ -56,9 +56,12 @@ class MatchRepositoryTest {
             .atZone(MatchStatusClock.SOURCE_ZONE).toInstant().toEpochMilli()
 
     /**
-     * 走 `mergeForTest` 而不是反射调 private merge：
-     * merge 的返回类型已改成带过滤计数的 Merged，反射强转 List 会 ClassCastException，
-     * 而且反射本身就绕过了编译期检查（签名变了测试不会红，跑起来才炸）。
+     * 走 `mergeForTest` 而不是反射调内部 merge：
+     *
+     * D10 之后合并逻辑已抽到 [MatchMerger]（纯函数），`MatchRepository.mergeForTest`
+     * 是**刻意保留的既有测试入口**（内部委托给它）—— 反射既要绕过编译期检查
+     * （签名变了测试不会红，跑起来才炸），又得依赖私有成员的名字，
+     * 而 `MatchMerger.Merged` 这类返回类型一旦重构，强转还会 ClassCastException。
      */
     private fun invokeMerge(jrs: List<Match>, jrkan: List<Match>): List<Match> =
         repo.mergeForTest(jrs, jrkan)

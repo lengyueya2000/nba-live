@@ -90,8 +90,23 @@ class ManualPipGuardTest {
     fun `切场后小窗比例要复位 不能沿用上一场的宽高`() {
         // 回归：setVideoSize 只在 onVideoSizeChanged 里写，切场时没人清零 ——
         // 新场次的首帧到达之前，小窗按**上一场**的比例显示。
+        //
+        // ⚠️ P17 收口（task-10）：生产签名已从"无参恒真"改成
+        // `shouldResetOnMatchSwitch(hasRecordedVideoSize: Boolean = true)`
+        // （`ManualPipPolicy.kt:82`，调用点传 `PipState.videoSize.value.width > 0`）。
+        // 旧的 `assertTrue(shouldResetOnMatchSwitch())` 只测到**默认值**：
+        // 实现把参数忽略掉、退回 `= true` 也照样绿 —— 这里把三条分支都钉住。
         assertTrue(
-            "切场时必须把视频尺寸复位（否则小窗沿用上一场比例）",
+            "上一场记过真实宽高时，切场必须复位（否则小窗沿用上一场比例）",
+            PipAspectReset.shouldResetOnMatchSwitch(hasRecordedVideoSize = true),
+        )
+        assertFalse(
+            "上一场没上报过宽高（videoSize 仍是 0,0）时再写一次 setVideoSize(0,0) 是空操作 —— " +
+                "判据必须如实返回 false，而不是恒真",
+            PipAspectReset.shouldResetOnMatchSwitch(hasRecordedVideoSize = false),
+        )
+        assertTrue(
+            "调用方拿不到信息（不传参）时必须**保守地复位**，保持 01-player.md P2-5 的原始语义",
             PipAspectReset.shouldResetOnMatchSwitch(),
         )
     }

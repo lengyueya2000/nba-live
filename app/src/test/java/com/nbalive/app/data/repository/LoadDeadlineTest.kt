@@ -7,7 +7,7 @@ import org.junit.Test
 import kotlinx.coroutines.runBlocking
 
 /**
- * 列表加载的**整体 deadline**（review/02-data.md P2-3）。
+ * 列表加载的 **deadline**（review/02-data.md P2-3）。
  *
  * ## 要解决什么
  *
@@ -16,15 +16,25 @@ import kotlinx.coroutines.runBlocking
  * 最坏情况用户盯着转圈接近 **3 分钟**，期间无任何 UI 超时、
  * 也没有"放弃并给个可重试提示"的出口。
  *
- * ## 规则
+ * ## 规则（⚠️ H3/D1 收口：deadline 是**每源**一份，不是"两源合计"）
  *
- * 整体必须在 deadline 内结束，超时返回"部分结果 + 失败源"，
- * 而不是无限等 —— 用户宁可看到"部分场次 + 可重试"，也不要盯着转圈。
+ * 本文件原先描述的是"整体 deadline"：一个 `withTimeoutOrNull` 包住
+ * `jrsDeferred.await() to jrkanDeferred.await()`。那条实现有个静默丢数据的缺陷
+ * （review/optimization-review.md H3 / opt/data.md D1）：**一个源慢/死会把另一个源
+ * 已经拿到手的场次一起丢掉**，还被报成"两个源都超时"。
+ * 现在 `MatchRepository` 用 `sourceWithDeadline { … }` 给**每个源各自**套 deadline，
+ * 超时只让那一个源变成 `SourceOutcome.TimedOut`。
+ *
+ * 于是本文件钉住的两条语义是：
+ *  1. 两源都无响应时，整体仍在注入的 deadline 内返回（不是 105s 那种硬等）；
+ *  2. 两源都超时 → 空列表 + 两个源都进 `failedProviders`（不抛异常）。
+ * 而"单源超时必须保留另一源已返回的场次"这条**新增判据**在
+ * `ListLoadFixesTest`（task-6 的新测试文件）里，不在本文件。
  *
  * ## 判据窗口为什么是 250..1500ms（2026-10-29 实测，见 review/flake-audit.md）
  *
- * 本类注入 `loadDeadlineMs = 300L`，所以「honor 注入值」的实现耗时必然 ≈ 300ms
- * 加上"取消后的续体调度"延迟：
+ * 本类注入 `loadDeadlineMs = 300L`，两个源的 deadline **并发起算**，
+ * 所以「honor 注入值」的实现耗时必然 ≈ 300ms 加上"取消后的续体调度"延迟：
  *  - **下限 250ms（低于注入的 300ms）**：抓「根本没等就返回 / deadline 被改短」。
  *  - **上限 1500ms**：抓「注入值被忽略、退化成几秒硬编码」——
  *    旧的单边 `< 5_000` 抓不住它：实验一（生产写死 `3_000L`）本条耗时 **3.008s，
@@ -32,7 +42,8 @@ import kotlinx.coroutines.runBlocking
  *    同时给慢机留余量：task-17 的 18 轮里（含 15 个忙等进程占满 16 核的全核负载档）
  *    本条耗时最大 **0.315s** ⇒ 上限是实测最大值的 4.8 倍。
  *  - **不建议改用虚拟时钟**：deadline 跑在 `withContext(Dispatchers.IO)` 里
- *    （`MatchRepository.kt:586,595`），`runTest` 的虚拟时钟不进真实 dispatcher，
+ *    （见 `MatchRepository.loadMatchesWithOutcome` / `sourceWithDeadline`；
+ *    ⚠️ 这里不再写行号，行号漂移过一次），`runTest` 的虚拟时钟不进真实 dispatcher，
  *    只改测试无法虚拟化这条路径；要做就得改生产（注入 dispatcher/时钟）。
  */
 class LoadDeadlineTest {
@@ -50,7 +61,7 @@ class LoadDeadlineTest {
         // ⚠️ **双边窗口**，不是单边上界（审计口径：判据过松 = 红了也说明不了什么）。
         // 理由与实测依据见类 KDoc「判据窗口为什么是 250..1500ms」。
         assertTrue(
-            "整体必须在**注入的 300ms** deadline 内结束（不是「随便小于几秒」）：" +
+            "每个源都必须在**注入的 300ms** deadline 内结束（不是「随便小于几秒」）：" +
                 "实测耗时 ${elapsedMs}ms，判据要求落在 250..1500ms 窗口内。\n" +
                 "低于 250ms ⇒ 根本没等 deadline 就返回（或 deadline 被改短）；" +
                 "高于 1500ms ⇒ deadline 被忽略或改坏（最坏会等近 3 分钟）。",
