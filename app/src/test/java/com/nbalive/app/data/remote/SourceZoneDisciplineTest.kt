@@ -5,6 +5,7 @@ import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.nbalive.app.TestPaths
 
 /**
  * 「源站时间必须按北京时间解释」的调用点守卫（review/02-data.md P2-2）。
@@ -135,7 +136,7 @@ class SourceZoneDisciplineTest {
 
     /** 源码根；找不到直接失败（铁律③），绝不静默跳过。 */
     private fun sourceRoot(): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val candidates = listOf(
             File(cwd, "src/main/java/com/nbalive/app"),
             File(cwd, "app/src/main/java/com/nbalive/app"),

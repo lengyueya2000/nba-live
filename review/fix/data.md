@@ -79,3 +79,54 @@
 让**夹具自己**先以明确文案失败，而不是让三条业务用例分别报出"第一次必须成功"这种看不出根因的信息。
 
 **教训（写进报告的用意）**：本仓库反复强调"非空性锚点"，我这次漏在了**夹具**上；另外"用裸文本计数推断结构平衡"正是 review §10 点名的行号/计数陷阱的同类错误，下次这类改动要么用真实解析器验证，要么不动。
+
+## §7 D10 完整拆分（收窄版：只抽 `JrsDetailCache`）
+
+⚠️ 本节按 Lead 的**收窄指令**执行：本轮只抽 `JrsDetailCache`，**不抽 `LoadOrchestrator`**（列表侧的缓存/并发/冷却/失败归类留在 `MatchRepository`，另轮再做）。检查点起点：`57eb33a`。
+
+### 7.1 新类与职责边界
+
+- 新增 `data/repository/JrsDetailCache.kt`（`internal class`，188 行）。
+- **公开 API**（模块内）：
+  - `suspend fun load(detailId: String, forceRefresh: Boolean = false, fetch: suspend (String, String?) -> FetchResult): String?`
+  - `fun invalidate(detailId: String)` / `fun clear()`
+  - 构造：`JrsDetailCache(fetchBody, clock = { nanoTime/1e6 }, ttlMs = 5 分钟, maxEntries = 64)`
+  - `companion`：`DEFAULT_TTL_MS = 300_000`、`DEFAULT_MAX_ENTRIES = 64`
+- **承担**：TTL 缓存（key = `detailId`、LRU 上限）、single-flight（含 D12"forceRefresh 不许删别人的在飞条目"）、`invalidate`/`clear`、四条 `debugLog`（D18，只打 detailId、tag 沿用 `"MatchRepo"`）、**时钟可注入**（沿用 D9 写法）。
+- **不承担**：真正取正文的网络部分 —— 以 `fetchBody` lambda 注入，仍是 `MatchRepository.fetchDetailBody`（候选域名顺序、403/429 冷却、404 不登记 host 失败）。**为什么这样切**：缓存/single-flight 是**纯内存判据**（可注入时钟后完全可测），域名与限流是**网络与源站协同判据**；混在一个方法里时两者都难以单独变红。
+
+### 7.2 `MatchRepository` 的对外签名：**一个都没改**
+
+`loadMatchesOutcome(enabled, forceRefresh)`、`loadMatchesWithOutcome(enabled, forceRefresh, fetch)`、`loadSignals(match)`、`internal loadSignals(match, fetch)`、`clearDetailCache()`、`invalidateDetailCache(detailId)`、`correctLiveStatuses` ×3、`correctLiveStatusesForTest`、`mergeForTest`、`agedMatches`、`resolveStream`、嵌套 `LoadOutcome`/`Detail` **全部原样**（`MainViewModel` 的 `(Set<Provider>, Boolean) -> MatchRepository.LoadOutcome` 不受影响）。
+
+被删的只有**私有** `fetchJrsDetail`（实体搬进新类；两个调用点改为 `detailCache.load(..., fetch = fetch)`）。
+被搬的私有成员：`inFlightDetails`、`detailCache`（LinkedHashMap/LRU）、`DETAIL_CACHE_TTL_MS`、`DETAIL_CACHE_MAX_ENTRIES`。
+顺带更新的 KDoc：`fetchDetailBody`（承接"域名候选"那段说明）、`SourceEndpoints` 两处 `fetchJrsDetail` 引用（改为 `fetchDetailBody` / `JrsDetailCache.invalidate`）。
+
+### 7.3 三条反射判据 → 行为判据（改前 / 改后 / 为什么等价或更强）
+
+| 测试 | 改前断言什么 | 改后断言什么 | 为什么等价或更强 |
+|---|---|---|---|
+| `DetailCacheTtlTest.慢请求的缓存年龄从拿到正文之后开始算` | `getDeclaredField("detailCache")` 读出 `cachedAt`，与 fetch **开始时刻**比较：`cachedAt - startedAt >= sampleMs - 100`（P2-7） | 注入时钟；让请求期间时钟前进 **6 分钟**；断言第二次 `loadSignals` **不再回源**（`fetches` 不增） | 旧断言读的是"内部时间戳相对 fetch 起点的位置"（实现细节）；新断言读它的**可观察后果**（白打一次源站），并顺带覆盖"TTL 内命中不回源"。旧实现在这里必红：年龄 6 分钟 ≥ 5 分钟 TTL → 会回源。**不再依赖任何私有成员**。 |
+| `MatchRepositoryRetryTest.详情页缓存有条数上限 不会无限增长` | 反射读 `detailCache.size`，断言 `size <= 64` | 行为：拉 200 个不同场次后，**第 0 场（最旧）已淘汰 → 再访问真的回源**；**第 199 场（最新）仍在缓存 → 再访问不回源**；并加非空性锚点"夹具真的取了 200 次" | 旧断言把上限实现成"每次插入清空整表"也照样绿（`size` 永远 ≤64），且缓存一搬家就红；新断言同时钉住**有上限**与**淘汰的是最旧的**（LRU 语义），夹具锚点还防"什么都没测"。 |
+| `MatchRepositoryTest.live matches sort before upcoming` / `…ordered latest first` / `upcoming…earliest first` | `getDeclaredMethod("sort", List::class.java)` 反射调用私有 `sort`，断言返回顺序 | 走**公开入口** `agedMatches(matches, now)`：夹具里放一场**会老化**的比赛（-6h 的"直播中"→已结束，触发重排），再断言完整顺序 | 反射钉的是"私有方法还在、还叫这个名字"（签名一变不是测试红而是**运行期抛错**）；`agedMatches` 还额外钉住"只在状态真的老化时才重排"这条真实契约。另外旧的第一条用例其实是**空转**：它比对的是 `merge` 的输入顺序（把整个排序删掉也照样绿），新版本真能红。 |
+
+### 7.4 连带修订（守卫必须跟着实现走）
+
+- `DetailCacheLogFixesTest`（task-6 新增）：扫描目标从 `MatchRepository.kt` 改为 **`JrsDetailCache.kt`**，锚点断言同步（`class JrsDetailCache`），并把"三路日志"扩成**四路**（+ 整体清空）。若不改，它会在文件搬家后以"零命中"**静默变绿**。
+- `ListLoadFixesTest` 的 `failedHostsOf` KDoc：更新"谁是反射、谁已重锚"的说明。
+
+### 7.5 新增独立单测
+
+`data/repository/JrsDetailCacheTest.kt`（10 条，全部不触网、不反射）：TTL 命中/到点过期、**时间戳在正文之后取（慢请求不吃 TTL）**、并发 single-flight 只取一次、`forceRefresh` 绕过缓存、**`forceRefresh` 不许删别人在飞的条目（D12）**、`invalidate` 只失效一场 / `clear` 清空整表、LRU 上限（最旧淘汰+最新保留）、null/空正文不写缓存、取正文抛异常不把 detailId 永久卡住。
+
+### 7.6 反射残留（诚实清单）
+
+全仓测试只剩 **1 处**反射：`ListLoadFixesTest.failedHostsOf` → `MatchRepository.listFailedHosts`。
+保留原因：失败记账表目前没有可注入的观察口，而那条判据的结论就是"表里不该多出东西"。
+**若要继续收口**，正确做法是 D10 的下一步：把"host 失败记忆 + 限流冷却"抽成可单独构造的单元（如 `SourceGate`），判据改为对它的 `attemptOrder` 行为断言 —— 本次按 Lead 指令未做。
+
+### 7.7 未做（明确列出）
+
+- **`LoadOrchestrator`（列表侧）：本轮不做**（Lead 收窄指令）。列表的 TTL 缓存 + single-flight、两源并发 + 每源 deadline（H3）、冷却（D9）、失败归类仍在 `MatchRepository`，当前有 `ListLoadFixesTest` 的 7 条行为判据覆盖。
+- 上一轮（被 Lead 回退的那次尝试）**没有产出任何内容**：本轮从检查点 `57eb33a` 重新开始，改动仅限本报告 §7 列出的文件。

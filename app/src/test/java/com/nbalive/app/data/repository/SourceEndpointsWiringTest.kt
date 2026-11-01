@@ -12,6 +12,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
+import com.nbalive.app.TestPaths
 
 /**
  * [SourceEndpoints] 的**接线**验证（review/02-data.md P1-9 第二半）。
@@ -189,7 +190,7 @@ class SourceEndpointsWiringTest {
         // ⚠️ 硬失败而不是跳过（审计 A10，这正是上一轮 PLAY_HOSTS 零消费点漏网的那条守卫）：
         // 源码根解析不到时它会"零违规"地静默全绿，而它的全部价值就是"证明有人真的在用"。
         assertTrue(
-            "找不到 app/src/main/java（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 app/src/main/java（cwd=${TestPaths.workingDirPath()}）—— " +
                 "锚点缺失时候选常量的接线守卫会静默全绿，所以直接失败而不是跳过",
             root != null,
         )
@@ -322,7 +323,7 @@ class SourceEndpointsWiringTest {
         val candidates = listOf(
             File("src/main/java/com/nbalive/app"),
             File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir"), "src/main/java/com/nbalive/app"),
+            File(TestPaths.workingDir(), "src/main/java/com/nbalive/app"),
         )
         return candidates.firstOrNull { it.isDirectory }
     }

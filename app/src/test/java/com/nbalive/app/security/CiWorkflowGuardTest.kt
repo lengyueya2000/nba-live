@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.TestPaths
 import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -97,7 +98,7 @@ class CiWorkflowGuardTest {
      * 找不到就 `error()` 硬失败（守卫静默全绿比误报危险得多）。
      */
     private fun repoFile(name: String): File {
-        val cwd = File(System.getProperty("user.dir") ?: ".")
+        val cwd = File(TestPaths.workingDirPath())
         val candidates = listOf(
             File("../.github/workflows/$name"),
             File(".github/workflows/$name"),

@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertFalse
@@ -93,7 +94,7 @@ class LogCallDisciplineTest {
      * 找不到主源码根就 `error()`（守卫静默全绿比误报危险）。
      */
     private fun uiAndActivitySources(): List<File> {
-        val cwd = File(System.getProperty("user.dir") ?: ".")
+        val cwd = File(TestPaths.workingDirPath())
         val root = listOf(
             File("src/main/java"),
             File(cwd, "src/main/java"),

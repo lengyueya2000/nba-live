@@ -1,5 +1,6 @@
 package com.nbalive.app.ui.uifix
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -482,7 +483,7 @@ class UiFixWiringTest {
 
     /** 生产源码目录下全部 kt。 */
     private fun appFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val roots = listOf(
             File(cwd, "src/main/java/com/nbalive/app"),
             File(cwd, "app/src/main/java/com/nbalive/app"),

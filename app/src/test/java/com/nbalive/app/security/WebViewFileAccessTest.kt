@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
@@ -30,7 +31,7 @@ class WebViewFileAccessTest {
         // ⚠️ 硬失败而不是跳过（审计 A10）：PlayerScreen.kt 是这条守卫**唯一**的锚点，
         // 锚点缺失时它本来会"零违规"地静默全绿 —— 那种绿和"真的守住了"看不出区别。
         assertTrue(
-            "找不到 PlayerScreen.kt（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 PlayerScreen.kt（cwd=${File(TestPaths.workingDirPath()).absolutePath}）—— " +
                 "锚点缺失时这条守卫会静默全绿，所以直接失败而不是跳过",
             text != null,
         )
@@ -67,7 +68,7 @@ class WebViewFileAccessTest {
         // ⚠️ 硬失败而不是跳过（审计 A10）：PlayerScreen.kt 是这条守卫**唯一**的锚点，
         // 锚点缺失时它本来会"零违规"地静默全绿 —— 那种绿和"真的守住了"看不出区别。
         assertTrue(
-            "找不到 PlayerScreen.kt（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 PlayerScreen.kt（cwd=${File(TestPaths.workingDirPath()).absolutePath}）—— " +
                 "锚点缺失时这条守卫会静默全绿，所以直接失败而不是跳过",
             text != null,
         )
@@ -82,7 +83,7 @@ class WebViewFileAccessTest {
         val candidates = listOf(
             File("src/main/java/com/nbalive/app/ui/screens/PlayerScreen.kt"),
             File("app/src/main/java/com/nbalive/app/ui/screens/PlayerScreen.kt"),
-            File(System.getProperty("user.dir"), "src/main/java/com/nbalive/app/ui/screens/PlayerScreen.kt"),
+            File(TestPaths.workingDirPath(), "src/main/java/com/nbalive/app/ui/screens/PlayerScreen.kt"),
         )
         return candidates.firstOrNull { it.isFile }?.readText()
     }

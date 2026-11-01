@@ -19,8 +19,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -45,6 +43,7 @@ import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.mmdd
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
+import com.nbalive.app.ui.icons.AppIcons
 
 /**
  * 赛事详情：左右对阵大字号 + 信号列表 + 源站信息 + 底部 CTA。
@@ -342,7 +341,7 @@ private fun SignalRow(
         Spacer(Modifier.width(Space.sm))
 
         Icon(
-            Icons.AutoMirrored.Filled.ArrowForwardIos,
+            AppIcons.automirrored_filled_ArrowForwardIos,
             contentDescription = null,
             modifier = Modifier
                 .padding(start = Space.xs)

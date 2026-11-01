@@ -22,7 +22,7 @@ import com.nbalive.app.data.remote.JrkanParser
  * 本对象的三个候选各自有明确消费点，由 `SourceEndpointsWiringTest` 扫源码钉住：
  *  - [JRS_LIST] / [JRKAN_LIST_JS] → `MatchRepository.runSource`
  *  - [PLAY_HOSTS] → `MatchRepository.expandJrkanPlayPage`
- *  - [jrsDetailUrls] → `MatchRepository.fetchJrsDetail`
+ *  - [jrsDetailUrls] → `MatchRepository.fetchDetailBody`（经 `JrsDetailCache` 的 `fetchBody` 注入）
  *
  * 列表页与详情页、播放页共享同一份"哪个 host 上一轮失败过"的记忆
  * （`MatchRepository.listFailedHosts`），失败 host 会被挪到候选队尾。
@@ -85,7 +85,7 @@ object SourceEndpoints {
      *
      * 详情页挂在**同一个站点的不同域名**下，所以直接由 [JRS_LIST] 派生，
      * 而不是另写一份 URL 模板：写死模板的旧实现有两处副本
-     * （`fetchJrsDetail` 与 `invalidateDetailCache`，review/02-data.md P2-6），
+     * （`MatchRepository.fetchDetailBody` 与 `JrsDetailCache.invalidate`，review/02-data.md P2-6），
      * 改一处漏一处时「刷新线路」会静默失效 —— 清了 A 的缓存、
      * 读的是 B 的缓存，用户点刷新却拿到旧正文。
      *

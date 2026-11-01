@@ -1,5 +1,6 @@
 package com.nbalive.app.ui.theme
 
+import com.nbalive.app.TestPaths
 import androidx.compose.ui.graphics.Color
 import com.nbalive.app.GuardSourceScan
 import java.io.File
@@ -241,7 +242,7 @@ class ThemeSlotTest {
     fun `扫描必须真的扫到主题源码`() {
         val files = appSourceFiles()
         assertTrue(
-            "扫不到生产源码（cwd=${System.getProperty("user.dir")}），守卫会静默全绿",
+            "扫不到生产源码（cwd=${TestPaths.workingDirPath()}），守卫会静默全绿",
             files.size >= 10,
         )
         assertTrue("没扫到 ui/theme/Theme.kt", files.any { it.name == "Theme.kt" })
@@ -254,16 +255,7 @@ class ThemeSlotTest {
         // 审计「未验证的怀疑 #7」：按文件名取第一个 → 同名文件时静默守错。现在唯一命中否则 error()。
         GuardSourceScan.uniqueFile(appSourceFiles(), "Theme.kt")
 
-    private fun appSourceFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val roots = listOf(
-            File(cwd, "src/main/java/com/nbalive/app"),
-            File(cwd, "app/src/main/java/com/nbalive/app"),
-        )
-        val root = roots.firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录，cwd=$cwd，候选=${roots.map { it.path }}")
-        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
-    }
+    private fun appSourceFiles(): List<File> = TestPaths.productionFiles()
 
     /**
      * 剔注释**与字符串字面量**，走共享的词法实现 [GuardSourceScan.stripNonCode]。

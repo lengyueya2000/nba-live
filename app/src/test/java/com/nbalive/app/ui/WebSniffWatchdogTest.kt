@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -229,13 +230,5 @@ class WebSniffWatchdogTest {
         error("$marker 的括号不配对 —— 守卫会静默全绿")
     }
 
-    private fun productionFile(relative: String): File {
-        val cwd = System.getProperty("user.dir") ?: "."
-        return listOf(
-            File("src/main/java/$relative"),
-            File("app/src/main/java/$relative"),
-            File(cwd, "src/main/java/$relative"),
-        ).firstOrNull { it.isFile }
-            ?: error("找不到 $relative（cwd=${File(cwd).absolutePath}）—— 守卫会静默全绿，所以直接失败")
-    }
+    private fun productionFile(relative: String): File = TestPaths.productionFileAt(relative)
 }

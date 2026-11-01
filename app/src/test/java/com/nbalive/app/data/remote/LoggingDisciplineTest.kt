@@ -3,6 +3,7 @@ package com.nbalive.app.data.remote
 import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.nbalive.app.TestPaths
 
 /**
  * 日志脱敏的**调用点**守卫（review/00-summary「测试的假安全感」第 4 条）。
@@ -30,7 +31,7 @@ class LoggingDisciplineTest {
         val candidates = listOf(
             File("src/main/java/com/nbalive/app"),
             File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir"), "src/main/java/com/nbalive/app"),
+            File(TestPaths.workingDir(), "src/main/java/com/nbalive/app"),
         )
         return candidates.firstOrNull { it.isDirectory }
     }
@@ -60,7 +61,7 @@ class LoggingDisciplineTest {
         // 会静默全绿 —— 脱敏纪律会整个消失，而报告里看不出来，所以直接失败。
         assertTrue(
             "扫描不到 app/src/main/java 的 Kotlin 源码（实际 ${files.size} 个文件，cwd=" +
-                "${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "${TestPaths.workingDirPath()}）—— " +
                 "锚点缺失时脱敏纪律守卫会静默全绿，所以直接失败而不是跳过",
             files.size >= 20,
         )
@@ -82,7 +83,7 @@ class LoggingDisciplineTest {
         // ⚠️ 硬失败而不是跳过（审计 A10）：见上一条用例的说明。
         assertTrue(
             "扫描不到 app/src/main/java 的 Kotlin 源码（实际 ${files.size} 个文件，cwd=" +
-                "${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+                "${TestPaths.workingDirPath()}）—— " +
                 "锚点缺失时脱敏纪律守卫会静默全绿，所以直接失败而不是跳过",
             files.size >= 20,
         )

@@ -1,5 +1,6 @@
 package com.nbalive.app.ui.screens
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -117,33 +118,6 @@ class PlayerPageResolverWiringTest {
         )
     }
 
-    @Test
-    fun `自检 注释与字符串里的调用不算接线`() {
-        val sample = listOf(
-            "class Sample {",
-            "    fun WebSurface() {",
-            "        // PlayerPageResolver.resolvePlayerUrl( 只在注释里",
-            "        val s = \"PlayerPageResolver.resolvePlayerUrl( 只在字符串里\"",
-            "    }",
-            "}",
-        ).joinToString("\n")
-        assertTrue(
-            "判据命中了注释/字符串里的字面量（剔非代码那一步没生效）",
-            !GuardSourceScan.functionBody(sample, "fun WebSurface(")
-                .contains("PlayerPageResolver.resolvePlayerUrl("),
-        )
-    }
 
-    private fun functionSource(): String {
-        val cwd = File(System.getProperty("user.dir") ?: ".").absolutePath
-        val root = listOf(
-            File("src/main/java/com/nbalive/app"),
-            File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=$cwd）—— 守卫会静默全绿")
-        val file = root.walkTopDown().firstOrNull { it.isFile && it.name == "PlayerScreen.kt" }
-            ?: error("找不到 PlayerScreen.kt —— 守卫会静默全绿")
-        return GuardSourceScan.stripNonCode(file.readText())
-    }
+    private fun functionSource(): String = GuardSourceScan.stripNonCode(TestPaths.productionFile("PlayerScreen.kt").readText())
 }

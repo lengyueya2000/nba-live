@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
@@ -154,7 +155,7 @@ class LiveDotAnimationTest {
         // 非空性锚点：上面几条里有"零违规/any"式断言，扫描范围走偏时会静默全绿
         val files = productionFiles()
         assertTrue(
-            "只扫到 ${files.size} 个生产 kt 文件（应 ≥30，cwd=${System.getProperty("user.dir")}）" +
+            "只扫到 ${files.size} 个生产 kt 文件（应 ≥30，cwd=${TestPaths.workingDirPath()}）" +
                 "—— 上面的守卫会静默全绿",
             files.size >= 30,
         )
@@ -250,7 +251,7 @@ class LiveDotAnimationTest {
         if (hits.size != 1) {
             error(
                 "$name 在 ${productionFiles().size} 个生产文件里命中 ${hits.size} 次" +
-                    "（${hits.map { it.path }}，cwd=${System.getProperty("user.dir")}）—— " +
+                    "（${hits.map { it.path }}，cwd=${TestPaths.workingDirPath()}）—— " +
                     "守卫会静默全绿或守错文件",
             )
         }
@@ -258,7 +259,7 @@ class LiveDotAnimationTest {
     }
 
     private fun productionFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val roots = listOf(
             File(cwd, "src/main/java/com/nbalive/app"),
             File(cwd, "app/src/main/java/com/nbalive/app"),

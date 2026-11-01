@@ -1,4 +1,4 @@
-﻿package com.nbalive.app.data.repository
+package com.nbalive.app.data.repository
 
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
@@ -197,23 +197,53 @@ class MatchRepositoryRetryTest {
     }
 
     @Test
-    fun `详情页缓存有条数上限 不会无限增长`() = runBlocking {
-        // MatchRepository 跟着 ViewModel 活整个进程，
-        // 缓存必须有上限，否则一天下来几百个 URL 会一直堆着。
+    fun `详情页缓存有条数上限 最旧的被淘汰 最新的仍在`() = runBlocking {
+        // MatchRepository 跟着 ViewModel 活整个进程，缓存必须有上限，
+        // 否则一天下来几百个详情页会一直堆着。
+        //
+        // ⚠️ 判据为什么不再反射读 `detailCache.size`（D10 重锚）：
+        // 那条只能断言"条数 ≤ 64"—— 把上限实现成"每次插入清空整表"也照样绿，
+        // 而且缓存一搬家（本次拆到 JrsDetailCache）它就立刻变红。
+        // 现在改成**行为**判据，两条都钉住：
+        //   - 第 0 场（最旧）必须已被 LRU 淘汰 → 再访问真的回源；
+        //   - 第 199 场（最新）必须仍在 TTL 内 → 再访问不回源。
+        var detailFetches = 0
         val fetch: suspend (String, String?) -> FetchResult = { url, _ ->
-            if (url.contains("/live/")) FetchResult.Ok(detailHtml()) else FetchResult.Ok(jrsHtml("555"))
+            if (url.contains("/live/")) {
+                detailFetches++
+                FetchResult.Ok(detailHtml())
+            } else {
+                FetchResult.Ok(jrsHtml("555"))
+            }
         }
-        // 拉 200 个不同场次的详情页
+        // 拉 200 个不同场次的详情页（生产的条数上限是 64）
         repeat(200) { i ->
             repo.loadSignals(
                 matchOf("jrs-$i", "jrsDetailId" to "$i"),
                 fetch,
             )
         }
-        val cacheSize = detailCacheSize(repo)
+        val afterFill = detailFetches
         assertTrue(
-            "详情页缓存必须有上限，实际存了 $cacheSize 条",
-            cacheSize <= 64,
+            "夹具必须真的取了 200 个不同场次的详情页（实际 $afterFill 次）——" +
+                "否则「条数上限」这条判据什么都没测到",
+            afterFill >= 200,
+        )
+
+        repo.loadSignals(matchOf("jrs-old", "jrsDetailId" to "0"), fetch)
+        assertEquals(
+            "最旧的详情页必须已被 LRU 淘汰（真的回源）。实际回源 $detailFetches 次，" +
+                "期望 ${afterFill + 1} 次",
+            afterFill + 1,
+            detailFetches,
+        )
+
+        repo.loadSignals(matchOf("jrs-new", "jrsDetailId" to "199"), fetch)
+        assertEquals(
+            "最新的一条必须仍在缓存里（TTL 内不回源）。实际回源 $detailFetches 次，" +
+                "期望仍是 ${afterFill + 1} 次",
+            afterFill + 1,
+            detailFetches,
         )
     }
 
@@ -271,12 +301,6 @@ class MatchRepositoryRetryTest {
         sources = emptyList(),
         jrsDetailId = pairs.first().second,
     )
-
-    private fun detailCacheSize(repo: MatchRepository): Int {
-        val f = MatchRepository::class.java.getDeclaredField("detailCache")
-        f.isAccessible = true
-        return (f.get(repo) as Map<*, *>).size
-    }
 
     private fun hostOf(url: String): String =
         runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("").lowercase()

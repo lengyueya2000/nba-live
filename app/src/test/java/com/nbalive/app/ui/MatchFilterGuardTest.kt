@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -133,7 +134,7 @@ class MatchFilterGuardTest {
     fun `扫描必须真的扫到 ui 源码与两个锚点文件`() {
         val files = productionUiFiles()
         assertTrue(
-            "只扫到 ${files.size} 个 ui 源文件（应 ≥8，cwd=${System.getProperty("user.dir")}）—— " +
+            "只扫到 ${files.size} 个 ui 源文件（应 ≥8，cwd=${TestPaths.workingDirPath()}）—— " +
                 "扫描范围走偏时上面几条会静默全绿",
             files.size >= 8,
         )
@@ -185,18 +186,10 @@ class MatchFilterGuardTest {
         return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.sortedBy { it.path }.toList()
     }
 
-    private fun productionRoot(): File {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val candidates = listOf(
-            File(cwd, "src/main/java/com/nbalive/app"),
-            File(cwd, "app/src/main/java/com/nbalive/app"),
-        )
-        return candidates.firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=$cwd，候选=${candidates.map { it.path }}）—— 守卫会静默全绿")
-    }
+    private fun productionRoot(): File = TestPaths.productionRoot
 
     private fun testFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val candidates = listOf(
             File(cwd, "src/test/java/com/nbalive/app"),
             File(cwd, "app/src/test/java/com/nbalive/app"),

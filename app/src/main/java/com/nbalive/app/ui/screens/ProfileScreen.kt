@@ -18,10 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -43,6 +40,7 @@ import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.components.InfoRow
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
+import com.nbalive.app.ui.icons.AppIcons
 
 /**
  * "我的"标签页：播放偏好 + 外观 + 关于。
@@ -267,7 +265,7 @@ fun ProfileScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        Icons.Filled.OpenInNew,
+                        AppIcons.filled_OpenInNew,
                         contentDescription = null,
                         modifier = Modifier.size(15.dp),
                         tint = MaterialTheme.colorScheme.primary,
@@ -334,7 +332,7 @@ private fun SwitchRow(
                 // 图标跟着当前主题走：浅色主题下亮一个月亮图标会显得莫名其妙。
                 // 纯装饰，模式本身由行标题 + 开关状态说明，所以 contentDescription 为空。
                 Icon(
-                    imageVector = if (darkMode) Icons.Filled.DarkMode else Icons.Filled.LightMode,
+                    imageVector = if (darkMode) AppIcons.filled_DarkMode else AppIcons.filled_LightMode,
                     contentDescription = null,
                     modifier = Modifier.size(15.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,

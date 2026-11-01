@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.nbalive.app.GuardSourceScan
@@ -168,7 +169,7 @@ class ComponentPerfTest {
     fun `扫描必须真的扫到 ui 源码`() {
         val files = productionFiles()
         assertTrue(
-            "扫不到 ui 源码（cwd=${System.getProperty("user.dir")}），守卫会静默全绿",
+            "扫不到 ui 源码（cwd=${TestPaths.workingDirPath()}），守卫会静默全绿",
             files.size >= 10,
         )
         assertTrue("没扫到 components/", files.any { it.parentFile?.name == "components" })
@@ -183,16 +184,7 @@ class ComponentPerfTest {
         return stripComments(f.readText())
     }
 
-    private fun productionFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val roots = listOf(
-            File(cwd, "src/main/java/com/nbalive/app/ui"),
-            File(cwd, "app/src/main/java/com/nbalive/app/ui"),
-        )
-        val root = roots.firstOrNull { it.isDirectory }
-            ?: error("找不到 ui 源码目录，cwd=$cwd，候选=${roots.map { it.path }}")
-        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
-    }
+    private fun productionFiles(): List<File> = TestPaths.uiFiles()
 
     /**
      * 取出函数体：从 marker（**必须带左括号**，否则 `fun LiveDot` 会命中

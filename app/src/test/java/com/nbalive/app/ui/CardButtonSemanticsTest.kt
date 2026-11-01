@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -179,7 +180,7 @@ class CardButtonSemanticsTest {
         GuardSourceScan.uniqueFile(screens(), name)
 
     private fun screens(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val roots = listOf(
             File(cwd, "src/main/java/com/nbalive/app/ui/screens"),
             File(cwd, "app/src/main/java/com/nbalive/app/ui/screens"),
@@ -189,7 +190,7 @@ class CardButtonSemanticsTest {
         return root.listFiles { f -> f.isFile && f.extension == "kt" }?.toList() ?: emptyList()
     }
 
-    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
+    private fun cwd(): String = File(TestPaths.workingDirPath()).absolutePath
 
     private companion object {
         /** 生产里两张"整卡可点"的卡片：都必须消费同一个动作词常量。 */

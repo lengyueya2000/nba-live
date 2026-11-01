@@ -421,19 +421,9 @@ class ZeroConsumerGuardTest {
         error("`$declaration` 的函数体花括号没有配对")
     }
 
-    private fun productionCode(): Map<String, String> {
-        val root = listOf(
-            File("src/main/java/com/nbalive/app"),
-            File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=${cwd()}）—— 本文件所有登记会静默全绿")
-        return root.walkTopDown()
-            .filter { it.isFile && it.extension == "kt" }
-            .associate { it.name to it.readText() }
-    }
+    private fun productionCode(): Map<String, String> = TestPaths.codeByName(TestPaths.productionFiles())
 
-    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
+    private fun cwd(): String = File(TestPaths.workingDirPath()).absolutePath
 
     private companion object {
         /** 扫描范围锚点：登记表涉及的每个生产文件都必须被扫到。 */

@@ -22,11 +22,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SignalCellularAlt
-import androidx.compose.material.icons.filled.SportsBasketball
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -82,6 +78,7 @@ import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.Space
 import java.time.LocalDate
 import kotlinx.coroutines.delay
+import com.nbalive.app.ui.icons.AppIcons
 
 // 日期分组逻辑（DayGroup / dayLabel / groupByDay）已移到 ui/MatchFormat.kt 的纯函数区
 // （review/03-ui.md P2-33）：那是"展示格式化"的收敛点，且移出去才能被单测覆盖。
@@ -437,7 +434,7 @@ private fun LiveHeroCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (match.signalCount > 0) {
                     HeroPill(
-                        icon = Icons.Filled.SignalCellularAlt,
+                        icon = AppIcons.filled_SignalCellularAlt,
                         text = "${match.signalCount} 条线路",
                     )
                     Spacer(Modifier.width(Space.sm))
@@ -446,7 +443,7 @@ private fun LiveHeroCard(
                 // 不能凭空写"多源"；没有真实源站就不显示这个药丸。
                 match.sources.firstOrNull()?.provider?.displayName?.let { provider ->
                     HeroPill(
-                        icon = Icons.Filled.SportsBasketball,
+                        icon = AppIcons.filled_SportsBasketball,
                         text = provider,
                     )
                 }
@@ -737,7 +734,7 @@ private fun PartialBanner(message: String) {
             horizontalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
             Icon(
-                Icons.Filled.CloudOff,
+                AppIcons.filled_CloudOff,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -759,7 +756,7 @@ private fun EmptyState(refreshing: Boolean) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
-                Icons.Filled.CalendarMonth,
+                AppIcons.filled_CalendarMonth,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -849,7 +846,7 @@ private fun ErrorState(error: String, onRetry: () -> Unit) {
         title = "加载失败",
         message = error,
         onRetry = onRetry,
-        icon = Icons.Filled.SignalCellularAlt,
+        icon = AppIcons.filled_SignalCellularAlt,
         iconTint = MaterialTheme.colorScheme.error,
     )
 }

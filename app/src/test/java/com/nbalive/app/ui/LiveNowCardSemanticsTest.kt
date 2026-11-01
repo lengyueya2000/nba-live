@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -54,13 +55,5 @@ class LiveNowCardSemanticsTest {
         )
     }
 
-    private fun productionFile(relative: String): File {
-        val cwd = System.getProperty("user.dir") ?: "."
-        return listOf(
-            File("src/main/java/com/nbalive/app/$relative"),
-            File("app/src/main/java/com/nbalive/app/$relative"),
-            File(cwd, "src/main/java/com/nbalive/app/$relative"),
-        ).firstOrNull { it.isFile }
-            ?: error("找不到 $relative（cwd=${File(cwd).absolutePath}）—— 守卫会静默全绿，所以直接失败")
-    }
+    private fun productionFile(relative: String): File = TestPaths.productionFileAt(relative)
 }

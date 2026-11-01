@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -129,7 +130,7 @@ class RepoConfigDisciplineTest {
      * 写这个测试时第一次就踩到了（单测工作目录是 app/，File(name) 找不到根目录文件）。
      */
     private fun repoFileOrFail(name: String): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val candidates = listOf(
             File(cwd, name),
             File(cwd, "../$name"),

@@ -509,8 +509,15 @@ class ListLoadFixesTest {
      *
      * ⚠️ 为什么必须反射：这条判据的**结论**就是"表里不该多出东西"，
      * 而它没有任何行为出口（`attemptOrder` 的顺序变化是唯一现象，
-     * 但那只在"表非空"时才可见）。既有测试（`DetailCacheTtlTest` /
-     * `MatchRepositoryRetryTest`）对 `detailCache` 用的也是同一种做法。
+     * 但那只在"表非空"时才可见）。
+     *
+     * ⚠️ 这是本仓**最后一处**针对详情页缓存/合并类的反射式判据的邻居：
+     * `DetailCacheTtlTest` 与 `MatchRepositoryRetryTest` 对 `detailCache` 的反射
+     * 已在 D10（`JrsDetailCache` 拆分）时改成公开 API 的行为断言；
+     * `MatchRepositoryTest` 对 `sort` 的反射也改成了 `agedMatches` 的行为断言。
+     * 本条（`listFailedHosts`）保留反射，是因为失败记账表目前没有可注入的观察口
+     * —— 若要继续收口，应把"host 失败记忆 + 冷却"也抽成可单独构造的单元
+     * （review 的 D10 完整拆分项里列的就是这一步）。
      */
     private fun failedHostsOf(repo: MatchRepository): Set<String> {
         val field = MatchRepository::class.java.getDeclaredField("listFailedHosts")

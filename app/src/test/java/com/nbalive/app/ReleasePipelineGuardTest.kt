@@ -404,7 +404,7 @@ class ReleasePipelineGuardTest {
      * 也兼容从仓库根跑测试的情况。找不到就 `error()` 硬失败（绝不静默跳过）。
      */
     private fun workflowFile(): File {
-        val cwd = File(System.getProperty("user.dir") ?: ".")
+        val cwd = File(TestPaths.workingDirPath())
         val candidates = listOf(
             File("../.github/workflows/release.yml"),
             File(".github/workflows/release.yml"),

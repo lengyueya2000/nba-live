@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
@@ -68,6 +67,7 @@ import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
 import kotlinx.coroutines.CancellationException
+import com.nbalive.app.ui.icons.AppIcons
 
 /**
  * 搜索页：在已加载的赛事里按球队 / 联赛名过滤。
@@ -131,7 +131,7 @@ fun SearchScreen(
             // 返回键统一用共享的 SquareIconButton（review/03-ui.md P2-22）：
             // 这里原来是直接 size(48.dp)，比列表页/二级页顶栏的 40dp 视觉大一圈
             SquareIconButton(
-                icon = Icons.AutoMirrored.Filled.ArrowBackIos,
+                icon = AppIcons.automirrored_filled_ArrowBackIos,
                 contentDescription = "返回",
                 onClick = onClose,
                 iconSize = 16.dp,

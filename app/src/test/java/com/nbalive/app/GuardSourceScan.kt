@@ -314,7 +314,13 @@ internal object GuardSourceScan {
         val open = code.indexOf('{', cursor)
         if (open < 0) error("`$declaration` 后面找不到函数体起始 `{`")
         if (code.substring(cursor + 1, open).contains('=')) {
-            error("`$declaration` 看起来是表达式体函数（`= …` 而不是 `{ … }`），本判据不支持")
+            error(
+                "`$declaration` 是**表达式体**函数（`= …` 而不是 `{ … }`）：本判据只接受花括号体。\n" +
+                    "为什么不能放行：表达式体的\"函数体\"边界要靠运算符优先级去猜，猜错时会把" +
+                    "**整个文件的尾巴**当成函数体 —— 那样「体内必须有 X」的判据会静默变绿。\n" +
+                    "修法二选一：① 把 `$declaration` 改成花括号体；② 调用方换锚点" +
+                    "（例如 `callBlocks` / 分支块 / 直接扫整个文件 + 更严的调用形状）。",
+            )
         }
         val end = braceEnd(code, open)
         return code.substring(open, end + 1)
@@ -456,9 +462,17 @@ internal object GuardSourceScan {
             }
         }
         if (innermost.size != 1) {
+            // ⚠️ 这里不是说"形状不对"，而是：本方法是**选择器** —— 它必须返回"那一个"
+            // 路由分支的 `when` 块。多个候选时任何自动选择都可能锚到别的分支（假绿或假红），
+            // 所以失败文案要给出候选位置与可执行的修法（review/optimization-review.md B12：
+            // 失败信息要指向行为，而不是只报"有 N 个"）。
+            val lines = innermost.map { (start, _) -> code.take(start).lines().size }
             error(
-                "包含 `$callee` 的最内层 `when` 有 ${innermost.size} 个，无法唯一确定判据位置 —— " +
-                    "守卫会静默失效，所以直接失败",
+                "包含 `$callee` 的最内层 `when` 有 ${innermost.size} 个（行号：$lines），" +
+                    "无法唯一确定判据位置 —— " +
+                    "本方法是判据的**选择器**：选错块会让守卫锚到别的路由分支（静默假绿或假红）。\n" +
+                    "修法：让 `$callee` 只出现在**目标分支**的那一个 `when` 里；" +
+                    "若两处都要判，就把它抽成一个具名函数，两处各自只出现一次调用。",
             )
         }
         val (whenIndex, block) = innermost.single()

@@ -69,13 +69,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.FullscreenExit
-import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
@@ -145,6 +139,7 @@ import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.Space
+import com.nbalive.app.ui.icons.AppIcons
 
 
 /**
@@ -502,42 +497,23 @@ fun PlayerScreen(
             // 实测源站播放页要加载 0.1~27 秒，这期间界面是纯黑 —— 用户看不到任何
             // "App 在工作"的信号，观感就是"点开就卡死"。判据见 PlayerLoadingHintPolicy。
             // ⚠️ 只叠一行文字、不加 clickable：不能挡住 WebView（单击要透传给源站播放器）。
+            //
+            // ⚠️ P7 完整版（2026-11-01）：**整块搬进 `PlayerLoadingHint`** ——
+            // 250ms 的 ticker 连同它的读取点都收进那个 composable 自己的作用域，
+            // 于是它只让**那一小块**重组，不再每 250ms 失效本函数体内这块 content lambda
+            //（含"其他直播"的过滤与列表分配），而这段时间正是 chromium 与源站 JS
+            // 最吃 CPU 的时候。本函数体里只剩一次调用，也不再出现 ticker 的
+            // `LaunchedEffect` / `delay(`。
+            // 判据：`PlayerLoadingHintPolicyTest.PlayerScreen 只许调用加载提示组件` 与
+            // `PlayerFixTest.P7 ...`（两条都锚在调用形状上）。
             webFallbackUrl?.let { page ->
-                var sinceLoadMs by remember(page) { mutableLongStateOf(0L) }
-                LaunchedEffect(page) {
-                    val startedAt = clock.nowMs()
-                    while (sinceLoadMs < PlayerLoadingHintPolicy.MAX_HINT_MS) {
-                        sinceLoadMs = clock.nowMs() - startedAt
-                        kotlinx.coroutines.delay(250)
-                    }
-                }
-                // P7（review/opt/player.md 第 7 条）：判据下沉到 derivedStateOf ——
-                // 250ms 一次的 ticker 只让**这个布尔**失效，而它只在
-                // "该显示 / 不该显示"翻转时才真正通知读取方。
-                // 原来 shouldShow(...) 直接在 content lambda 里读 sinceLoadMs，
-                // 于是每 250ms 失效一次这块 lambda（含"其他直播"的过滤与列表），
-                // 而这段时间正是 chromium 与源站播放器 JS 最吃 CPU 的时候。
-                val showLoadingHint by remember(page, streamUrl, errorMessage, inPip) {
-                    derivedStateOf {
-                        PlayerLoadingHintPolicy.shouldShow(
-                            hasWebFallback = true,
-                            hasStream = streamUrl != null,
-                            sinceLoadMs = sinceLoadMs,
-                            hasErrorMessage = errorMessage != null,
-                            inPip = inPip,
-                        )
-                    }
-                }
-                if (showLoadingHint) {
-                    Text(
-                        text = "正在连接源站播放页…",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.8f),
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(Space.sm),
-                    )
-                }
+                PlayerLoadingHint(
+                    page = page,
+                    hasStream = streamUrl != null,
+                    hasErrorMessage = errorMessage != null,
+                    inPip = inPip,
+                    clock = clock,
+                )
             }
 
             // 手势层（必须压在视频之上、**后声明的浮层按钮之下**）：
@@ -652,7 +628,7 @@ fun PlayerScreen(
                     horizontalArrangement = Arrangement.spacedBy(Space.sm),
                 ) {
                     VideoControlButton(
-                        icon = Icons.Filled.PictureInPictureAlt,
+                        icon = AppIcons.filled_PictureInPictureAlt,
                         description = "画中画",
                         onClick = {
                             touchControls()
@@ -674,7 +650,7 @@ fun PlayerScreen(
                         },
                     )
                     VideoControlButton(
-                        icon = if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                        icon = if (fullscreen) AppIcons.filled_FullscreenExit else AppIcons.filled_Fullscreen,
                         description = if (fullscreen) "退出全屏" else "全屏",
                         onClick = {
                             touchControls()
@@ -702,7 +678,7 @@ fun PlayerScreen(
                 (locked || !fullscreen || controlsVisible)
             ) {
                 VideoControlButton(
-                    icon = if (locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                    icon = if (locked) Icons.Filled.Lock else AppIcons.filled_LockOpen,
                     description = if (locked) "解锁" else "锁定（防误触）",
                     onClick = onToggleLock,
                     modifier = Modifier
@@ -809,7 +785,7 @@ fun PlayerScreen(
                             // 播放 / 暂停：仅直连 ExoPlayer 可控（网页线路由源站页面自己管）
                             if (streamUrl != null) {
                                 PlayerIconButton(
-                                    icon = if (videoHandle.isPlaying) Icons.Filled.Pause
+                                    icon = if (videoHandle.isPlaying) AppIcons.filled_Pause
                                     else Icons.Filled.PlayArrow,
                                     description = if (videoHandle.isPlaying) "暂停" else "播放",
                                     onClick = {
@@ -1202,6 +1178,70 @@ private fun PlayerNoticeCards(errorMessage: String?, suspectHint: Boolean) {
 }
 
 /**
+ * 网页兜底加载期间的非阻塞提示（P7 完整版，2026-11-01）。
+ *
+ * ## 为什么要独立成一个 composable（而不是留在 `fun PlayerScreen(` 里）
+ *
+ * Compose 的失效范围是**读取状态的那个 restart 作用域**。原来 ticker 每 250ms 写一次
+ * `sinceLoadMs`，而读取点就在同一块 content lambda 里 → **整块 lambda**
+ *（含"其他直播"的 `filter` + `take(4)` 的列表分配）每 250ms 失效一次。
+ * 网页加载的 0.1~27 秒恰恰是 chromium 与源站播放器 JS 最吃 CPU/带宽的时候，
+ * 主线程重组会和 WebView 抢帧（review/opt/player.md 第 7 条）。
+ *
+ * 搬进来之后：
+ *  - ticker（`LaunchedEffect` + `delay(250)`）与 `sinceLoadMs` 都只活在本 composable 内，
+ *    写入只让**本 composable**失效；
+ *  - 判据仍下沉在 `derivedStateOf`：250ms 的写入只让那个布尔变脏，
+ *    且只在"该显示 / 不该显示"**翻转**时才真正通知读取方；
+ *  - 20 秒上限、出流/报错/小窗不显示 —— 全部仍由 [PlayerLoadingHintPolicy.shouldShow]
+ *    决定，**语义一个字没改**（判据见 `PlayerLoadingHintPolicyTest`）。
+ *
+ * ⚠️ 必须是 `BoxScope` 扩展：提示贴在视频区左上角（`Modifier.align(TopStart)`），
+ * 而 `align` 只在 BoxScope 里可见。
+ */
+@Composable
+private fun BoxScope.PlayerLoadingHint(
+    /** 网页兜底页地址：同时作为 ticker / 计时的重启键（换线路要重新计时） */
+    page: String,
+    hasStream: Boolean,
+    hasErrorMessage: Boolean,
+    inPip: Boolean,
+    clock: PlayerClock,
+) {
+    var sinceLoadMs by remember(page) { mutableLongStateOf(0L) }
+    LaunchedEffect(page) {
+        val startedAt = clock.nowMs()
+        while (sinceLoadMs < PlayerLoadingHintPolicy.MAX_HINT_MS) {
+            sinceLoadMs = clock.nowMs() - startedAt
+            kotlinx.coroutines.delay(250)
+        }
+    }
+    // 判据下沉到 derivedStateOf：250ms 的写入只让**这个布尔**失效，
+    // 而它只在"该显示 / 不该显示"翻转时才真正通知读取方。
+    val show by remember(page, hasStream, hasErrorMessage, inPip) {
+        derivedStateOf {
+            PlayerLoadingHintPolicy.shouldShow(
+                hasWebFallback = true,
+                hasStream = hasStream,
+                sinceLoadMs = sinceLoadMs,
+                hasErrorMessage = hasErrorMessage,
+                inPip = inPip,
+            )
+        }
+    }
+    if (show) {
+        Text(
+            text = "正在连接源站播放页…",
+            style = MaterialTheme.typography.labelMedium,
+            color = Color.White.copy(alpha = 0.8f),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(Space.sm),
+        )
+    }
+}
+
+/**
  * 死胡同恢复条要显示的内容（P1 真机回归修复，2026-11-01）。
  *
  * ⚠️ 文案的**唯一来源仍是 [WebPageDeadEndPolicy]**，由 `WebSurface`（探测到页面进入
@@ -1522,7 +1562,7 @@ private fun LiveNowPanel(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                Icons.Filled.LiveTv,
+                AppIcons.filled_LiveTv,
                 contentDescription = null,
                 modifier = Modifier.size(18.dp),
                 tint = MaterialTheme.colorScheme.primary,

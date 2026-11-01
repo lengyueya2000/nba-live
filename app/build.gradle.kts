@@ -1,9 +1,13 @@
 import java.util.Properties
+import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
+import org.gradle.testing.jacoco.tasks.JacocoReport
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    // B10：单测覆盖率（review/optimization-review.md B10）
+    jacoco
 }
 
 // 签名凭据保存在仓库之外（keystore.properties 不入库）。
@@ -285,7 +289,16 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    // ⚠️ B3（review/optimization-review.md）：这里原来依赖的是 **material-icons-extended**，
+    // 它的 `classes.jar` 是 **35.7 MB**（每个图标一个类）。本 App 实际只用三十来个图标，
+    // 其中 11 个由 `material-icons-core` 就能提供（那个 AAR 只有 0.8 MB），
+    // 其余 25 个已由 `review/fix/icon-extract.py` 从官方 AAR 的**字节码**里逐命令还原成
+    // `ui/icons/AppIcons.kt`（等价性由 `AppIconsParityTest` 逐项比对钉死）。
+    // 于是 release 侧少给 R8 喂 35.7 MB，debug 包也从 12 个 dex 降下来。
+    implementation("androidx.compose.material:material-icons-core")
+    // 官方 extended 只留给**测试**：`AppIconsParityTest` 要拿它做比对基准。
+    // 它不会再进 APK（testImplementation 不参与打包）。
+    testImplementation("androidx.compose.material:material-icons-extended")
 
     implementation("androidx.media3:media3-exoplayer:1.9.2")
     implementation("androidx.media3:media3-datasource-okhttp:1.9.2")
@@ -315,4 +328,71 @@ dependencies {
 // 锁定后版本被钉死，升级必须显式跑 `gradle dependencies --write-locks`。
 dependencyLocking {
     lockAllConfigurations()
+}
+
+// ---------------------------------------------------------------------------
+// B10 单测覆盖率（review/optimization-review.md B10）
+// ---------------------------------------------------------------------------
+//
+// ## 为什么加它
+//
+// 本轮审计点名"哪些生产代码没被测到"在本仓库**没有数据**——714（现 836）条用例里
+// 45% 是"把 Kotlin 源码当字符串匹配"的结构守卫，覆盖率报告是唯一能回答
+// "剩下那 55% 到底盖住了多少生产代码"的手段。
+//
+// ## 为什么用 Gradle 自带的 jacoco 插件而不是 AGP 的开关
+//
+// AGP 的 `enableUnitTestCoverage` 只覆盖 instrumented 测试；JVM 单测走 Gradle 的
+// `jacoco` 插件即可（它随 Gradle 发行版提供，不引第三方插件）。
+//
+// ⚠️ 依赖锁定：本模块 `lockAllConfigurations()` 会把插件新增的 configuration 也纳入锁定，
+// 所以**首次接入后必须跑一次 `gradle :app:jacocoDebugUnitTestReport --write-locks`**
+// 把 jacoco 自身的条目写进 `app/gradle.lockfile`；否则离线/CI 上会因为"lock state 缺失"直接失败。
+// （这正是审计 B10 把它记为 M 成本的原因 —— 不是加插件难，是锁文件要重生成。）
+//
+// 用法：`.\gradlew.bat :app:jacocoDebugUnitTestReport`
+// 报告：`app/build/reports/jacoco/jacocoDebugUnitTestReport/{html/index.html,xml/report.xml}`
+jacoco {
+    // 与 Gradle 8.9 内置默认一致；写出来是为了让升级 Gradle 的人看见这处耦合。
+    toolVersion = "0.8.12"
+}
+
+// ⚠️ 只给 **debug 单测**开 agent（不要对整个 `Test` 类型开，也不要 `tasks.named(...)`）：
+//  - 针对整个类型开：`testReleaseUnitTest` 也会往 `build/jacoco/` 写 .exec，
+//    而报告任务若用 `fileTree(buildDir)` 去读，Gradle 执行期校验会报
+//    "Gradle detected a problem with the following location: …testReleaseUnitTest.exec"；
+//  - `tasks.named("testDebugUnitTest")`：AGP 的单测任务是在 `android {}` 之后**才注册**的，
+//    配置期直接 `named` 会抛 "Task with name 'testDebugUnitTest' not found"（本轮实测）。
+//    所以用 `matching { }.configureEach { }` —— 它对"稍后才出现的任务"同样生效。
+tasks.withType<Test>().matching { it.name == "testDebugUnitTest" }.configureEach {
+    configure<JacocoTaskExtension> {
+        // 单测默认不开 agent，这里显式打开：下面的报告任务依赖这份 .exec。
+        isEnabled = true
+    }
+}
+
+tasks.register<JacocoReport>("jacocoDebugUnitTestReport") {
+    group = "verification"
+    description = "debug 变体单测覆盖率（HTML + XML；配合 CI 报告用）"
+    dependsOn("testDebugUnitTest")
+
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+    sourceDirectories.setFrom(files("src/main/java"))
+    classDirectories.setFrom(
+        files(
+            // Kotlin 与 Java 两处产物都要收：本模块几乎全是 Kotlin。
+            fileTree(layout.buildDirectory.dir("tmp/kotlin-classes/debug")) {
+                // 生成类不算覆盖率（R / BuildConfig 没有可测逻辑）
+                exclude("**/R.class", "**/R\$*.class", "**/BuildConfig.*", "**/Manifest*.*")
+            },
+            fileTree(layout.buildDirectory.dir("intermediates/javac/debug/classes")) {
+                exclude("**/R.class", "**/R\$*.class", "**/BuildConfig.*")
+            },
+        ),
+    )
+    // 精确到"这个任务产出的那一个文件"，不要扫整个 build 目录。
+    executionData.setFrom(layout.buildDirectory.file("jacoco/testDebugUnitTest.exec"))
 }

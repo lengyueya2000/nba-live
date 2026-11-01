@@ -1,5 +1,6 @@
 package com.nbalive.app.ui.theme
 
+import com.nbalive.app.TestPaths
 import androidx.compose.ui.graphics.Color
 import com.nbalive.app.GuardSourceScan
 import java.io.File
@@ -174,17 +175,7 @@ class AccentContrastTest {
     /**
      * 找不到 Theme.kt / 其它 theme 源码就 error() 硬失败（铁律③），绝不 return 静默全绿。
      */
-    private fun themeFile(name: String = "Theme.kt"): File {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val roots = listOf(
-            File(cwd, "src/main/java/com/nbalive/app/ui/theme"),
-            File(cwd, "app/src/main/java/com/nbalive/app/ui/theme"),
-        )
-        val root = roots.firstOrNull { it.isDirectory }
-            ?: error("找不到 ui/theme 目录，cwd=$cwd，候选=${roots.map { it.path }}")
-        return root.listFiles { f -> f.isFile && f.name == name }?.firstOrNull()
-            ?: error("找不到 $name（cwd=$cwd），派生关系守卫会静默全绿")
-    }
+    private fun themeFile(name: String = "Theme.kt"): File = GuardSourceScan.uniqueFile(TestPaths.themeFiles(), name)
 
     /** 源码（已剔注释与字符串字面量，行号不变）。 */
     private fun themeSource(name: String): String = GuardSourceScan.stripNonCode(themeFile(name).readText())

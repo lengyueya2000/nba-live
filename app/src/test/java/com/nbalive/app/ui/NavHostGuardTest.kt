@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -348,14 +349,26 @@ class NavHostGuardTest {
         )
     }
 
-    // ---------------- P2-35：无「更多」时的占位与左侧不等宽 ----------------
+    // ---------------- P2-35：顶栏两侧槽位必须等宽（B12 合并两条重叠判据） ----------------
 
+    /**
+     * ⚠️ 本条在 2026-11-01 **合并**了两条重叠判据（review/optimization-review.md B12）：
+     *  - 旧 `无更多时的占位必须用 SubPageBarSideSlot`（只查右侧占位写法）
+     *  - 旧 `顶栏侧位常量必须是 48dp`（只查那个魔数）
+     *
+     * 两条各断一半，真正要守的**行为**是"标题相对屏幕居中"：两侧槽位必须等宽，
+     * 而左侧按钮的布局尺寸来自 `minimumInteractiveComponentSize()`（Material 的最小触摸目标）。
+     * 拆成两条时，改一侧、另一条仍是绿的 —— 现在是**同一次调用链**的三段：
+     *  ① 占位用同一个常量（不是裸 dp）→ ② 该常量 == Material 最小触摸目标 → ③ 它的**来源**
+     *  确实是 `SquareIconButton` 里的 `minimumInteractiveComponentSize()`（不是巧合的 48）。
+     *
+     * 为什么仍然**可失败**：占位写裸 dp、常量改成 40dp、或共享按钮不再撑触摸目标，
+     * 三段里任一断裂都会红（第三段防的是"把 48 抄成常量、来源却没了"这种形态）。
+     */
     @Test
-    fun `无更多时的占位必须用 SubPageBarSideSlot`() {
+    fun `顶栏两侧槽位必须等宽 且等于 Material 最小触摸目标`() {
         // ⚠️ 跨文件定位：二级页顶栏随 03-P2-18 拆分搬到了 ui/AppChrome.kt。
-        val code = stripComments(sourceContaining("fun SubPageTopBar(").readText())
-        val body = functionBody(code, "fun SubPageTopBar(")
-
+        val body = functionBody(stripComments(sourceContaining("fun SubPageTopBar(").readText()), "fun SubPageTopBar(")
         assertTrue(
             "无「更多」时的占位必须用 SubPageBarSideSlot，不能写裸 dp：" +
                 "左侧返回键的**布局**尺寸被 minimumInteractiveComponentSize() 撑到 48dp，" +
@@ -367,19 +380,24 @@ class NavHostGuardTest {
             "SubPageTopBar 里又出现了裸 dp 的 Spacer 占位：与左侧 48dp 不等宽，标题会左偏（P2-35）",
             Regex("""Spacer\(\s*Modifier\.size\(\s*\d+(\.\d+)?\.dp\s*\)\s*\)""").containsMatchIn(body),
         )
-    }
 
-    @Test
-    fun `顶栏侧位常量必须是 48dp`() {
-        // ⚠️ 跨文件定位：常量随顶栏一起搬到 ui/AppChrome.kt。
-        val code = stripComments(sourceContaining("val SubPageBarSideSlot").readText())
-        val slot = Regex("""SubPageBarSideSlot\s*=\s*(\d+)\.dp""").find(code)
+        // ② 常量值 = Material 的最小触摸目标
+        val slotCode = stripComments(sourceContaining("val SubPageBarSideSlot").readText())
+        val slot = Regex("""SubPageBarSideSlot\s*=\s*(\d+)\.dp""").find(slotCode)
             ?: error("找不到 SubPageBarSideSlot 常量定义 —— 守卫会静默全绿（P2-35）")
         assertEquals(
             "顶栏侧位必须等于 minimumInteractiveComponentSize 的最小触摸目标 48dp：" +
                 "左侧按钮的布局尺寸就是被它撑到 48dp 的，占位写 40dp 标题就会左偏 4dp（P2-35）",
             48,
             slot.groupValues[1].toInt(),
+        )
+
+        // ③ 48dp 的**来源**：共享的方形图标按钮必须调用 minimumInteractiveComponentSize()
+        val common = stripComments(source("Common.kt").readText())
+        assertTrue(
+            "共享的 SquareIconButton 不再调用 minimumInteractiveComponentSize()：'48dp' 变成了" +
+                "一个凭空抄来的魔数 —— 顶栏槽位与按钮实际布局尺寸会静默错位（P2-35/P2-22）",
+            common.contains("fun SquareIconButton(") && common.contains(".minimumInteractiveComponentSize()"),
         )
     }
 
@@ -388,7 +406,7 @@ class NavHostGuardTest {
     @Test
     fun `扫描必须真的扫到目标源码`() {
         val root = productionRoot()
-        assertTrue("扫描不到生产源码（cwd=${System.getProperty("user.dir")}），守卫会静默全绿", root.walkTopDown().count { it.isFile && it.extension == "kt" } >= 10)
+        assertTrue("扫描不到生产源码（cwd=${TestPaths.workingDirPath()}），守卫会静默全绿", root.walkTopDown().count { it.isFile && it.extension == "kt" } >= 10)
         assertTrue("扫描不到 MainActivity.kt", source("MainActivity.kt").isFile)
         assertTrue("扫描不到 NbaLiveApp.kt", source("NbaLiveApp.kt").isFile)
         assertTrue("扫描不到 AppPrefs.kt", source("AppPrefs.kt").isFile)
@@ -397,7 +415,7 @@ class NavHostGuardTest {
     // ---------------- 工具 ----------------
 
     private fun productionRoot(): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val candidates = listOf(
             File(cwd, "src/main/java/com/nbalive/app"),
             File(cwd, "app/src/main/java/com/nbalive/app"),
@@ -425,16 +443,7 @@ class NavHostGuardTest {
         )
 
     /** `ui/` 目录下全部 kt：用于"必须扫全目录"的负向判据。 */
-    private fun uiFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val candidates = listOf(
-            File(cwd, "src/main/java/com/nbalive/app/ui"),
-            File(cwd, "app/src/main/java/com/nbalive/app/ui"),
-        )
-        val root = candidates.firstOrNull { it.isDirectory }
-            ?: error("找不到 ui 源码目录（cwd=$cwd）—— 跨文件判据会静默全绿")
-        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
-    }
+    private fun uiFiles(): List<File> = TestPaths.uiFiles()
 
     /** `com/nbalive/app` 下全部生产 kt（含 `MainActivity.kt` 这类平台层文件）。 */
     private fun productionFiles(): List<File> =

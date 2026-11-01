@@ -21,9 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -67,6 +64,7 @@ import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
 import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.logoPlate
+import com.nbalive.app.ui.icons.AppIcons
 
 /**
  * 队徽回退首字的字号（review/03-ui.md P2-27）。
@@ -246,7 +244,7 @@ fun RetryErrorBanner(message: String, onRetry: () -> Unit, modifier: Modifier = 
             horizontalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
             Icon(
-                Icons.Filled.CloudOff,
+                AppIcons.filled_CloudOff,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.onErrorContainer,
@@ -293,7 +291,7 @@ fun FullScreenErrorState(
     title: String,
     message: String,
     onRetry: (() -> Unit)? = null,
-    icon: ImageVector = Icons.Filled.CloudOff,
+    icon: ImageVector = AppIcons.filled_CloudOff,
     iconTint: Color? = null,
     primaryAction: Boolean = false,
     modifier: Modifier = Modifier,
@@ -422,7 +420,7 @@ fun SignalBadge(count: Int, modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         Icon(
-            imageVector = Icons.Filled.SignalCellularAlt,
+            imageVector = AppIcons.filled_SignalCellularAlt,
             contentDescription = null,
             modifier = Modifier.size(10.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,

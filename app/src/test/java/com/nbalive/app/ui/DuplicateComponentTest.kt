@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
@@ -133,22 +134,12 @@ class DuplicateComponentTest {
     fun `扫描必须真的扫到源码`() {
         // 没有这条，路径解析一旦出错，上面几条会"零违规"地静默全绿。
         val files = productionFiles()
-        assertTrue("扫描不到 ui 源码（cwd=${System.getProperty("user.dir")}），守卫会静默全绿", files.size >= 10)
+        assertTrue("扫描不到 ui 源码（cwd=${TestPaths.workingDirPath()}），守卫会静默全绿", files.size >= 10)
         assertTrue("没扫到 screens/ 下的文件", files.any { it.parentFile?.name == "screens" })
         assertTrue("没扫到 components/ 下的文件", files.any { it.parentFile?.name == "components" })
     }
 
-    private fun productionFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val roots = listOf(
-            File(cwd, "src/main/java/com/nbalive/app/ui"),
-            File(cwd, "app/src/main/java/com/nbalive/app/ui"),
-        )
-        // 找不到就硬失败：不能用 assumeTrue 静默跳过（那等于守卫不存在）
-        val root = roots.firstOrNull { it.isDirectory }
-            ?: error("找不到 ui 源码目录，cwd=$cwd，候选=${roots.map { it.path }}")
-        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
-    }
+    private fun productionFiles(): List<File> = TestPaths.uiFiles()
 
     /** 逐个提取私有函数的花括号体；表达式体函数（`= ...`）跳过。 */
     private fun privateFunctionBodies(

@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -67,7 +68,7 @@ class ListNoticePolicyTest {
         // ⚠️ 硬失败而不是跳过（审计 A10）：源码根是"partialError 有没有人读"**唯一**的证据来源，
         // 解析不到时这条守卫会"零读取点"地静默全绿（而它正是为了防止"算好了没人用"）。
         assertTrue(
-            "找不到 app/src/main/java（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 app/src/main/java（cwd=${File(TestPaths.workingDirPath()).absolutePath}）—— " +
                 "锚点缺失时这条接线守卫会静默全绿，所以直接失败而不是跳过",
             root != null,
         )
@@ -95,7 +96,7 @@ class ListNoticePolicyTest {
         val candidates = listOf(
             File("src/main/java/com/nbalive/app"),
             File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir"), "src/main/java/com/nbalive/app"),
+            File(TestPaths.workingDirPath(), "src/main/java/com/nbalive/app"),
         )
         return candidates.firstOrNull { it.isDirectory }
     }

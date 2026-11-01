@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -124,13 +125,7 @@ class PipExitWiringTest {
             .filter { it.isFile && it.extension == "kt" }
             .associate { it.name to GuardSourceScan.stripNonCode(it.readText()) }
 
-    private fun productionRoot(): File =
-        listOf(
-            File("src/main/java/com/nbalive/app"),
-            File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=${cwd()}）—— 守卫会静默全绿")
+    private fun productionRoot(): File = TestPaths.productionRoot
 
     /** 从声明处按花括号配对截出的函数体（先剔注释与字符串）。 */
     private fun functionBody(rawText: String, declaration: String): String {
@@ -152,5 +147,5 @@ class PipExitWiringTest {
         error("`$declaration` 的函数体花括号没有配对")
     }
 
-    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
+    private fun cwd(): String = File(TestPaths.workingDirPath()).absolutePath
 }

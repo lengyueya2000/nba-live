@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -273,7 +274,7 @@ class PlayerLockTest {
         val files = productionFiles()
         // 非空性锚点：下面那条是「零违规」断言，扫不到源码时会静默全绿
         assertTrue(
-            "只扫到 ${files.size} 个生产 kt 文件（应 ≥30，cwd=${System.getProperty("user.dir")}）—— " +
+            "只扫到 ${files.size} 个生产 kt 文件（应 ≥30，cwd=${TestPaths.workingDirPath()}）—— " +
                 "锁定接线守卫会静默全绿",
             files.size >= 30,
         )
@@ -397,7 +398,7 @@ class PlayerLockTest {
     }
 
     private fun productionFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val roots = listOf(
             File(cwd, "src/main/java/com/nbalive/app"),
             File(cwd, "app/src/main/java/com/nbalive/app"),

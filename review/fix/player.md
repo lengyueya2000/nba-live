@@ -24,8 +24,8 @@
 | **P4** | 已落地 | `WebSniffWatchdog.kt:155/185`（`WebSniffState.onNavigationStarted`）；`PlayerScreen.kt:2266`（`sniff`）、`:2283`（`beginNavigation`）、`:2782`（reload）、`:2316`（壳页→paps）、`:2327`（paps→原页） | `P4 导航之后 sawMediaRequest 必须归零 否则看门狗永久失效`、`P4 P5 P10 生产代码必须走 WebSniffState 且每次导航都复位` | 让 `onNavigationStarted()` 只加代次不复位 → 第 1 条红；把 `set(false)` 那类散写搬走 → 第 2 条红 |
 | **P5** | 已落地（按复核后的口径） | `PlayerScreen.kt:2273`（`pageFinishedAt` 改为可变状态）、`:2283-2286`（导航时归零）、`WebSniffWatchdog.kt:185`（`loadStartedAt` 随导航重置） | `P5 P10 导航代次变化时加载基准必须重置` | 把 `beginNavigation()` 里的 `sniff.onNavigationStarted()` 去掉 → 测试红（新基准不再更新，30100 判定反转） |
 | **P6** | 已落地 | `SystemBarsPolicy.kt:91`（第 4 个入参 `panelWasOpen`，带默认值保旧语义）；`PlayerScreen.kt:339-361`（两个 effect 合并为一个显式排序的 effect） | `P6 进全屏收起浮层不能被面板回补抵消`、`P6 默认参数保持 P2-8 旧语义 且生产合并成一个显式排序的 effect` | 把 `panelWasOpen = false` 分支的判断去掉（回到只看当前状态）→ 第 1 条红；拆回两个 `LaunchedEffect` → 第 2 条红 |
-| **P7** | 部分落地（失效面已收窄，ticker 位置保留） | `PlayerScreen.kt:497-507`（判据下沉 `derivedStateOf`）；`PlayerOtherLiveSection` 内 `:1161` `remember(otherMatches, currentMatch)`；`PlayerPickerPanel` 内 `:1273/:1276` `remember(signals, selectedIndex)`/`remember(signals)` | `P7 派生列表必须 remember 提示判据必须下沉到 derivedStateOf` | 把 `derivedStateOf` 去掉（直接 `if (shouldShow(...))`）→ 测试红；去掉两处 `remember` → 测试红 |
-| **P8** | 已落地 5 块（原函数体 **915 → 670 行**；U9 + P1 回归后 **725**） | `PlayerScreen.kt`：`PlayerMatchCard:938`、`PlayerSignalStrip:981`、`PlayerNoticeCards:1074`、`PlayerOtherLiveSection:1154`、`BoxScope.PlayerPickerPanel:1209`；调用点 `:841/847/857/861` | `P8 播放页函数体必须被拆小 且拆出来的块都还在` | 把 5 块搬回 `fun PlayerScreen(` → 函数体回到 915 行，`lines <= 800` 红 |
+| **P7** | **已完整落地**（2026-11-01：ticker 已搬出 `fun PlayerScreen(`，见 §6） | `PlayerScreen.kt`：新增 `BoxScope.PlayerLoadingHint`（ticker + `derivedStateOf` 判定 + 渲染都在它体内，`:1208` 起）；调用点 `:515`；`PlayerOtherLiveSection` 内 `remember(otherMatches, currentMatch)`；`PlayerPickerPanel` 内 `remember(signals, selectedIndex)`/`remember(signals)` | `PlayerLoadingHintPolicyTest.PlayerScreen 只许调用加载提示组件 判据必须落在它的函数体里`、`PlayerFixTest.P7 派生列表必须 remember 且提示 ticker 必须搬出 PlayerScreen` | 把 ticker/判定搬回 `fun PlayerScreen(` → 两条判据都红（`delay(250)`/`shouldShow` 出现在函数体 + 调用形状缺失）；去掉两处 `remember` → 我的 P7 判据红 |
+| **P8** | 已落地 5 块（原函数体 **915 行**；U9 + P1 回归 + P7 完整版后 **714**） | `PlayerScreen.kt`：`PlayerMatchCard:938`、`PlayerSignalStrip:981`、`PlayerNoticeCards:1074`、`PlayerOtherLiveSection:1154`、`BoxScope.PlayerPickerPanel:1209`；调用点 `:841/847/857/861` | `P8 播放页函数体必须被拆小 且拆出来的块都还在` | 把 5 块搬回 `fun PlayerScreen(` → 函数体回到 915 行，`lines <= 800` 红 |
 | **P9** | 只落地安全一半（Referer 提供者；重建路径原样保留） | `PlayerScreen.kt:2094`（工厂改走 `RefererDataSourceFactory`）、`:2840`（类声明）；`key(streamUrl, streamReferer)` **保持不变**（`:382`） | `P9 Referer 必须变成每请求可读 重建路径暂时原样保留` | 把工厂改回 build 期烧 headers → 测试红（找不到 `RefererDataSourceFactory(`） |
 | **P10** | 已落地（状态对象可 JVM 单测） | `WebSniffWatchdog.kt:155-197`（`WebSniffState`：媒体请求记账 + 加载起点 + 导航代次）；`PlayerScreen.kt:2266/2283` | `P4 P5 P10 导航代次变化时加载基准必须重置`、`P4 导航之后 sawMediaRequest 必须归零 否则看门狗永久失效` | 见 P4/P5 两条 |
 | **P11** | 已落地 | `PlayerScreen.kt:2176`（`update` 里删掉 `setMediaItem`/`prepare` 死分支，只留 `:2183` 的 `resizeMode`） | `P11 update 里的 setMediaItem 死分支必须删掉` | 把 `if (current != streamUrl) { … }` 加回来 → 测试红（`current != streamUrl` 命中 + `setMediaItem` 计数 2） |
@@ -188,3 +188,48 @@
        若捷径重解析成功则变成**新的** `paps.html?id=<新 encodedStr>`。
 3. **分流**：(b) 有日志而 (c) 无导航 → 问题在 WebView 导航侧（另一条线）；
    (b) 也没有 → 点击仍未到达实现（回到实验 1）。
+
+## 6. P7 完整版：250ms ticker 搬出 `fun PlayerScreen(`（2026-11-01）
+
+> P9 完整版（换线不重建 ExoPlayer）**由 Lead 在检查点 `57eb33a` 收尾**：
+> `ui/screens/LineSwitchPolicy.kt`（`decide`：同地址 → `Ignore`、新地址 → `Apply(playWhenReady=换线前一刻意图)`）
+> + `VideoPlayerHandle.clearQuality()` + `VideoSurface` 的一次性换媒体项 + `PlayerFixTest` 的 P9/P11 重锚。
+> **本次我没有改任何 P9 相关代码**（§1 的 P9 行与 §6 的说明以那次收尾为准）。
+
+### 6.1 改动（只动加载提示这一块）
+
+| 位置 | 改动 |
+|---|---|
+| `PlayerScreen.kt`（新，`:1208` 起） | `@Composable private fun BoxScope.PlayerLoadingHint(page, hasStream, hasErrorMessage, inPip, clock)` —— ticker（`sinceLoadMs` + `LaunchedEffect(page)` + `delay(250)`）、判据（`derivedStateOf { PlayerLoadingHintPolicy.shouldShow(...) }`）、那行 `Text` **全部**收进它自己的作用域 |
+| `PlayerScreen.kt:515` | `fun PlayerScreen(` 里只剩一次调用：`webFallbackUrl?.let { page -> PlayerLoadingHint(...) }` |
+| `PlayerLoadingHintPolicyTest.kt` | 接线判据**重锚**到新调用形状（见 6.2），**没有**放宽成 `contains("shouldShow")`。判据函数本身的 8 条语义用例（20 秒上限 / 出流 / 报错 / 小窗 / 负计时…）**一个字没改** |
+| `PlayerFixTest.kt` | P7 判据按新形状重写（原"ticker 读取必须收在 `derivedStateOf`"只覆盖了"读取下沉"，覆盖不到"ticker 是否搬出函数体"） |
+
+### 6.2 判据（都能失败）
+
+1. `PlayerLoadingHintPolicyTest.PlayerScreen 只许调用加载提示组件 判据必须落在它的函数体里`
+   —— ① `fun PlayerScreen(` 体内 `callSites("PlayerLoadingHint") ≥ 1`（渲染入口）；
+   ② 体内**不许**再出现 `shouldShow(` 或 `delay(250)`（ticker/判定没搬出去就红）；
+   ③ `fun BoxScope.PlayerLoadingHint(` 体**内**必须调用 `shouldShow(`；
+   ④ 该体内必须把 `sinceLoadMs` 喂给判据、且必须引用 `MAX_HINT_MS`（20 秒上限与计时语义）；
+   ⑤ 自检：注释/字符串里的 `PlayerLoadingHint(` 不算接线，真实调用必须被数到。
+2. `PlayerFixTest.P7 派生列表必须 remember 且提示 ticker 必须搬出 PlayerScreen`
+   —— 同上两端的结构断言 + `PlayerOtherLiveSection.remember(otherMatches` + 面板两处 `remember`。
+3. 既有 `P8 播放页函数体必须被拆小` —— `fun PlayerScreen(` 函数体 **915 → 714 行**（上限 800），
+   搬回去就红。
+
+### 6.3 语义不变性（逐条对照）
+
+`PlayerLoadingHintPolicy.shouldShow` 的调用实参与原实现**逐字一致**：
+`hasWebFallback = true`、`hasStream = hasStream`、`sinceLoadMs = sinceLoadMs`、
+`hasErrorMessage = hasErrorMessage`、`inPip = inPip`。
+⇒ 20 秒上限、出流不显示、报错不显示、小窗不显示**全部不变**；
+ticker 的重启键仍是 `page`（换线路重新计时），`clock` 仍是外部注入的单调时钟（P14 未受影响）。
+
+### 6.4 未做的（避免扩散）
+
+- **没有**顺带改 `PlayerScreen.kt` 里的其它 `remember(signals)`/`shouldShow` 之外的任何东西；
+- **没有**碰 P9 / `LineSwitchPolicy.kt` / `PlayerFixTest` 的 P9、P11 两条；
+- 未跑 Gradle（铁律）→ 由 Lead 统一跑全量；本地已做的替代验证：
+  三个改动文件词法级括号配对 `pd=0 bd=0`；29 项刻意保留的锚点逐条复验仍在；
+  `fun PlayerScreen(` 体内 `sinceLoadMs`/`delay(250)`/`shouldShow` 均已消失。

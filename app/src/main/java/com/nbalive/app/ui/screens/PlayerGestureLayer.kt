@@ -19,11 +19,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BrightnessHigh
-import androidx.compose.material.icons.filled.BrightnessLow
-import androidx.compose.material.icons.automirrored.filled.VolumeOff
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +50,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.nbalive.app.ui.icons.AppIcons
 
 /**
  * 播放器的亮度 / 音量手势层。
@@ -440,9 +436,9 @@ private fun MediaOsdView(osd: MediaOsd, modifier: Modifier = Modifier) {
     val percent = PlayerGestureMath.percent(osd.value)
     val icon = when (osd.side) {
         Side.BRIGHTNESS ->
-            if (percent >= 50) Icons.Filled.BrightnessHigh else Icons.Filled.BrightnessLow
+            if (percent >= 50) AppIcons.filled_BrightnessHigh else AppIcons.filled_BrightnessLow
         Side.VOLUME ->
-            if (percent == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp
+            if (percent == 0) AppIcons.automirrored_filled_VolumeOff else AppIcons.automirrored_filled_VolumeUp
     }
     Row(
         modifier = modifier
@@ -518,7 +514,7 @@ private fun nowClockText(): String {
 /**
  * 时钟药丸：半透明深底 + 白字，压在视频上也看得清。
  *
- * ⚠️ 原来左边还有个闹钟图标（Icons.Filled.Schedule），用户明确要求去掉：
+ * ⚠️ 原来左边还有个闹钟图标（AppIcons.filled_Schedule），用户明确要求去掉：
  * 对着数字看就知道是时间，图标只是多占位置。
  */
 @Composable

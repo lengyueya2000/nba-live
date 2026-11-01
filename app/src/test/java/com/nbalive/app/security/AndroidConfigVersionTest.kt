@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -143,7 +144,7 @@ class AndroidConfigVersionTest {
     }
 
     private fun repoFileOrFail(name: String): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val candidates = listOf(
             File(cwd, name),
             File(cwd, "../$name"),

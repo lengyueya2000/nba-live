@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -218,7 +219,7 @@ class PrefsBoundaryGuardTest {
     fun `扫描必须真的扫到 ui 源码`() {
         val files = uiFiles()
         assertTrue(
-            "只扫到 ${files.size} 个 ui 源文件（应 ≥8，cwd=${System.getProperty("user.dir")}）—— " +
+            "只扫到 ${files.size} 个 ui 源文件（应 ≥8，cwd=${TestPaths.workingDirPath()}）—— " +
                 "扫描范围走偏时上面几条会静默全绿",
             files.size >= 8,
         )
@@ -286,15 +287,7 @@ class PrefsBoundaryGuardTest {
     private fun productionFiles(): List<File> =
         productionRoot().walkTopDown().filter { it.isFile && it.extension == "kt" }.sortedBy { it.path }.toList()
 
-    private fun productionRoot(): File {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val candidates = listOf(
-            File(cwd, "src/main/java/com/nbalive/app"),
-            File(cwd, "app/src/main/java/com/nbalive/app"),
-        )
-        return candidates.firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=$cwd，候选=${candidates.map { it.path }}）—— 守卫会静默全绿")
-    }
+    private fun productionRoot(): File = TestPaths.productionRoot
 
     private companion object {
         /** 偏好"住"的文件：定义处 + 平台层存储实现。 */

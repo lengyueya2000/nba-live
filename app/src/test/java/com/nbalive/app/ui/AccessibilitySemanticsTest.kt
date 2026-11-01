@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
@@ -280,7 +281,7 @@ class AccessibilitySemanticsTest {
         val hits = root.walkTopDown().filter { it.isFile && it.name == name }.toList()
         if (hits.isEmpty()) {
             error(
-                "找不到 $relative（root=${root.path}，cwd=${System.getProperty("user.dir")}）" +
+                "找不到 $relative（root=${root.path}，cwd=${TestPaths.workingDirPath()}）" +
                     "—— 守卫会静默全绿，所以直接失败而不是跳过",
             )
         }
@@ -310,7 +311,7 @@ class AccessibilitySemanticsTest {
     }
 
     private fun productionRoot(): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val roots = listOf(
             File(cwd, "src/main/java/com/nbalive/app"),
             File(cwd, "app/src/main/java/com/nbalive/app"),

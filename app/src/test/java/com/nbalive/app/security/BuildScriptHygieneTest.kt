@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -135,7 +136,7 @@ class BuildScriptHygieneTest {
     }
 
     private fun moduleBuildScript(): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         return listOf(
             File("build.gradle.kts"),
             File(cwd, "build.gradle.kts"),

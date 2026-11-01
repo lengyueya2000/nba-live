@@ -163,7 +163,7 @@ class MatchRepository(
      *
      * ⚠️ 缓存只挡"已完成的请求"，挡不住"正在飞的"：冷启动 + 用户立刻下拉刷新、
      * 或切标签再切回来，都会让同一份列表被请求两次。
-     * ⚠️ 与 [inFlightDetails] 同款纪律（D12）：`forceRefresh` 路径**不许**删别人的条目。
+     * ⚠️ 与 [JrsDetailCache] 里同款纪律（D12）：`forceRefresh` 路径**不许**删别人的条目。
      */
     private val inFlightLists = mutableMapOf<String, CompletableDeferred<LoadOutcome>>()
 
@@ -223,7 +223,7 @@ class MatchRepository(
             async {
                 gate.withPermit {
                     catching {
-                        val html = fetchJrsDetail(m.jrsDetailId!!, fetch)
+                        val html = detailCache.load(m.jrsDetailId!!, fetch = fetch)
                         val c = html?.let { jrsParser.correctedStatus(m, jrsParser.parseScheduledTime(it)) }
                         m.id to c
                     }.getOrNull()
@@ -310,121 +310,22 @@ class MatchRepository(
     )
 
     /**
-     * 拉取 JRS 详情页，带一个**短 TTL 的进程内缓存**。
+     * 真正去源站取详情页正文的部分（候选域名顺序 + 403/429 冷却 + 404 不登记 host 失败）。
      *
-     * 同一个详情页在一条用户操作链里会被请求 2~3 次：
-     *  1) 列表状态校正（每场一个）
-     *  2) 进入播放页 loadSignals（同一场又来一次）
-     *  3) 详情页点"刷新线路"（再来一次）
-     *
-     * 详情页内容是"计划开赛时间"，一场比赛在几小时内不会变，
-     * 用 TTL 缓存直接消掉重复请求 —— 这是对源站最有效的一次减负。
-     *
-     * TTL 取 5 分钟：足够覆盖"打开 App → 点直播 → 刷新线路"这一串操作，
-     * 又短到不会让用户手动刷新时看到过期数据（状态校正本身会重新拉）。
+     * ⚠️ 它现在是 [JrsDetailCache] 注入的"取正文"实现（`fetchBody` 形参）：
+     * 缓存 / single-flight / TTL 起点那三条判据在 [JrsDetailCache] 里，
+     * 域名候选与限流协同在这里 —— 拆开之后两者各有一条**能单独变红**的判据（D10）。
      *
      * ## 域名候选（review/02-data.md P1-9 / P2-6）
      *
      * 详情页挂在**同一个站点的不同域名**下，所以走 [SourceEndpoints.jrsDetailUrls]
      * 的候选列表：主域名不可达时改试镜像。
      * 旧实现把 `https://jrszbt.com/live/$id.html` 写死在这里**和**
-     * `invalidateDetailCache` 两处 —— 主域名一死，列表靠镜像活了下来，
+     * `invalidate`（缓存失效）两处 —— 主域名一死，列表靠镜像活了下来，
      * 但每一场的详情页仍去敲死域名，状态校正与线路展开全部静默失效；
      * 而且两处副本改一处漏一处时，"刷新线路"会清 A 的缓存、读 B 的缓存，
      * 按钮变摆设且不报错。
-     *
-     * ⚠️ 缓存 key 用 **detailId**（而不是 URL）：
-     * 命中哪个域名都不影响同一场次的缓存身份，
-     * 用户清缓存时也不用知道上次是从哪个域名拿到的。
      */
-    private suspend fun fetchJrsDetail(
-        detailId: String,
-        fetch: suspend (String, String?) -> FetchResult,
-        forceRefresh: Boolean = false,
-    ): String? {
-        // ⚠️ 用**单调时钟**（nanoTime，走可注入的 [clock]）而不是 currentTimeMillis：
-        // 用户把系统时间往前拨，"now - cachedAt" 会变成负数，
-        // 负数 < TTL 恒成立 → 缓存永不过期（源站改版了也看不到新内容）。
-        // nanoTime 不受系统时间调整影响。
-        // （不用 android.os.SystemClock.elapsedRealtime：它在 JVM 单元测试里
-        //   返回默认值 0，测试就没法验证 TTL 过期了。）
-        val now = clock()
-        if (!forceRefresh) {
-            synchronized(detailCache) {
-                val hit = detailCache[detailId]
-                if (hit != null) {
-                    if (now - hit.first < DETAIL_CACHE_TTL_MS) {
-                        // D18：命中路径必须可观测，否则现场只能靠请求数反推。
-                        // ⚠️ 只打 detailId：详情页 URL 的域名/query 都不该进日志。
-                        debugLog("MatchRepo", "详情页缓存命中: $detailId")
-                        return hit.second
-                    }
-                    // D18：TTL 过期是"点了刷新却没变"类投诉的第一嫌疑点。
-                    debugLog("MatchRepo", "详情页缓存过期: $detailId (age=${now - hit.first}ms >= ${DETAIL_CACHE_TTL_MS}ms)")
-                    detailCache.remove(detailId)
-                }
-            }
-        }
-
-        // ⚠️ single-flight（review/02-data.md P2-8）：
-        // 缓存只挡"已完成的请求"，挡不住"正在飞的请求"。
-        // 状态校正（4 并发）与 loadSignals 若同时请求同一 detailId，
-        // 两边都会 miss 并各打一次源站 —— 用户"刷新列表还没结束就点进播放页"
-        // 就是这个场景，源站会同时收到两份相同请求。
-        // 这里用 in-flight map 让后来者等第一个请求的结果。
-        if (!forceRefresh) {
-            val existing = synchronized(inFlightDetails) { inFlightDetails[detailId] }
-            if (existing != null) {
-                return existing.await()
-            }
-        }
-        val deferred = CompletableDeferred<String?>()
-        var registered = false
-        if (!forceRefresh) {
-            val raced = synchronized(inFlightDetails) {
-                // 双重检查：拿锁前可能已有别人放进去了
-                inFlightDetails[detailId] ?: run {
-                    inFlightDetails[detailId] = deferred
-                    null
-                }
-            }
-            if (raced != null) return raced.await()
-            registered = true
-        }
-        var fetched: String? = null
-        val body = try {
-            // ⚠️ `.also` 保证 fetched 在正常路径上一定拿到真实正文：
-            // 旧实现在 finally 里读 `detailCache[detailId]?.second`，而缓存
-            // 是**这段 try 之后**才写的 —— 于是等待者（single-flight 的另一半）
-            // 永远拿到 null。等待者拿到 null 会当成"详情页没内容"，
-            // 白白丢掉一次本已成功的请求。
-            fetchDetailBody(detailId, fetch).also { fetched = it }
-        } finally {
-            // ⚠️ 必须在 finally 里移除并完成：任何异常路径都不能把 detailId 永久卡在
-            // in-flight map 里 —— 那会让这个场次的详情页永远等待一个已经结束的 Deferred。
-            //
-            // ⚠️ D12：只有**自己注册过**才移除。旧实现无条件 remove，
-            // 于是 forceRefresh 路径会删掉**别人**正在等待的条目，
-            // 第三个来者以为没有在飞请求、又重新发一次 —— 偶发重复请求。
-            if (registered) {
-                synchronized(inFlightDetails) { inFlightDetails.remove(detailId) }
-                deferred.complete(fetched)
-            }
-        }
-
-        if (!body.isNullOrBlank()) {
-            // ⚠️ 时间戳在**拿到正文之后**取（review/02-data.md P2-7）：
-            // 原来的 now 在发起请求**之前**算，请求耗时（最长 35s）被算进缓存年龄，
-            // 等于把 5 分钟 TTL 悄悄缩短成 4 分半 —— 越慢的请求，缓存越短。
-            val cachedAt = clock()
-            synchronized(detailCache) {
-                detailCache[detailId] = cachedAt to body
-            }
-        }
-        return body
-    }
-
-    /** 真正发请求的部分（按候选域名顺序试），从 [fetchJrsDetail] 里拆出来便于 single-flight 包裹。 */
     private suspend fun fetchDetailBody(
         detailId: String,
         fetch: suspend (String, String?) -> FetchResult,
@@ -544,11 +445,8 @@ class MatchRepository(
         /** 重试退避基数：第 n 次失败后等 n * LIST_RETRY_BACKOFF_MS。 */
         private const val LIST_RETRY_BACKOFF_MS = 400L
 
-        /** 详情页缓存有效期：覆盖"打开 App → 点直播 → 刷新线路"这一串操作。 */
-        private const val DETAIL_CACHE_TTL_MS = 5 * 60 * 1000L
-
-        /** 详情页缓存的最大条数：防止长时间运行后无限增长。 */
-        private const val DETAIL_CACHE_MAX_ENTRIES = 64
+        // 详情页缓存的 TTL 与条数上限已随缓存搬到 [JrsDetailCache]（D10）：
+        // 那两个常量只服务缓存本身，留在这里会让"缓存在本类"的错觉重现。
 
         /**
          * 队名归一化与合并键的正则已随合并逻辑搬到 [MatchMerger]（D10）：
@@ -557,40 +455,20 @@ class MatchRepository(
     }
 
     /**
-     * 正在飞的详情页请求：detailId -> Deferred。
+     * 详情页正文的**短缓存 + single-flight**（D10 拆出的 [JrsDetailCache]）。
      *
-     * ⚠️ 缓存只挡"已完成的请求"，挡不住"正在飞的请求"（review/02-data.md P2-8）：
-     * 状态校正（4 并发）与 loadSignals 同时请求同一 detailId 时，
-     * 两边都会 miss 并各打一次源站。用户"刷新列表还没结束就点进播放页"就是这个场景。
+     * ⚠️ 职责边界：TTL 缓存、single-flight（含 D12 那条"forceRefresh 不许删别人的在飞条目"）、
+     * `invalidate`/`clear` 都在 [JrsDetailCache] 里；候选域名顺序与 403/429 冷却、404
+     * 不登记 host 失败仍由本类的 [fetchDetailBody] 负责（以 lambda 注入）。
+     * 前者是**纯内存判据**、后者是**网络与源站协同判据** —— 分开才能各自被单测钉住。
      *
-     * 必须在 finally 里移除，任何异常路径都不能把 detailId 永久卡住。
+     * ⚠️ 时钟走构造参数 [clock]（单调毫秒）：TTL 语义必须可注入，
+     * 否则"慢请求的缓存起点"只能靠真等几分钟才看得出来。
      */
-    private val inFlightDetails = mutableMapOf<String, CompletableDeferred<String?>>()
-
-    /**
-     * 详情页短缓存：**detailId** -> (缓存时刻, 正文)。
-     *
-     * ⚠️ key 用 detailId 而不是 URL：详情页有多个候选域名
-     * （[SourceEndpoints.jrsDetailUrls]），按 URL 存会让同一场次
-     * 在主域名与镜像域名下各存一份，且"刷新线路"只能清掉其中一个 ——
-     * 用户点了刷新却拿到旧正文，还不报错（review/02-data.md P2-6）。
-     *
-     * ⚠️ 会被多个协程并发访问（状态校正并发 4 路 + loadSignals），
-     * 所以用 synchronized 保护，不能用普通 LinkedHashMap。
-     *
-     * ⚠️ 必须有**条数上限**：MatchRepository 跟着 ViewModel 活整个进程，
-     * 而一场比赛一个详情页 —— 一天下来几十上百个 URL 会一直堆着。
-     * 超过上限就淘汰最旧的（LinkedHashMap 的 accessOrder=true 就是 LRU）。
-     */
-    private val detailCache = object : LinkedHashMap<String, Pair<Long, String>>(
-        /* initialCapacity = */ 16,
-        /* loadFactor = */ 0.75f,
-        /* accessOrder = */ true,
-    ) {
-        override fun removeEldestEntry(
-            eldest: MutableMap.MutableEntry<String, Pair<Long, String>>?,
-        ): Boolean = size > DETAIL_CACHE_MAX_ENTRIES
-    }
+    private val detailCache = JrsDetailCache(
+        clock = clock,
+        fetchBody = { detailId, fetch -> fetchDetailBody(detailId, fetch) },
+    )
 
     /** 直播中优先，其余按开赛时间。 */
     private fun sort(matches: List<Match>): List<Match> =        matches.sortedWith(
@@ -1136,9 +1014,7 @@ class MatchRepository(
      * 开关是数据来源的变更，不该受上一次配置的缓存影响。
      */
     fun clearDetailCache() {
-        // D18：缓存被整体清掉也该留痕（"刷新线路"类投诉的第一嫌疑点）
-        debugLog("MatchRepo", "详情页缓存被整体清空（数据源开关变更）")
-        synchronized(detailCache) { detailCache.clear() }
+        detailCache.clear()
     }
 
     /**
@@ -1152,16 +1028,7 @@ class MatchRepository(
      * 只清这一场，不动其它场次（其它场次的缓存仍在 TTL 内，继续省请求）。
      */
     fun invalidateDetailCache(detailId: String) {
-        // D18：失效路径要能观测 —— 否则"点了刷新线路却拿到旧正文"只能靠猜。
-        // ⚠️ 只打 detailId，不打 URL（URL 会带域名与签名 query）。
-        debugLog("MatchRepo", "详情页缓存被显式失效: $detailId")
-        synchronized(detailCache) {
-            // key 是 detailId 而不是 URL：详情页现在有多个候选域名
-            // （[SourceEndpoints.jrsDetailUrls]），按写死的某个域名去 remove
-            // 会清不掉上次从镜像域名缓存的那一份 —— 按钮变摆设且不报错
-            // （review/02-data.md P2-6）。
-            detailCache.remove(detailId)
-        }
+        detailCache.invalidate(detailId)
     }
 
     /**
@@ -1174,9 +1041,9 @@ class MatchRepository(
         var correction: JrsParser.StatusCorrection? = null
 
         val jrsSignals = match.jrsDetailId?.let { id ->
-            // ⚠️ 必须走缓存版 fetchJrsDetail：
+            // ⚠️ 必须走缓存版 detailCache.load：
             // 列表状态校正刚拉过同一个详情页，不复用就是白打源站一次。
-            val html = fetchJrsDetail(id, fetch)
+            val html = detailCache.load(id, fetch = fetch)
             if (html != null) {
                 correction = jrsParser.correctedStatus(match, jrsParser.parseScheduledTime(html))
                 jrsParser.parseDetail(html, match)

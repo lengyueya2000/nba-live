@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -263,20 +264,6 @@ class WebPageDeadEndWiringTest {
         )
     }
 
-    @Test
-    fun `自检 注释与字符串里的调用不算接线`() {
-        val sample = listOf(
-            "class Sample {",
-            "    fun WebSurface() {",
-            "        // WebErrorProbeScript.HAS_ERROR 只在注释里",
-            "        val s = \"WebPageDeadEndPolicy.shouldOffer( 只在字符串里\"",
-            "    }",
-            "}",
-        ).joinToString("\n")
-        val body = GuardSourceScan.functionBody(sample, "fun WebSurface(")
-        assertFalse("判据命中了注释里的字面量", body.contains("WebErrorProbeScript.HAS_ERROR"))
-        assertFalse("判据命中了字符串里的字面量", body.contains("WebPageDeadEndPolicy.shouldOffer("))
-    }
 
     // ---------------------------------------------------------------
 
@@ -290,13 +277,5 @@ class WebPageDeadEndWiringTest {
         return GuardSourceScan.stripNonCode(file.readText())
     }
 
-    private fun productionRoot(): File {
-        val cwd = File(System.getProperty("user.dir") ?: ".").absolutePath
-        return listOf(
-            File("src/main/java/com/nbalive/app"),
-            File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=$cwd）—— 守卫会静默全绿")
-    }
+    private fun productionRoot(): File = TestPaths.productionRoot
 }

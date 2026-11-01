@@ -97,38 +97,90 @@ class MatchRepositoryTest {
         assertEquals("99", m.jrsDetailId)
     }
 
-    private fun invokeSort(matches: List<Match>): List<Match> {
-        val m = MatchRepository::class.java.getDeclaredMethod("sort", List::class.java)
-        m.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        return m.invoke(repo, matches) as List<Match>
+    /**
+     * 走**公开入口** `agedMatches` 触发排序，而不是反射调私有的 `sort`（D10 重锚）。
+     *
+     * ⚠️ 两条原因：
+     *  1. 反射钉住的是"私有方法还在、还叫这个名字"—— 重构（D10 这次就是）一来就红，
+     *     而排序规则本身没被守住（签名一变，测试不是变红而是**运行期抛错**）；
+     *  2. `agedMatches` **只在状态真的老化时才重排**（`aged !== matches`，避免 StateFlow
+     *     因为新 list 实例而白重发）—— 用公开入口测，顺带把"什么时候才排序"这个真实契约
+     *     也钉住了。代价是夹具里必须有一场**会老化**的比赛，否则根本走不到排序分支。
+     */
+    private fun agedAndSorted(matches: List<Match>, now: java.time.ZonedDateTime): List<Match> =
+        repo.agedMatches(matches, now)
+
+    /** 相对 `now` 的夹具：`hoursFromNow` 为负 = 已开赛，为正 = 未开赛。 */
+    private fun matchAt(
+        id: String,
+        teams: Pair<String, String>,
+        now: java.time.ZonedDateTime,
+        hoursFromNow: Long,
+        status: MatchStatus,
+    ): Match {
+        val at = now.plusHours(hoursFromNow)
+        return match(
+            id = id,
+            home = teams.first,
+            away = teams.second,
+            start = at.toInstant().toEpochMilli(),
+            timeLabel = "%02d:%02d".format(at.hour, at.minute),
+            status = status,
+        )
     }
 
     @Test
     fun `live matches sort before upcoming`() {
-        val live = match("jrkan-live", "勇士", "火箭", dayMillis(10, 22, 7), "10-22 07:00", status = MatchStatus.LIVE)
-        val soon = match("jrkan-soon", "湖人", "凯尔特人", dayMillis(10, 21, 19), "10-21 19:35")
-        val merged = invokeMerge(listOf(live, soon), emptyList())
-        assertEquals("jrkan-live", merged.first().id)
+        val now = java.time.ZonedDateTime.now(MatchStatusClock.SOURCE_ZONE)
+        val live = matchAt("live-1h", "勇士" to "火箭", now, -1, MatchStatus.LIVE)
+        val upcoming = matchAt("up-3h", "湖人" to "凯尔特人", now, 3, MatchStatus.UPCOMING)
+        // ⚠️ 必须有一场会老化（-6h 的"直播中"会被判成已结束），否则 agedMatches
+        // 返回原列表、根本不排序。旧用例正是因此变成"测不到排序"的：
+        // 它比对的是 merge 的输入顺序，把整个排序删掉也照样绿。
+        val expired = matchAt("live-6h", "太阳" to "掘金", now, -6, MatchStatus.LIVE)
+
+        val sorted = agedAndSorted(listOf(upcoming, expired, live), now)
+
+        assertEquals(
+            "直播中排最前；其余（已结束的 -6h 与未开赛的 +3h 同组）按开赛时间升序",
+            listOf("live-1h", "live-6h", "up-3h"),
+            sorted.map { it.id },
+        )
     }
 
     @Test
     fun `live matches are ordered latest first`() {
         // 直播中按开赛时间倒序：最晚开赛（最新鲜）的在最上面
-        val early = match("live-7", "勇士", "火箭", dayMillis(10, 23, 7), "10-23 07:00", status = MatchStatus.LIVE)
-        val mid = match("live-930", "湖人", "凯尔特人", dayMillis(10, 23, 9, 30), "10-23 09:30", status = MatchStatus.LIVE)
-        val late = match("live-1935", "雄鹿", "热火", dayMillis(10, 23, 19, 35), "10-23 19:35", status = MatchStatus.LIVE)
-        val sorted = invokeSort(listOf(early, mid, late))
-        assertEquals(listOf("live-1935", "live-930", "live-7"), sorted.map { it.id })
+        val now = java.time.ZonedDateTime.now(MatchStatusClock.SOURCE_ZONE)
+        val early = matchAt("live-3h", "勇士" to "火箭", now, -3, MatchStatus.LIVE)
+        val mid = matchAt("live-2h", "湖人" to "凯尔特人", now, -2, MatchStatus.LIVE)
+        val late = matchAt("live-1h", "雄鹿" to "热火", now, -1, MatchStatus.LIVE)
+        val expired = matchAt("live-6h", "太阳" to "掘金", now, -6, MatchStatus.LIVE) // 触发排序
+
+        val sorted = agedAndSorted(listOf(early, mid, late, expired), now)
+
+        assertEquals(
+            "直播中组内倒序（最新鲜的在最上），已结束的落在其后",
+            listOf("live-1h", "live-2h", "live-3h", "live-6h"),
+            sorted.map { it.id },
+        )
     }
 
     @Test
     fun `upcoming matches still sort earliest first`() {
         // 非直播组保持升序：最近要开的在前
-        val tomorrow = match("up-t", "湖人", "凯尔特人", dayMillis(10, 24, 19, 35), "10-24 19:35")
-        val today = match("up-d", "勇士", "火箭", dayMillis(10, 23, 7), "10-23 07:00")
-        val sorted = invokeSort(listOf(tomorrow, today))
-        assertEquals(listOf("up-d", "up-t"), sorted.map { it.id })
+        val now = java.time.ZonedDateTime.now(MatchStatusClock.SOURCE_ZONE)
+        val tomorrow = matchAt("up-48h", "湖人" to "凯尔特人", now, 48, MatchStatus.UPCOMING)
+        val soon = matchAt("up-3h", "勇士" to "火箭", now, 3, MatchStatus.UPCOMING)
+        val expired = matchAt("live-6h", "太阳" to "掘金", now, -6, MatchStatus.LIVE) // 触发排序
+
+        val sorted = agedAndSorted(listOf(tomorrow, soon, expired), now)
+
+        assertEquals(
+            "非直播组升序：已结束的 -6h、+3h、+48h",
+            listOf("live-6h", "up-3h", "up-48h"),
+            sorted.map { it.id },
+        )
     }
 
     @Test

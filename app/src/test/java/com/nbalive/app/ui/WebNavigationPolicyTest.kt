@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -235,13 +236,7 @@ class WebNavigationPolicyTest {
             .associate { it.name to GuardSourceScan.stripNonCode(it.readText()) }
     }
 
-    private fun productionRoot(): File =
-        listOf(
-            File("src/main/java/com/nbalive/app"),
-            File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=${cwd()}）—— 重载守卫会静默全绿")
+    private fun productionRoot(): File = TestPaths.productionRoot
 
-    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
+    private fun cwd(): String = File(TestPaths.workingDirPath()).absolutePath
 }

@@ -142,6 +142,35 @@ class GuardHygieneTest {
             "扫描器误报了注释/字符串里的字面量 —— 它会命中本仓库大量「不能用 assumeTrue」的说明文字",
             scanForAssumeFamily(cleanSample).isEmpty(),
         )
+
+        // ⚠️ B14（review/optimization-review.md）：这里**收编**了原来 7 个文件里各写一份的
+        // 同名自检 —— NewFeaturesTest / PipExitWiringTest / PlayerLoadingHintPolicyTest /
+        // SniffRecoveryPolicyTest / SourceToggleTest / WebPageDeadEndPolicyTest /
+        // PlayerPageResolverTest 的 `自检 注释与字符串里的调用不算接线` 已删除。
+        // 它们验证的是**同一件事**：「本地判据先剔了注释与字符串」。本仓库的判据都建立在
+        // 共享的 [GuardSourceScan.stripNonCode] / [GuardSourceScan.functionBody] 上，
+        // 所以直接测这两个共享函数就是**超集**：实现漂移时只在这里红一次（原来会在 7 处各红一次，
+        // 而且各测各的副本、彼此不知道对方退化）。下面三段分别覆盖它们原有的两件事
+        // （剔注释/字符串、函数体不吃过结尾）。
+        val bodySample = listOf(
+            "@Composable",
+            "fun Target(/** 注释里的花括号不算代码 */ onA: (Boolean) -> Unit = {}) {",
+            "    AppShell()",
+            "}",
+            "fun Other() { println(2) }",
+        ).joinToString("\n")
+        val body = GuardSourceScan.functionBody(bodySample, "fun Target(")
+        assertTrue(
+            "参数表里的默认 lambda 被当成了函数体（体内看不到真调用）：$body",
+            body.contains("AppShell()"),
+        )
+        assertTrue("函数体提取吃过了函数结尾（把别的函数吞进来）", !body.contains("fun Other("))
+        assertTrue(
+            "剔非代码没生效：字符串/注释里的调用被当成真调用 —— " +
+                "所有「必须有调用点」「不许出现 X」的守卫都会跟着假绿/假红\n" +
+                "实际：${GuardSourceScan.stripNonCode("val s = \"Log.w(t)\" // Log.w(t)")}",
+            GuardSourceScan.callSites("val s = \"Log.w(t)\" // Log.w(t)", "Log.w") == 0,
+        )
     }
 
     /**
@@ -210,7 +239,7 @@ class GuardHygieneTest {
         val candidates = listOf(
             File("src/test/java"),
             File("app/src/test/java"),
-            File(System.getProperty("user.dir") ?: ".", "src/test/java"),
+            File(TestPaths.workingDirPath(), "src/test/java"),
         )
         return candidates.firstOrNull { it.isDirectory }
             ?: error(
@@ -219,7 +248,7 @@ class GuardHygieneTest {
             )
     }
 
-    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
+    private fun cwd(): String = File(TestPaths.workingDirPath()).absolutePath
 
     private companion object {
         /**

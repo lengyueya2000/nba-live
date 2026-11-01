@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -39,66 +40,123 @@ import org.junit.Test
  */
 class AppStructureGuardTest {
 
-    // ---------------- 1. 根组合项的函数体行数 ----------------
+    // ---------------- 1. 根组合项不得内联副作用（B12 重写：替换掉"函数体 ≤180 行"） ----------------
 
+    /**
+     * ⚠️ 本条在 2026-11-01 被**重写**（review/optimization-review.md B12）。
+     *
+     * ## 改前断言什么
+     *
+     * `fun NbaLiveApp(` 的**函数体行数 ≤180**（某轮拆分的测量残留）。
+     *
+     * ## 改后断言什么
+     *
+     * 根组合项体内**不得出现内联的系统副作用调用**（[INLINED_EFFECTS]），
+     * 并且**仍然真的在装配骨架**（`AppShell(` + `RouteHost(`）。
+     *
+     * ## 为什么是等价或更强
+     *
+     * - 旧判据度量的是**形状**：一次格式化、加一段注释就能逼近边界；失败文案只说"超了 N 行"，
+     *   不指出"什么行为退化了"。它真正守的"路由分发/副作用/外壳不许回长到根节点"这件事，
+     *   已经由两条**搬不动**的判据覆盖：同文件 `definitionViolations`（六个实现不许回写根文件）
+     *   与本文件第 2 节（根体内直接收集 ≤1、`AppUiState` 状态面 ≤6，H5）。
+     * - 新判据锚在**行为**上：系统副作用一旦就地写回根体（P2-18 要消灭的形态），
+     *   任何一次状态抖动都会连带整棵 `Scaffold`/顶栏/底栏重组 —— 这正是要拦的后果。
+     *
+     * ## 为什么仍然**可失败**
+     *
+     * 把 `LaunchedEffect(route, tab) { … }`、`DisposableEffect`、`BackHandler` 或
+     * `rememberInfiniteTransition` 写回根体 → 第一条断言立刻红；
+     * 反过来"把根体删空让判据变绿" → 第二条正向锚点红（见 `内联副作用判据自检`）。
+     */
     @Test
-    fun `根组合项函数体不得超过 180 行`() {
-        val lines = bodyLineCount(source("NbaLiveApp.kt"))
+    fun `根组合项不得内联系统副作用`() {
+        val body = GuardSourceScan.functionBody(source("NbaLiveApp.kt"), "fun NbaLiveApp(")
+        val inlined = INLINED_EFFECTS.filter { body.contains(it) }
         assertTrue(
-            "fun NbaLiveApp( 的函数体有 $lines 行（上限 180）：review/03-ui.md P2-18 拆掉的" +
-                "路由分发/副作用/外壳如果被「顺手加回」根节点，这里会先变红。\n" +
-                "请把新逻辑放进 RouteHost（路由）、AppEffects.kt（副作用）、" +
-                "AppChrome.kt（外壳）或 SearchOverlay.kt。",
-            lines <= 180,
+            "根组合项里又出现了内联的副作用调用：${inlined.joinToString()}。\n" +
+                "review/03-ui.md P2-18 拆掉的正是这些（根节点只承担「读状态 → 摆骨架」）：\n" +
+                "  · 状态老化 / 比分轮询 → AppEffects.kt 的 AppListStatusAgeEffect / AppScoresRefreshEffect\n" +
+                "  · 全屏与系统栏 → AppEffects.kt 的 FullscreenSystemEffect\n" +
+                "  · 返回键 → AppBackHandling.kt 的 AppBackHandler\n" +
+                "副作用写在根体里时，任何一次状态抖动都会连带整棵 Scaffold/顶栏/底栏重组。",
+            inlined.isEmpty(),
+        )
+        assertTrue(
+            "根组合项没有装配 AppShell( / RouteHost( —— 第一条判据可以靠「把根体删空」骗过去",
+            body.contains("AppShell(") && body.contains("RouteHost("),
         )
     }
 
     @Test
-    fun `函数体行数判据自检 参数表里的 lambda 与注释不能骗过它`() {
-        // ⚠️ 这正是本仓库踩过的坑：Compose 形参默认值里全是 lambda（`= {}`），
-        // 直接找第一个 `{` 会把那个空 lambda 当函数体，于是行数永远很小 ——
-        // 一条永远不会红的守卫。
+    fun `内联副作用判据自检 违规样本必须命中而注释样本必须不命中`() {
+        fun violations(raw: String): List<String> {
+            val body = GuardSourceScan.functionBody(raw, "fun NbaLiveApp(")
+            return INLINED_EFFECTS.filter { body.contains(it) }
+        }
+
         val compliant = """
             @Composable
-            fun NbaLiveApp(
+            fun NbaLiveApp(viewModel: MainViewModel) {
+                AppListStatusAgeEffect(route, tab) { }
+                AppShell(topBar = { }) { RouteHost() }
+            }
+        """.trimIndent()
+        assertTrue("合规样本被误报：${violations(compliant)}", violations(compliant).isEmpty())
+
+        val inlined = """
+            @Composable
+            fun NbaLiveApp(viewModel: MainViewModel) {
+                LaunchedEffect(route) { while (true) { delay(1) } }
+                BackHandler(enabled = true) { }
+                AppShell(topBar = { }) { RouteHost() }
+            }
+        """.trimIndent()
+        assertTrue(
+            "内联 LaunchedEffect / BackHandler 没有被抓到（判据退化成摆设）",
+            violations(inlined).isNotEmpty(),
+        )
+
+        val commentOnly = """
+            @Composable
+            fun NbaLiveApp(viewModel: MainViewModel) {
+                // LaunchedEffect(route) { }  ← 注释里的调用不算
+                AppShell(topBar = { }) { RouteHost() }
+            }
+        """.trimIndent()
+        assertTrue("注释里的 LaunchedEffect 被当成真调用（没剔非代码）", violations(commentOnly).isEmpty())
+    }
+
+    /**
+     * [GuardSourceScan.functionBody] 的自检：**跳过参数表**再取函数体。
+     *
+     * 这是所有以"函数体内必须有 X"为形态的守卫的共同前提：
+     * Compose 形参默认值里全是 lambda（`onA: (Boolean) -> Unit = {}`），
+     * 直接找第一个 `{` 会拿到那个空 lambda，于是"体内"永远看不到任何调用 ——
+     * 一条永远不会红的守卫（旧版 180 行判据的自检就是为这件事写的，
+     * 现在它随判据一起搬到共享 helper 上，覆盖范围更大）。
+     */
+    @Test
+    fun `functionBody 自检 参数表里的默认 lambda 不能骗过它`() {
+        val sample = """
+            @Composable
+            fun Target(
                 viewModel: MainViewModel,
                 /** 注释里的花括号 { } 不算代码 */
-                onDarkModeChange: (Boolean) -> Unit = {},
-                onAspectChange: (AspectMode) -> Unit = {},
+                onA: (Boolean) -> Unit = {},
             ) {
-                println(1)
+                AppShell()
+                RouteHost()
             }
-            fun NbaLiveAppHelper() { println(2) }
+            fun Other() { println(2) }
         """.trimIndent()
-        assertEquals(
-            "参数表里的 lambda 被当成了函数体（正确应为 3 行：`{` / `println(1)` / `}`）",
-            3,
-            bodyLineCount(compliant),
-        )
-
-        // 违规样本：200 行函数体必须判超限
-        val oversized = buildString {
-            append("@Composable\nfun NbaLiveApp(\n    viewModel: MainViewModel = {},\n) {\n")
-            repeat(200) { append("    println(1)\n") }
-            append("}\n")
-        }
+        val body = GuardSourceScan.functionBody(sample, "fun Target(")
         assertTrue(
-            "200 行的函数体没有被判超限（判据退化成摆设）",
-            bodyLineCount(oversized) > 180,
+            "参数表里的默认 lambda 被当成了函数体（体内看不到真调用）：$body",
+            body.contains("AppShell()") && body.contains("RouteHost()"),
         )
-
-        // 反向锚点：**另一个**函数的长函数体不算（判据必须锚在 NbaLiveApp 上）
-        val otherLong = buildString {
-            append("fun NbaLiveApp() { println(1) }\n")
-            append("fun somethingElse() {\n")
-            repeat(300) { append("    println(2)\n") }
-            append("}\n")
-        }
-        assertEquals(
-            "把别的函数的长度算到了 NbaLiveApp 头上（它的体只有 1 行）",
-            1,
-            bodyLineCount(otherLong),
-        )
+        assertTrue("函数体提取吃过了函数结尾（把别的函数也吞进来）", !body.contains("fun Other("))
+        assertTrue("参数表被算进了函数体（默认 lambda 漏在体内）", !body.contains("onA"))
     }
 
     // ---------------- 2. 根节点的状态收集数（P2-15） ----------------
@@ -318,7 +376,7 @@ class AppStructureGuardTest {
     fun `扫描必须真的扫到源码与新文件`() {
         val files = productionFiles()
         assertTrue(
-            "只扫到 ${files.size} 个生产 kt 文件（应 ≥30，cwd=${System.getProperty("user.dir")}）—— " +
+            "只扫到 ${files.size} 个生产 kt 文件（应 ≥30，cwd=${TestPaths.workingDirPath()}）—— " +
                 "扫描范围走偏时上面几条会静默全绿",
             files.size >= 30,
         )
@@ -326,7 +384,8 @@ class AppStructureGuardTest {
             val lines = GuardSourceScan.uniqueFile(files, name).readText().lines().size
             assertTrue(
                 "$name 只有 $lines 行（应 >20）—— 把逻辑「搬」进一个空壳文件也能让" +
-                    "「根组合项变短」变绿，所以这条要有下限",
+                    "「根组合项不再有内联副作用」的判据变绿（那只是把实现搬走、不是拆干净），" +
+                    "所以这些文件必须有实际体量，且 §1/§3 的接线判据仍要成立",
                 lines > 20,
             )
         }
@@ -335,17 +394,9 @@ class AppStructureGuardTest {
     // ---------------------------------------------------------------
     // 判据（被测样本与生产源码走**同一个**函数）
     // ---------------------------------------------------------------
-
-    /**
-     * `fun NbaLiveApp(` 函数体的行数。
-     *
-     * 用共享的 [GuardSourceScan.functionBody]：它先配对跳过**参数表**再找函数体的 `{`，
-     * 所以形参默认值里的 lambda、KDoc 里的花括号都不会算错 —— 本仓库在别处
-     * 踩过"直接找第一个 `{` 拿到空 lambda"的坑（守卫永远绿）。
-     * 找不到声明/括号不配对照样 `error()`，不会静默返回 0。
-     */
-    private fun bodyLineCount(rawSource: String): Int =
-        GuardSourceScan.functionBody(rawSource, "fun NbaLiveApp(").lines().size
+    // ⚠️ 原来这里还有一个 `bodyLineCount(rawSource)`：随"函数体 ≤180 行"判据一起删除
+    //（B12）。它测的"functionBody 跳过参数表"这件事搬到了 `functionBody 自检 …`
+    // 那条用例上，覆盖的是共享 helper 本身（所有"函数体内必须有 X"守卫的共同前提）。
 
     /** 根节点里的 `collectAsStateWithLifecycle(` 调用点数量（已剔注释与字符串）。 */
     private fun rootCollects(rawSource: String): Int {
@@ -427,21 +478,23 @@ class AppStructureGuardTest {
     private fun source(name: String): String =
         GuardSourceScan.uniqueFile(productionFiles(), name).readText()
 
-    private fun productionFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val candidates = listOf(
-            File(cwd, "src/main/java/com/nbalive/app"),
-            File(cwd, "app/src/main/java/com/nbalive/app"),
-        )
-        val root = candidates.firstOrNull { it.isDirectory }
-            ?: error(
-                "找不到生产源码目录（cwd=$cwd，候选=${candidates.map { it.path }}）—— " +
-                    "本文件所有守卫会静默全绿，所以直接失败",
-            )
-        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
-    }
+    private fun productionFiles(): List<File> = TestPaths.productionFiles()
 
     private companion object {
+        /**
+         * 根组合项体内**不许内联**的副作用调用（B12：把"函数体 ≤180 行"换成行为判据）。
+         *
+         * 这些是 P2-18 拆到 `AppEffects.kt` / `AppBackHandling.kt` 的东西：
+         * 根节点只允许**调用**那些具名效应函数（`AppListStatusAgeEffect(` 等），
+         * 不允许自己 `LaunchedEffect` / `DisposableEffect` 起来。
+         */
+        val INLINED_EFFECTS = listOf(
+            "LaunchedEffect(",
+            "DisposableEffect(",
+            "rememberInfiniteTransition(",
+            "BackHandler(",
+        )
+
         /** 拆分后才该存在的文件（非空性锚点：都在且都不是空壳）。 */
         val SPLIT_FILES = listOf(
             "NbaLiveApp.kt",

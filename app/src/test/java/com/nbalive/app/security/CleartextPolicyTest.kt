@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.TestPaths
 import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -48,7 +49,7 @@ class CleartextPolicyTest {
         // ⚠️ 硬失败而不是跳过（审计 A10）：这份 xml 是明文策略纪律**唯一**的输入，
         // 解析不到时下面几条断言本来会"零违规"地一起变绿 —— 那是假安全感。
         assertTrue(
-            "找不到 network_security_config.xml（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 network_security_config.xml（cwd=${File(TestPaths.workingDirPath()).absolutePath}）—— " +
                 "锚点缺失时明文策略守卫会静默全绿，所以直接失败而不是跳过",
             xml != null,
         )
@@ -79,7 +80,7 @@ class CleartextPolicyTest {
     fun `WebView 承载的源站脚本主机必须允许明文`() {
         val xml = configText()
         assertTrue(
-            "找不到 network_security_config.xml（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 network_security_config.xml（cwd=${File(TestPaths.workingDirPath()).absolutePath}）—— " +
                 "这条判据会静默全绿，所以直接失败",
             xml != null,
         )
@@ -99,7 +100,7 @@ class CleartextPolicyTest {
         // ⚠️ 硬失败而不是跳过（审计 A10）：这份 xml 是明文策略纪律**唯一**的输入，
         // 解析不到时下面几条断言本来会"零违规"地一起变绿 —— 那是假安全感。
         assertTrue(
-            "找不到 network_security_config.xml（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 network_security_config.xml（cwd=${File(TestPaths.workingDirPath()).absolutePath}）—— " +
                 "锚点缺失时明文策略守卫会静默全绿，所以直接失败而不是跳过",
             xml != null,
         )
@@ -126,7 +127,7 @@ class CleartextPolicyTest {
         // ⚠️ 硬失败而不是跳过（审计 A10）：这份 xml 是明文策略纪律**唯一**的输入，
         // 解析不到时下面几条断言本来会"零违规"地一起变绿 —— 那是假安全感。
         assertTrue(
-            "找不到 network_security_config.xml（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 network_security_config.xml（cwd=${File(TestPaths.workingDirPath()).absolutePath}）—— " +
                 "锚点缺失时明文策略守卫会静默全绿，所以直接失败而不是跳过",
             xml != null,
         )
@@ -143,7 +144,7 @@ class CleartextPolicyTest {
         val candidates = listOf(
             File("src/main/res/xml/network_security_config.xml"),
             File("app/src/main/res/xml/network_security_config.xml"),
-            File(System.getProperty("user.dir"), "src/main/res/xml/network_security_config.xml"),
+            File(TestPaths.workingDirPath(), "src/main/res/xml/network_security_config.xml"),
         )
         return candidates.firstOrNull { it.isFile }?.readText()
     }

@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertFalse
@@ -123,16 +124,7 @@ class ScreenConsistencyGuardTest {
 
     // ---------------------------------------------------------------
 
-    private fun screens(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val roots = listOf(
-            File(cwd, "src/main/java/com/nbalive/app/ui/screens"),
-            File(cwd, "app/src/main/java/com/nbalive/app/ui/screens"),
-        )
-        val root = roots.firstOrNull { it.isDirectory }
-            ?: error("找不到 screens 目录，cwd=$cwd，候选=${roots.map { it.path }}")
-        return root.listFiles { f -> f.isFile && f.extension == "kt" }?.toList() ?: emptyList()
-    }
+    private fun screens(): List<File> = TestPaths.screensFiles()
 
     private fun screenFile(name: String): File =
         // 审计「未验证的怀疑 #7」：按文件名取第一个 → 同名文件时静默守错。现在唯一命中否则 error()。

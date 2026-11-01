@@ -10,6 +10,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import com.nbalive.app.TestPaths
 
 /**
  * 线路准入判据。
@@ -284,7 +285,7 @@ class JrkanChannelAdmissionTest {
     // ------------------------------------------------------------------
 
     private fun productionFile(relative: String): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         return listOf(
             File("src/main/java/$relative"),
             File("app/src/main/java/$relative"),
@@ -294,7 +295,7 @@ class JrkanChannelAdmissionTest {
     }
 
     private fun productionRoot(): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         return listOf(
             File("src/main/java/com/nbalive/app"),
             File("app/src/main/java/com/nbalive/app"),

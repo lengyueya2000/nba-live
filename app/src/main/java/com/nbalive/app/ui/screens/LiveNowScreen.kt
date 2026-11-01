@@ -19,9 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +51,7 @@ import com.nbalive.app.ui.leagueLabel
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.accentBrush
 import com.nbalive.app.ui.theme.Space
+import com.nbalive.app.ui.icons.AppIcons
 
 /**
  * "直播"标签页：只列正在直播的场次，点一下直接全屏看。
@@ -188,7 +187,7 @@ private fun LiveErrorState(message: String, onRetry: () -> Unit) {
         title = "加载失败",
         message = message,
         onRetry = onRetry,
-        icon = Icons.Filled.CloudOff,
+        icon = AppIcons.filled_CloudOff,
         primaryAction = true,
     )
 }
@@ -198,7 +197,7 @@ private fun EmptyLiveState(refreshing: Boolean) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
-                Icons.Filled.PlayCircle,
+                AppIcons.filled_PlayCircle,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,

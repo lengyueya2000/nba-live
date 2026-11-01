@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
@@ -288,7 +289,7 @@ class DayLabelTest {
     )
 
     private fun uiFile(relative: String): File {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val candidates = listOf(
             File(cwd, "src/main/java/com/nbalive/app/ui/$relative"),
             File(cwd, "app/src/main/java/com/nbalive/app/ui/$relative"),

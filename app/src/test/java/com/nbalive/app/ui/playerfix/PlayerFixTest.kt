@@ -20,6 +20,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.nbalive.app.TestPaths
 
 /**
  * 播放链路 18 条修复的**判据**（task-7 / `review/fix/player.md`）。
@@ -419,7 +420,7 @@ class PlayerFixTest {
     // ==================================================================
 
     @Test
-    fun `P7 派生列表必须 remember 提示判据必须下沉到 derivedStateOf`() {
+    fun `P7 派生列表必须 remember 且提示 ticker 必须搬出 PlayerScreen`() {
         val raw = productionFile("PlayerScreen.kt").readText()
         val code = GuardSourceScan.stripNonCode(raw)
 
@@ -433,15 +434,38 @@ class PlayerFixTest {
             "面板里的 providers / currentProvider 必须 remember",
             code.contains("remember(signals)") && code.contains("remember(signals, selectedIndex)"),
         )
+        // ⚠️ P7 完整版（2026-11-01）：ticker 与判定整体搬进 `PlayerLoadingHint`，
+        // 所以"失效面收窄"这条判据现在锚在**两个**结构事实上：
+        //  ① `fun PlayerScreen(` 体内不再有 ticker / 判定（`sinceLoadMs`、`delay(250)`、`shouldShow`）；
+        //  ② ticker + derivedStateOf 判定都在 `PlayerLoadingHint` 的**函数体**里
+        //    （那正是"哪一块会被 250ms 失效"的边界）。
         val screenBody = GuardSourceScan.functionBody(raw, "fun PlayerScreen(")
-        assertTrue(
-            "250ms 的 ticker 读取必须收在 derivedStateOf 里 —— 只让那个布尔失效，" +
-                "而不是每 250ms 失效一次整块 content lambda",
-            screenBody.contains("derivedStateOf"),
+        assertFalse(
+            "`fun PlayerScreen(` 体内还有 250ms ticker（`sinceLoadMs`）——" +
+                "它会让整块 content lambda 每 250ms 失效一次，P7 的修法被回退",
+            screenBody.contains("sinceLoadMs"),
+        )
+        assertFalse(
+            "`fun PlayerScreen(` 体内还有 `delay(250)` —— ticker 没搬出去",
+            screenBody.contains("delay(250)"),
+        )
+        assertFalse(
+            "`fun PlayerScreen(` 体内还有加载提示的判据（`shouldShow`）—— 判定也没搬出去",
+            screenBody.contains("PlayerLoadingHintPolicy.shouldShow("),
         )
         assertTrue(
-            "判据仍必须在 PlayerScreen 体内被调用（既有 PlayerLoadingHintPolicyTest 的锚点）",
-            screenBody.contains("PlayerLoadingHintPolicy.shouldShow("),
+            "`fun PlayerScreen(` 必须只调用 `PlayerLoadingHint(...)`（渲染入口）",
+            screenBody.contains("PlayerLoadingHint("),
+        )
+        val hintBody = GuardSourceScan.functionBody(raw, "fun BoxScope.PlayerLoadingHint(")
+        assertTrue(
+            "ticker + 判定必须都收进 PlayerLoadingHint 的函数体（它是失效范围的边界）：" +
+                "`sinceLoadMs`/`delay(250)`/`derivedStateOf`/`shouldShow`/`MAX_HINT_MS` 一个都不能少",
+            hintBody.contains("sinceLoadMs") &&
+                hintBody.contains("delay(250)") &&
+                hintBody.contains("derivedStateOf") &&
+                hintBody.contains("PlayerLoadingHintPolicy.shouldShow(") &&
+                hintBody.contains("PlayerLoadingHintPolicy.MAX_HINT_MS"),
         )
     }
 
@@ -935,7 +959,7 @@ class PlayerFixTest {
         val root = listOf(
             File("src/main/java/com/nbalive/app"),
             File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
+            File(TestPaths.workingDir(), "src/main/java/com/nbalive/app"),
         ).firstOrNull { it.isDirectory }
             ?: error(
                 "找不到生产源码根（cwd=${cwd()}）—— 本文件所有结构判据会静默全绿，所以直接失败",
@@ -946,5 +970,5 @@ class PlayerFixTest {
         )
     }
 
-    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
+    private fun cwd(): String = TestPaths.workingDirPath()
 }

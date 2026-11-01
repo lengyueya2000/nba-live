@@ -14,28 +14,35 @@
 纪律：先 TDD 写纯判据 RED 测试 → 生产代码 → 编译 → 全量测试 → 提交。
 **最核心的风险形态是「假安全感」**：写了/测了但生产零调用、以及永远不会变红的守卫。
 
-> 2026-11-01 **第二次全量审查（75 条）与修复**：新增 `review/optimization-review.md`（审查总报告）、
+> 2026-11-01/02 **第二次全量审查（75 条）与修复**：新增 `review/optimization-review.md`（审查总报告）、
 > `review/opt/{player,data,ui-state,build-test,verification}.md`（分册 + 对抗式复核）、
-> `review/fix/{RESULT,data,player,ui-state,test-reconcile}.md`（修复台账 + 实机验证结果）。
-> **75 条：65 全落地 / 5 部分 / 5 未落地**；判据 **714 → 835 条**（118 suites，debug+release 各 835/0/0）。
+> `review/fix/{RESULT,data,player,ui-state,test-slim,test-reconcile}.md`（修复台账 + 实机验证）。
+> **75 条：73 全落地 / 2 部分（D10 抽 2/3、B14 维护点达成而行数目标被证伪）/ 0 未落地**；
+> 判据 **714 → 844 条**（120 suites，debug+release 各 844/0/0）；debug 包 21.26 → **14.73 MB**。
 
 ## 最近几个回合的提交
-### 2026-11-01 第十七回合（用户：全部修复 → 在雷电模拟器测试）：**75 条审查项落地**
-**未提交**（等用户决定提交粒度）。全量 **debug 835/0/0 + release 835/0/0（118 suites）**；
-`assembleDebug` 21.26 MB / `assembleRelease` 2.65 MB（无 `app-UNSIGNED-*` 残留）/ `:app:lintDebug` 通过（3 warning、0 error）。
-新增判据 **121 条**（714 → 835）+ 8 个新测试文件 + 4 个守卫文件（`CiWorkflowGuardTest`、`LogCallDisciplineTest` 等）。
+### 2026-11-01/02 第十七回合（用户：全部修复 → 在雷电模拟器测试 → 继续做完剩余项）：**75 条收口**
+检查点 `57eb33a`（65/5/5）→ 用户要求做完全部剩余项 → **73 全落地 / 2 部分 / 0 未落地**。
+全量 **debug 844/0/0 + release 844/0/0（120 suites）**；`assembleDebug` **14.73 MB**（B3 前 21.26，−31%）/
+`assembleRelease` 2.65 MB / `:app:lintDebug` 通过 / `jacocoDebugUnitTestReport` **行覆盖 45.0%**。
+判据 **714 → 844（+130）**。
 | 分册 | 落地 |
 |---|---|
-| `review/fix/data.md` | H3/H4/D3~D9/D11~D14/D16~D18 全落地；**D10 部分**（只抽 `MatchMerger`，`detailCache`/`sort` 被既有测试反射钉住）；**D15 半条**（原本已 `internal`） |
-| `review/fix/player.md` | H6/P2~P6/P8/P10~P17/P18 + lint + **U9 播放侧 14 处**（比原报告估的 8 处多）；**P7 部分**（ticker 未搬出）；**P9 半**（`RefererDataSourceFactory`，重建路径保留） |
+| `review/fix/data.md` | H3/H4/D3~D9/D11~D18 全落地；**D10 部分**（已抽 `MatchMerger` + `JrsDetailCache`；`LoadOrchestrator` 未抽）；D15 由 U12 的 `ReleaseRepository` 收敛为一套 |
+| `review/fix/player.md` | H6/P2~P6/P8/P10~P18 + lint + U9 播放侧 14 处；**P7 完整版**（ticker 外提为 `PlayerLoadingHint`，`fun PlayerScreen(` 915→714 行）；**P9 完整版**（换线不重建播放器 + `LineSwitchPolicy`，判据 4 条行为断言） |
 | `review/fix/ui-state.md` | 23 条全部 + P16 调用点 + P18 接线 + `forceRefresh` 透传 |
-| Lead（构建/CI/卫生） | H1/H2/H5/B5(部分)/B6/B7/B8/B9/B13/B16/B17/B18；**B3/B10/B11/B12/B14 未落地**（M/L，属报告 §7 的独立一轮；B10 需 `--write-locks` 联网，本轮会弄挂构建） |
-**真机（雷电 nbatest，Android 14）关键证据**：debug 冷启动 1367/1166 ms、release 477 ms；**0 次 FATAL EXCEPTION**；
-列表 14 场且卡片渲染 **`121 : 111`** 真实比分（D6 别名修复前是"匹配上 0 场"）；
-**H7**：前台比分轮询 45 s 节奏、**按 Home 后 190 秒 0 次**；**U3**：「直播」页 130 s 0 次、切回赛事 70 s 内 2 次；
-**H6**：恢复条出现后点「重新加载」→ `WebSurface: reload requested #1` + CDP 里 `paps.html?id=` **变成新值**（旧 `Pl2AMkcP…` → 新 `3n+b3p3…`）。
-**实机才发现的新缺陷（已修）**：恢复条原先画在 `WebSurface` 内部、是手势层**之前**的兄弟 → 命中路径到不了它 → **两个按钮点不动**；
-修法：上提为 `BoxScope.PlayerDeadEndBar` 并渲染在手势层**之后**（+ 判据 `PlayerFixTest.P1真机回归…`），复测通过。
+| Lead | H1/H2/H5/**B3/B5/B6/B7/B8/B9/B10/B11/B12/B13/B16/B17/B18** 全部落地；**B14 部分**（维护点达成：user.dir 99→1、重复自检 8→1；行数目标被证伪） |
+**三条"原以为做不到、最后做到"**：
+1. **B5**：用 `javap` 反查 AGP 字节码，发现旧属性 `android.enableVcsInfo` 已弃用、改为**公开 DSL** `BuildType.vcsInfo { include = false }` → release 产物逐 entry 验证：`version-control-info.textproto` 与 `META-INF/README.md` 双消失，且**不碰 AGP 内部类**。
+2. **B3**：`review/fix/icon-extract.py` 从官方 AAR **字节码逐命令还原** 25 个图标 → 本地 `AppIcons`（11 个由 `material-icons-core` 提供）；`material-icons-extended` 降级为 `testImplementation`，新增 `AppIconsParityTest` 与官方 `ImageVector` **逐字段比对**（当场抓出两个真差异：官方常由**多个 `path{}` 块**组成、`strokeLineWidth` 1.0f vs 默认 0f）。
+3. **B11**：`user.dir` 99 → **1**（只剩 `TestPaths.kt`），含 Lead 用 `b11-leftover.py` 收尾的 6 文件 11 处。
+**实机（雷电 nbatest，Android 14）最终复测**：debug 冷启动 1404 ms、release 470 ms、**0 次 FATAL EXCEPTION**；
+列表 6 场 + 「我的」页 22 个文本节点（图标全换后布局正常）；**H7**：后台 200 秒 **0 次**、回前台 60 秒 2 次；
+**H6**：点「重新加载」→ `reload requested #1` + CDP 里 `paps.html?id=` 变新值（`EcThdK…` → `rLksSY…`），且是在**复用播放器**（P9）前提下完成。
+中途两个雷电实例同时卡死（`adb devices` 正常但 `adb shell` 无响应）→ `ldconsole reboot --index 1` 恢复后复测。
+**教训（已记入 `review/fix/RESULT.md` §6）**：① 两名队友在写一半时失败、把工作区留在半成品，
+于是补了检查点提交并把任务拆小；② "无编译验证"的测试重构漏掉了 KDoc 里的 `ui/**`（**嵌套块注释陷阱**）
+与 `productionFileAt` 口径不一致 —— 两者都由 Lead 编译后修掉；③ 同一处陷阱本轮共踩 3 次（`GuardSourceScan`/`LogCallDisciplineTest`/`TestPaths`）。
 **归档**：`G:\flutter\work\nba-release-archive\`（mapping+APK 183.2 MB → 24.2 MB zip + `SHA256SUMS.txt`，B16）。
 **仓库卫生**：`git rm --cached` 38 张设计截图（B17，文件仍在磁盘）+ 删除 `ui/TeamNameBridge.kt` 转发件（D11 收尾）。
 ### 2026-10-31 第十六回合（用户挑选）：下拉刷新 + 检查更新 + 比赛比分

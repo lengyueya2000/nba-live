@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -170,18 +171,7 @@ class StalledPlaybackTest {
     // ---------------------------------------------------------------
 
     /** 生产源码原文（找不到就硬失败，绝不用 assume 家族静默跳过）。 */
-    private fun productionSource(name: String): String {
-        val root = listOf(
-            File("src/main/java/com/nbalive/app"),
-            File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码根（cwd=${System.getProperty("user.dir")}）")
-        return GuardSourceScan.uniqueFile(
-            root.walkTopDown().filter { it.isFile }.toList(),
-            name,
-        ).readText()
-    }
+    private fun productionSource(name: String): String = TestPaths.productionFileAny(name).readText()
 
     /** 从 `declaration`（如 `fun onTick(`）开始、用花括号配对截出的函数体（已剔注释/字符串）。 */
     private fun functionBody(rawText: String, declaration: String): String {

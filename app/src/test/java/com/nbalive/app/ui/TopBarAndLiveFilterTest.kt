@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertFalse
@@ -267,7 +268,7 @@ class TopBarAndLiveFilterTest {
     }
 
     private fun uiSources(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
+        val cwd = TestPaths.workingDirPath()
         val roots = listOf(
             File(cwd, "src/main/java/com/nbalive/app/ui"),
             File(cwd, "app/src/main/java/com/nbalive/app/ui"),

@@ -18,21 +18,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SportsBasketball
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -72,6 +62,7 @@ import com.nbalive.app.ui.screens.ProfileScreen
 import com.nbalive.app.ui.theme.GradLive
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
+import com.nbalive.app.ui.icons.AppIcons
 
 /**
  * 界面外壳（chrome）：应用骨架 / 顶栏 / 底栏 / 缺数据占位 / 列表路由装配。
@@ -127,8 +118,8 @@ internal fun AppShell(
  * 一旦枚举带上 `ImageVector`，那个状态机就没法在 JVM 单测里跑了。
  */
 internal fun bottomTabIcon(tab: NavTab, active: Boolean): ImageVector = when (tab) {
-    NavTab.MATCHES -> if (active) Icons.Filled.CalendarMonth else Icons.Outlined.CalendarMonth
-    NavTab.LIVE -> if (active) Icons.Filled.PlayCircle else Icons.Outlined.PlayCircle
+    NavTab.MATCHES -> if (active) AppIcons.filled_CalendarMonth else AppIcons.outlined_CalendarMonth
+    NavTab.LIVE -> if (active) AppIcons.filled_PlayCircle else AppIcons.outlined_PlayCircle
     NavTab.PROFILE -> if (active) Icons.Filled.Person else Icons.Outlined.Person
 }
 
@@ -192,7 +183,7 @@ internal fun MissingMatchPlaceholder(message: String, onBack: () -> Unit) {
         verticalArrangement = Arrangement.Center,
     ) {
         Icon(
-            Icons.Filled.ErrorOutline,
+            AppIcons.filled_ErrorOutline,
             contentDescription = null,
             modifier = Modifier.size(40.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -233,7 +224,7 @@ internal fun BrandTopBar(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                Icons.Filled.SportsBasketball,
+                AppIcons.filled_SportsBasketball,
                 contentDescription = null,
                 modifier = Modifier.size(20.dp),
                 tint = Color.White,
@@ -272,7 +263,7 @@ internal fun BrandTopBar(
         )
         Spacer(Modifier.width(Space.sm))
         SquareIconButton(
-            icon = if (darkMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+            icon = if (darkMode) AppIcons.filled_LightMode else AppIcons.filled_DarkMode,
             contentDescription = if (darkMode) "浅色模式" else "深色模式",
             onClick = onToggleTheme,
         )
@@ -317,7 +308,7 @@ internal fun SubPageTopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SquareIconButton(
-            icon = Icons.AutoMirrored.Filled.ArrowBackIos,
+            icon = AppIcons.automirrored_filled_ArrowBackIos,
             contentDescription = "返回",
             onClick = onBack,
             iconSize = 16.dp,
@@ -340,7 +331,7 @@ internal fun SubPageTopBar(
         } else {
             Box {
                 SquareIconButton(
-                    icon = Icons.Filled.MoreHoriz,
+                    icon = AppIcons.filled_MoreHoriz,
                     contentDescription = "更多",
                     onClick = { menuOpen = true },
                 )

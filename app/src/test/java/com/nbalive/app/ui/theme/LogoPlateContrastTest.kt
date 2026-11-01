@@ -1,5 +1,6 @@
 package com.nbalive.app.ui.theme
 
+import com.nbalive.app.TestPaths
 import androidx.compose.ui.graphics.Color
 import com.nbalive.app.GuardSourceScan
 import java.io.File
@@ -241,16 +242,7 @@ class LogoPlateContrastTest {
 
     private fun themeFile(): File = GuardSourceScan.uniqueFile(productionFiles(), "Theme.kt")
 
-    private fun productionFiles(): List<File> {
-        val cwd = System.getProperty("user.dir") ?: "."
-        val roots = listOf(
-            File(cwd, "src/main/java/com/nbalive/app"),
-            File(cwd, "app/src/main/java/com/nbalive/app"),
-        )
-        val root = roots.firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=$cwd）—— 本文件所有登记会静默全绿")
-        return root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
-    }
+    private fun productionFiles(): List<File> = TestPaths.productionFiles()
 
     private companion object {
         /** 「能看出圆形」的下限；取值与理由见类 KDoc。 */

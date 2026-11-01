@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertTrue
@@ -118,7 +119,7 @@ class PlayerHealthWiringTest {
         val root = listOf(
             File("src/main/java/com/nbalive/app"),
             File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
+            File(TestPaths.workingDirPath(), "src/main/java/com/nbalive/app"),
         ).firstOrNull { it.isDirectory }
             ?: error("找不到生产源码根（cwd=${cwd()}）—— 本文件所有守卫会静默全绿")
         return GuardSourceScan.uniqueFile(
@@ -130,5 +131,5 @@ class PlayerHealthWiringTest {
     /** 生产源码：已剔除注释与字符串字面量（行号不变）。 */
     private fun code(name: String): String = GuardSourceScan.stripNonCode(source(name))
 
-    private fun cwd(): String = File(System.getProperty("user.dir") ?: ".").absolutePath
+    private fun cwd(): String = File(TestPaths.workingDirPath()).absolutePath
 }

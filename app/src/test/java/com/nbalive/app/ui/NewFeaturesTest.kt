@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
@@ -444,20 +445,6 @@ class NewFeaturesWiringTest {
         )
     }
 
-    @Test
-    fun `自检 注释与字符串里的调用不算接线`() {
-        val sample = listOf(
-            "class Sample {",
-            "    fun MatchListScreen() {",
-            "        // PullToRefreshBox( 只在注释里",
-            "        val s = \"onCheckUpdate 只在字符串里\"",
-            "    }",
-            "}",
-        ).joinToString("\n")
-        val body = GuardSourceScan.functionBody(sample, "fun MatchListScreen(")
-        assertFalse("判据命中了注释", body.contains("PullToRefreshBox("))
-        assertFalse("判据命中了字符串", body.contains("onCheckUpdate"))
-    }
 
     private fun source(name: String): String {
         val root = productionRoot()
@@ -466,13 +453,5 @@ class NewFeaturesWiringTest {
         return GuardSourceScan.stripNonCode(file.readText())
     }
 
-    private fun productionRoot(): File {
-        val cwd = File(System.getProperty("user.dir") ?: ".").absolutePath
-        return listOf(
-            File("src/main/java/com/nbalive/app"),
-            File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码目录（cwd=$cwd）—— 守卫会静默全绿")
-    }
+    private fun productionRoot(): File = TestPaths.productionRoot
 }

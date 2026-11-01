@@ -1,5 +1,6 @@
 package com.nbalive.app.ui
 
+import com.nbalive.app.TestPaths
 import com.nbalive.app.GuardSourceScan
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -169,16 +170,5 @@ class PlaybackAutoAdvanceTest {
 
     // ---------- 工具 ----------
 
-    private fun vmSource(): String {
-        val root = listOf(
-            File("src/main/java/com/nbalive/app"),
-            File("app/src/main/java/com/nbalive/app"),
-            File(System.getProperty("user.dir") ?: ".", "src/main/java/com/nbalive/app"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("找不到生产源码根（cwd=${System.getProperty("user.dir")}）—— 这条守卫会静默全绿")
-        return root.walkTopDown()
-            .firstOrNull { it.isFile && it.name == "MainViewModel.kt" }
-            ?.readText()
-            ?: error("找不到 MainViewModel.kt —— 这条守卫会静默全绿，所以直接失败")
-    }
+    private fun vmSource(): String = TestPaths.productionFile("MainViewModel.kt").readText()
 }

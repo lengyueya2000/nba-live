@@ -1,5 +1,6 @@
 package com.nbalive.app.ui.screens
 
+import com.nbalive.app.TestPaths
 import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,7 +29,7 @@ class MatchListContrastDisciplineTest {
         val candidates = listOf(
             File("src/main/java/com/nbalive/app/ui/screens/MatchListScreen.kt"),
             File("app/src/main/java/com/nbalive/app/ui/screens/MatchListScreen.kt"),
-            File(System.getProperty("user.dir"), "src/main/java/com/nbalive/app/ui/screens/MatchListScreen.kt"),
+            File(TestPaths.workingDirPath(), "src/main/java/com/nbalive/app/ui/screens/MatchListScreen.kt"),
         )
         return candidates.firstOrNull { it.isFile }
     }
@@ -54,7 +55,7 @@ class MatchListContrastDisciplineTest {
         // ⚠️ 硬失败而不是跳过（审计 A10）：MatchListScreen.kt 是这条对比度纪律**唯一**的
         // 扫描目标，找不到时"零违规"判断会静默全绿 —— 对比度守卫整个消失，所以直接失败。
         assertTrue(
-            "找不到 MatchListScreen.kt（cwd=${File(System.getProperty("user.dir") ?: ".").absolutePath}）—— " +
+            "找不到 MatchListScreen.kt（cwd=${File(TestPaths.workingDirPath()).absolutePath}）—— " +
                 "锚点缺失时对比度守卫会静默全绿，所以直接失败而不是跳过",
             file != null,
         )
