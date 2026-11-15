@@ -1,5 +1,7 @@
 package com.nbalive.app.ui.screens
 
+import com.nbalive.app.data.remote.Base64Decode
+
 /**
  * 从源站播放页壳里算出真正的玩家页地址（2026-10-30「解析播放太慢」）。
  *
@@ -63,35 +65,15 @@ object PlayerPageResolver {
         java.net.URLEncoder.encode(value, "UTF-8")
 
     /**
-     * 手写 Base64 解码。
+     * Base64 解码——**委托给 [Base64Decode.decode]**（进程内唯一实现）。
      *
-     * ⚠️ 不用 `java.util.Base64`（API 26+，本项目 minSdk 24），也不用
-     * `android.util.Base64`（JVM 单测里没有 Android 运行时，无法覆盖）。
+     * 原来这里是本文件自己的一份私有实现；接入 88看球时 `K88Parser` 也要解 base64，
+     * 于是变成两份（review/optimization-review.md D15 给 JSON 取值器立的同一条纪律：
+     * 同一份规则写两遍，改一处漏一处）。
+     *
+     * ⚠️ 保留这个 `internal` 入口而不是让调用方直接改：`PlayerPageResolverTest`
+     * 有一条"与 `java.util.Base64` 逐样本比对"的用例钉着它的行为，
+     * 名字与签名不变，那条判据继续有效。
      */
-    internal fun decodeBase64(input: String): String? {
-        val cleaned = input.filterNot { it.isWhitespace() }
-        if (cleaned.isEmpty()) return ""
-        if (cleaned.length % 4 != 0) return null
-        val bytes = java.io.ByteArrayOutputStream()
-        var buffer = 0
-        var bits = 0
-        for (c in cleaned) {
-            if (c == '=') break
-            val value = when (c) {
-                in 'A'..'Z' -> c - 'A'
-                in 'a'..'z' -> c - 'a' + 26
-                in '0'..'9' -> c - '0' + 52
-                '+' -> 62
-                '/' -> 63
-                else -> return null
-            }
-            buffer = (buffer shl 6) or value
-            bits += 6
-            if (bits >= 8) {
-                bits -= 8
-                bytes.write((buffer shr bits) and 0xFF)
-            }
-        }
-        return runCatching { bytes.toByteArray().toString(Charsets.UTF_8) }.getOrNull()
-    }
+    internal fun decodeBase64(input: String): String? = Base64Decode.decode(input)
 }

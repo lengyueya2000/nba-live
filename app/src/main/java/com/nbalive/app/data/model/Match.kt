@@ -208,7 +208,8 @@ data class StreamSource(
 /** 数据源站点 */
 enum class Provider(val displayName: String) {
     JRS("JRS"),
-    JRKAN("JRKAN");
+    JRKAN("JRKAN"),
+    K88("88看球");
 }
 
 /**
@@ -229,6 +230,15 @@ enum class Provider(val displayName: String) {
  * `window.playerConfig.playerUrlBase64`（播放器入口，部分线路还另有 `window.encodedStr`
  * 加密串，`vxt` 就没有）交给页内 JS 拼成 `paps.html` 播放页，
  * 还原地址必须执行页面里的解密脚本 —— 只能交给 WebView 承载，不在"静态可解析"范围内。
+ *
+ * ## 88看球的 m3u8 代理壳（第三源接入时新增，2026-11-15）
+ *
+ * `play.88player.top/m3u8.html?url=<encodeURI(真实清单)>` —— 清单地址**就写在 query 里**，
+ * 一次 URL 解码即得，不需要执行任何脚本，所以同属"静态可解析"。
+ * 判据放在这一个函数里（而不是 K88 源自己另写一份）：[isDirectHls]、
+ * `ChannelAdmission.isDirectPath`、`StreamUrlResolver` 的入口分派、
+ * 以及排序规则全都从这里取值 —— 分成两份迟早出现
+ * "准入以为能播、解析器以为不能播"的自相矛盾。
  */
 private val SM_PLAY_PATH = "/play/sm.html"
 
@@ -242,7 +252,40 @@ private val STEAM_PLAY_PATH = Regex("""/play/steam\d+\.html""")
  * "准入以为能播、解析器以为不能播"这种自相矛盾的分叉。
  */
 fun isStaticallyResolvablePlayPage(pageUrl: String): Boolean =
-    pageUrl.contains(SM_PLAY_PATH) || STEAM_PLAY_PATH.containsMatchIn(pageUrl)
+    pageUrl.contains(SM_PLAY_PATH) ||
+        STEAM_PLAY_PATH.containsMatchIn(pageUrl) ||
+        wrappedM3u8Url(pageUrl) != null
+
+/** 代理壳的页面名（`play.88player.top/m3u8.html?url=…`）。 */
+private const val M3U8_WRAPPER_PAGE = "m3u8.html"
+
+/**
+ * 从 m3u8 代理壳地址里**纯静态**还原真实清单地址；不是壳地址、或壳里没有清单时返回 null。
+ *
+ * ## 为什么按 query 参数取，而不是写一条正则
+ *
+ * 壳地址形如 `…/m3u8.html?url=https%3A%2F%2F…%2Fqq1.m3u8`：`url` 就是**第一个**参数，
+ * 前面并没有另一个 `&`，所以"`m3u8.html?[…][?&]url=`"这种写法永远匹配不上
+ * （第一版就踩了：判据恒 false，可直连线路被排到列表末尾，
+ * 而排序判据看起来完全正常 —— 只有真去拉一次才看得出来）。
+ * 这里按 URI 拆 query 取值，形态变化（参数顺序、多带一个 `t=` 时间戳）都不影响。
+ *
+ * 只做 URL 解码（`encodeURI` 的 `%XX`），不执行脚本 —— 与
+ * [isStaticallyResolvablePlayPage] 的"静态"口径一致。
+ */
+fun wrappedM3u8Url(pageUrl: String): String? {
+    val uri = runCatching { java.net.URI(pageUrl) }.getOrNull() ?: return null
+    val path = uri.path ?: return null
+    if (!path.substringAfterLast('/', "").equals(M3U8_WRAPPER_PAGE, ignoreCase = true)) return null
+    val raw = uri.query
+        ?.split('&')
+        ?.firstOrNull { it.startsWith("url=") }
+        ?.removePrefix("url=")
+        ?.takeIf { it.isNotEmpty() }
+        ?: return null
+    val decoded = runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+    return decoded.takeIf { it.startsWith("http") && it.contains(".m3u8", ignoreCase = true) }
+}
 
 /**
  * 该线路能否静态解析成 m3u8 直连播放。

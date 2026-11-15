@@ -67,6 +67,36 @@ object SourceEndpoints {
     )
 
     /**
+     * 88看球列表页候选（第三源，2026-11-15）。
+     *
+     * 首位是 App 实测在用的域名；镜像域名取自**源站页脚自己给出的链接**
+     * （`88kanqiu.tw` / `88zhibo.me` —— 与 JRS 那两个镜像域名同一种"自家点名"证据，
+     * 不是猜的）。同一家族的页面结构与线路接口一致，所以只需换 host。
+     *
+     * ⚠️ 只列 `.cx`：`88zhibo.tv` 那份是**足球**列表入口（`/match/8/live`），
+     * 路径口径不同，不能当篮球镜像用。
+     */
+    val K88_LIST: List<String> = listOf(
+        "https://www.88kanqiu.cx/match/1/live",
+        "https://www.88kanqiu.tw/match/1/live",
+        "https://www.88zhibo.me/match/1/live",
+    )
+
+    /**
+     * 88看球线路接口 URL 候选（`https://<host>/live/<id>/source`）。
+     *
+     * 与 [jrsDetailUrls] 同一条纪律：**由列表候选派生**而不是另写一份模板。
+     * 实测教训（review/02-data.md P2-6）：写死模板的两处副本改一处漏一处时，
+     * "刷新线路"会清 A 的缓存、读 B 的缓存，按钮变摆设且不报错。
+     */
+    fun k88SourceUrls(detailId: String): List<String> = K88_LIST.map { url ->
+        "${originOf(url).trimEnd('/')}/live/$detailId/source"
+    }
+
+    /** 88看球播放页地址里"线路接口"的 host 特征（`loadSignals` 据此分派展开方式）。 */
+    const val K88_SOURCE_MARK = "/source"
+
+    /**
      * JRKAN 播放主机候选。
      *
      * 首位**[同源](https://en.wikipedia.org/wiki/Single_source_of_truth)

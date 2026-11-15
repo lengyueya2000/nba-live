@@ -214,6 +214,8 @@ class SourceEndpointsWiringTest {
             "SourceEndpoints.JRKAN_LIST_JS" to "JRKAN 列表 js 候选",
             "SourceEndpoints.playPageCandidates" to "播放主机候选（消费 PLAY_HOSTS）",
             "SourceEndpoints.jrsDetailUrls" to "详情页域名候选（消费 JRS_LIST）",
+            "SourceEndpoints.K88_LIST" to "88看球列表页域名候选",
+            "SourceEndpoints.k88SourceUrls" to "88看球线路接口域名候选（消费 K88_LIST）",
         )
         val missing = entryPoints.filter { (symbol, _) ->
             productionFiles.none { f -> f.readText().contains(symbol) }
@@ -239,6 +241,20 @@ class SourceEndpointsWiringTest {
             "播放页候选必须真的带上候选主机",
             SourceEndpoints.playPageCandidates("${SourceEndpoints.PLAY_HOSTS.first()}/play/steam1.html")
                 .any { it.contains(SourceEndpoints.PLAY_HOSTS.last()) },
+        )
+        // 第三源（2026-11-15）同一条纪律：线路接口候选必须跟着列表候选走，
+        // 而且必须落在**真正取到正文的那个 host** 上（镜像换源时不能只换一半）。
+        assertTrue("88 列表候选至少要有两个域名才谈得上换域名", SourceEndpoints.K88_LIST.size >= 2)
+        assertEquals(
+            "88 线路接口候选必须覆盖列表的全部域名",
+            SourceEndpoints.K88_LIST.size,
+            SourceEndpoints.k88SourceUrls("131401").size,
+        )
+        assertTrue(
+            "线路接口地址必须由**列表候选的 origin** 派生（写死首位时，镜像取到的列表仍敲主域名）",
+            SourceEndpoints.k88SourceUrls("131401") == SourceEndpoints.K88_LIST.map { listUrl ->
+                "${SourceEndpoints.originOf(listUrl)}/live/131401/source"
+            },
         )
     }
 

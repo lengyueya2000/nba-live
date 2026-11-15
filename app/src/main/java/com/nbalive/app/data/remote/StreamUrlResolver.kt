@@ -1,6 +1,7 @@
 package com.nbalive.app.data.remote
 
 import android.util.Log
+import com.nbalive.app.data.model.wrappedM3u8Url
 import java.net.URLDecoder
 
 /**
@@ -51,6 +52,18 @@ class StreamUrlResolver {
      * @return 解析成功返回候选地址；失败返回 null
      */
     suspend fun resolve(pageUrl: String, fetch: suspend (String) -> String?): Resolved? {
+        // 第三种形态：88看球的 m3u8 代理壳（`…/m3u8.html?url=<真实清单>`）。
+        // 清单地址**就写在 query 里**，纯解码即得 —— 连一次请求都不必发。
+        // ⚠️ 判据走 isStaticallyResolvablePlayPage 那一份（Match.kt），不在这里另写正则：
+        // "准入说可直连、解析器说不认识"是同一个判据分叉的两面（见其 KDoc）。
+        wrappedM3u8Url(pageUrl)?.let { real ->
+            return Resolved(
+                m3u8Url = real,
+                referer = refererFor(pageUrl),
+                m3u8Candidates = listOf(real),
+            )
+        }
+
         var current = pageUrl
 
         // 最多跟随 3 跳：steam{id}.html -> sm.html?id=N -> N.html -> msss.html

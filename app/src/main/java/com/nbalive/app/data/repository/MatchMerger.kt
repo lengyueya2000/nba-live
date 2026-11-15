@@ -4,6 +4,7 @@ import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.MatchStatusClock
+import com.nbalive.app.data.remote.LineEquivalence
 
 /**
  * 两源合并的**纯函数**集合：归一化 key、状态可信度、联赛取优、id 唯一化、supported 过滤。
@@ -30,12 +31,23 @@ internal object MatchMerger {
     internal data class Merged(val matches: List<Match>, val filteredOutCount: Int)
 
     /**
-     * 合并两个源：按 "日期|主队|客队" 归一化 key 归并，信号列表合并去重。
+     * 合并三个源：按 "日期|主队|客队" 归一化 key 归并，信号列表按**线路等价键**去重。
      *
      * 日期必须参与 key：同一对球队背靠背/系列赛会重复出现，
      * 只按队名归并会把真实存在的第二场直接吞掉。
+     *
+     * ## 合并方向：`jrkan` 先、`jrs` 次、`k88` 末
+     *
+     * 后合并的只用来**补缺**（见 [mergeOne] 的 `copy(...)`），所以顺序有意义：
+     *  - JRKAN 自带 `MM-dd HH:mm` 且更新及时 —— 首位，它的日期参与合并键最稳；
+     *  - 88看球排末位（2026-11-15 接入时定的）：它的 `timeLabel` 虽与 JRKAN 同形
+     *    （`"11-15 08:00"`），但日期取自**页面自己的分组标题**，
+     *    跨零点场次会被归到前一天。写在前头会让合并键漂移，
+     *    同一场拆成两张卡（review/02-data.md P2-12 的同款事故）。
+     *
+     * @param k88 88看球的场次；缺省为空，让既有两源调用点与测试一行都不用改。
      */
-    fun merge(jrs: List<Match>, jrkan: List<Match>): Merged {
+    fun merge(jrs: List<Match>, jrkan: List<Match>, k88: List<Match> = emptyList()): Merged {
         val merged = LinkedHashMap<String, Match>()
         // 已用过的 id：避免每次都 O(n) 扫 merged.values（几十场还行，上百场会退化）
         val usedIds = HashSet<String>()
@@ -51,9 +63,21 @@ internal object MatchMerger {
             }
             val existing = merged[key]
             merged[key] = if (existing == null) {
-                m.copy(id = unique)
+                // 同一源内部也可能给出等价线路，判据与跨源合并共用 LineEquivalence 那一份。
+                // ⚠️ 只有**真的删掉了线路**才改 signalCount：JRS 列表行的 -1 表示
+                // "未解析"（界面据此隐藏徽标），空列表重算会得到 0 = "没有线路"，
+                // 两者语义不同，不能一概覆盖（MatchListScreen 的注释记着这条约定）。
+                val sources = LineEquivalence.distinctByLine(m.sources)
+                if (sources.size == m.sources.size) m.copy(id = unique)
+                else m.copy(id = unique, sources = sources, signalCount = sources.size)
             } else {
-                val sources = (existing.sources + m.sources).distinctBy { it.pageUrl }
+                // ⚠️ 线路去重走**等价键**，不是整串 URL（2026-11-15 第三源接入）：
+                // `play.sportsteam368.com` 与 `play.sportsteam356.com` 是同一套后端的
+                // 镜像（已验证：同 path+id 解出同一个 paps.html 入口），
+                // 88 的「国内线路⑤–⑨」正是 JRS/JRKAN 同一批线路的第三种拼法。
+                // 按整串比较会让同一路线路以"信号1 / 国内线路 M⑥ / 中文高清 M⑥"
+                // 三个名字进换线列表，故障切换还会在它们之间反复撞同一个死上游。
+                val sources = LineEquivalence.distinctByLine(existing.sources + m.sources)
                 // ⚠️ 联赛必须走 betterLeague（review/optimization-review.md H4 / data.md D2）：
                 // 旧实现的 copy(...) 里**没有** `league`，于是沿用先合并的 JRKAN。
                 // 而 JRKAN 的联赛文案一旦变成非空但认不出的值（"篮球"「夏季联赛」…），
@@ -85,6 +109,8 @@ internal object MatchMerger {
 
         jrkan.forEach(::mergeOne)
         jrs.forEach(::mergeOne)
+        // 88看球必须最后合并（理由见 merge 的 KDoc"合并方向"）
+        k88.forEach(::mergeOne)
 
         val all = merged.values.toList()
         // 产品只做 NBA + CBA：源站混入的足球/外联赛在这里统一丢弃。

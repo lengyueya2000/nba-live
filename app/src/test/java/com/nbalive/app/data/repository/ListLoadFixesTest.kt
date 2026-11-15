@@ -35,6 +35,17 @@ class ListLoadFixesTest {
 
     private val lock = Any()
 
+    /**
+     * 一轮全源加载发出的列表请求数（single-flight 判据的期望值）。
+     *
+     * ⚠️ 写成常量而不是散落的 `2`：第三源接入时这个数字变成 3，
+     * 而"每个源各一次"这条判据的**含义**没变 —— 只有夹具的算术变了。
+     * 三源都开时若漏了 88 的请求，断言会直接红而不是悄悄少测一个源。
+     */
+    private companion object {
+        const val LIST_FANOUT = 3
+    }
+
     // ---------------- H3：超时按源，已成功的另一源必须保留 ----------------
 
     @Test
@@ -49,7 +60,7 @@ class ListLoadFixesTest {
                 delay(60_000)
                 FetchResult.Ok("")
             } else {
-                FetchResult.Ok(jrkanThreeMatches())
+                FetchResult.Ok(listBody(url))
             }
         }
 
@@ -74,8 +85,10 @@ class ListLoadFixesTest {
     }
 
     @Test
-    fun `两个源都超时时仍然在 deadline 内返回并都记为失败`() = runBlocking {
-        // 既有 LoadDeadlineTest 的同款语义在"按源超时"的实现下必须保持
+    fun `全源超时时仍然在 deadline 内返回并都记为失败`() = runBlocking {
+        // 既有 LoadDeadlineTest 的同款语义在"按源超时"的实现下必须保持。
+        // ⚠️ 第三源接入后期望三个源：夹具对**所有** URL 都挂起，
+        // 这就是"全源超时"的场景，少报一个源 = 界面上那个源看起来还在正常解析。
         val started = System.nanoTime()
         val repo = MatchRepository(loadDeadlineMs = 250L)
         val outcome = repo.loadMatchesWithOutcome { _, _ ->
@@ -84,10 +97,10 @@ class ListLoadFixesTest {
         }
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
 
-        assertTrue("两个源都没回来时列表必须为空", outcome.matches.isEmpty())
+        assertTrue("所有源都没回来时列表必须为空", outcome.matches.isEmpty())
         assertEquals(
-            "两个源都超时必须都被报出来",
-            listOf(Provider.JRS, Provider.JRKAN),
+            "所有源都超时必须都被报出来",
+            listOf(Provider.JRS, Provider.JRKAN, Provider.K88),
             outcome.failedProviders.sortedBy { it.ordinal },
         )
         assertTrue(
@@ -179,7 +192,7 @@ class ListLoadFixesTest {
     fun `列表页 404 报成页面不存在 而不是网络连接失败`() = runBlocking {
         val repo = MatchRepository()
         val outcome = repo.loadMatchesWithOutcome { url, _ ->
-            if (url.contains("jrszb")) FetchResult.NotFound(404) else FetchResult.Ok(jrkanThreeMatches())
+            if (url.contains("jrszb")) FetchResult.NotFound(404) else FetchResult.Ok(listBody(url))
         }
 
         assertEquals("JRS 必须被如实记为失败源", listOf(Provider.JRS), outcome.failedProviders)
@@ -237,7 +250,7 @@ class ListLoadFixesTest {
         val fetch: suspend (String, String?) -> FetchResult = { url, _ ->
             calls.incrementAndGet()
             if (isListUrl(url) || url.contains("/live/")) {
-                if (url.contains("jrszb")) FetchResult.Ok(jrsListHtml()) else FetchResult.Ok(jrkanThreeMatches())
+                FetchResult.Ok(listBody(url))
             } else {
                 FetchResult.Ok("")
             }
@@ -275,10 +288,10 @@ class ListLoadFixesTest {
         val release = CompletableDeferred<Unit>()
         val fetch: suspend (String, String?) -> FetchResult = { url, _ ->
             if (isListUrl(url)) {
-                if (listCalls.incrementAndGet() >= 2) started.complete(Unit)
+                if (listCalls.incrementAndGet() >= LIST_FANOUT) started.complete(Unit)
                 release.await()
             }
-            if (url.contains("jrszb")) FetchResult.Ok(jrsListHtml()) else FetchResult.Ok(jrkanThreeMatches())
+            FetchResult.Ok(listBody(url))
         }
 
         val a = async(Dispatchers.IO) { repo.loadMatchesWithOutcome(fetch = fetch) }
@@ -291,9 +304,9 @@ class ListLoadFixesTest {
         val rb = b.await()
 
         assertEquals(
-            "两个源的列表请求各只该发一次（实际 $listCalls 次）——" +
+            "每个源的列表请求各只该发一次（实际 $listCalls 次，期望 $LIST_FANOUT）——" +
                 "缓存挡不住「正在飞的请求」，single-flight 才挡得住",
-            2,
+            LIST_FANOUT,
             listCalls.get(),
         )
         assertTrue("A 必须有数据", ra.matches.isNotEmpty())
@@ -314,10 +327,10 @@ class ListLoadFixesTest {
         // B：非 force，列表请求阻塞在 bRelease 上
         val slowFetch: suspend (String, String?) -> FetchResult = { url, _ ->
             if (isListUrl(url)) {
-                if (bListCalls.incrementAndGet() >= 2) bStarted.complete(Unit)
+                if (bListCalls.incrementAndGet() >= LIST_FANOUT) bStarted.complete(Unit)
                 bRelease.await()
             }
-            if (url.contains("jrszb")) FetchResult.Ok(jrsListHtml()) else FetchResult.Ok(jrkanThreeMatches())
+            FetchResult.Ok(listBody(url))
         }
         val b = async(Dispatchers.IO) { repo.loadMatchesWithOutcome(fetch = slowFetch) }
         bStarted.await()
@@ -346,11 +359,12 @@ class ListLoadFixesTest {
             cListCalls.get(),
         )
         // ⚠️ 期望值 = 夹具的算术，不是"JRKAN 那 3 场"：
-        // B 的两个源都成功 —— JRS 列表给 1 场（湖人/凯尔特人）+ JRKAN 给 3 场 = **4** 场。
+        // B 的三个源都成功 —— JRS 列表给 1 场（湖人/凯尔特人）+ JRKAN 给 3 场
+        // + 88看球给**同样那 3 个对阵**（见 k88ThreeMatches 的注释）= 合并后仍是 **4** 场。
         // 第一版写成 3（只算了 JRKAN），首轮实测红：`expected:<3> but was:<4>`。
         // 同时用 `rc` 与 `rb` 的 id 列表相等兜住"C 拿到的是同一批结果"。
         assertEquals(
-            "B 的结果必须完好（1 场 JRS + 3 场 JRKAN，实际 ${rb.matches.map { it.id }}）",
+            "B 的结果必须完好（1 场 JRS + 3 场对阵，88 与 JRKAN 同对阵须并卡；实际 ${rb.matches.map { it.id }}）",
             4,
             rb.matches.size,
         )
@@ -375,7 +389,7 @@ class ListLoadFixesTest {
                 jrsListCalls.incrementAndGet()
                 FetchResult.Rejected(403)
             } else if (isListUrl(url)) {
-                FetchResult.Ok(jrkanThreeMatches())
+                FetchResult.Ok(listBody(url))
             } else {
                 FetchResult.Ok("")
             }
@@ -444,7 +458,20 @@ class ListLoadFixesTest {
             .toEpochMilli()
 
     private fun isListUrl(url: String): Boolean =
-        (url.contains("jrszb") && !url.contains("/live/")) || url.contains("oss-accelerate")
+        (url.contains("jrszb") && !url.contains("/live/")) ||
+            url.contains("oss-accelerate") ||
+            // 88看球（第三源）：**只认列表路径**（`/match/1/live`）。
+            // 它的线路接口是 `/live/{id}/source`，若一并算进"列表 URL"，
+            // single-flight 那两条判据的计数就会把详情级请求混进来，
+            // 断言的"每个源各一次"不再对应它要测的东西。
+            url.contains("/match/")
+
+    /** 三个源的列表正文按 URL 路由（避免每个用例各写一份三分支）。 */
+    private fun listBody(url: String): String = when {
+        url.contains("88kanqiu") -> k88ThreeMatches()
+        url.contains("jrszb") -> jrsListHtml()
+        else -> jrkanThreeMatches()
+    }
 
     private fun jrsListHtml(): String = """
         <div class="list"><p class="list-title">2026-10-23</p>
@@ -466,6 +493,36 @@ class ListLoadFixesTest {
             document.write('  <li class="lab_team_away"><strong class="name">$away</strong></li>');
             document.write('</ul>');
         """.trimIndent() }.joinToString("\n")
+    }
+
+    /**
+     * 三场 88看球场次（第三源，2026-11-15）。
+     *
+     * ⚠️ 对阵与 [jrkanThreeMatches] **逐场相同**（日期同锚 2026-10-23）：
+     * 合并键是"日期|队名对(排序)"，同对阵必然并成同一张卡 ——
+     * 于是"三源都返回"时列表仍是 3 场，本文件里所有 `size == 3` 的断言
+     * 测的还是它本来要测的东西（按源超时不丢数据、single-flight 复用），
+     * 而不是被迫跟着源数量改数字。
+     * 跨源**线路去重**的判据不在这里测（那些场次没有 sources），
+     * 在 K88SourceIntegrationTest / LineEquivalenceTest。
+     */
+    private fun k88ThreeMatches(): String {
+        val pairs = listOf("勇士" to "火箭", "太阳" to "掘金", "热火" to "雄鹿")
+        return """
+            <ul class="list-group">
+              <li class="list-group-item live-list-group-time">2026-10-23</li>
+        """.trimIndent() + "\n" + pairs.mapIndexed { i, (home, away) -> """
+              <li class="list-group-item group-game-item">
+                <div class="row">
+                  <div class="col-md-1 category-game-time">10:0$i</div>
+                  <div class="col-md-3"><div><span class="game-type">NBA</span></div></div>
+                  <div class="col-md-4"><span class="team-name" title="$home">$home</span></div>
+                  <div class="col-md-1">VS</div>
+                  <div class="col-md-3"><span class="team-name" title="$away">$away</span></div>
+                  <div><a href='/live/${700 + i}/play'>直播中</a></div>
+                </div>
+              </li>
+        """.trimIndent() }.joinToString("\n") + "\n</ul>"
     }
 
     private fun match(

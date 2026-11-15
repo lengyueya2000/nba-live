@@ -218,7 +218,7 @@ fun MatchDetailScreen(
                 .padding(Space.lg),
             verticalArrangement = Arrangement.spacedBy(Space.md),
         ) {
-            InfoRow(label = "数据源", value = "JRS / JRKAN 双源")
+            InfoRow(label = "数据源", value = com.nbalive.app.ui.SourceTogglePolicy.allSummary())
             InfoRow(
                 label = "信号数",
                 value = "${signals.size} 条",

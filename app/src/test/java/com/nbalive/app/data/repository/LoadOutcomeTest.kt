@@ -27,6 +27,18 @@ class LoadOutcomeTest {
 
     private val repo = MatchRepository()
 
+    /**
+     * 本文件的夹具是**两源**的（JRS 给 HTML、其余给 JRKAN 的 JS）。
+     *
+     * ⚠️ 第三源接入（2026-11-15）后这里显式只开两个源，而不是把断言放宽成
+     * `[JRS, K88]`：88 的解析器拿到 JRKAN 那份 JS 正文必然归零，于是
+     * "K88 失败"是**夹具造出来的**，不是生产行为 —— 把它写进期望值等于
+     * 用断言承认一个假故障，真正该测的"JRS 403 要报出来"反而被稀释。
+     *
+     * 三源一起跑的行为判据在 `K88SourceIntegrationTest`（夹具含真 88 正文）。
+     */
+    private val twoSources = setOf(Provider.JRS, Provider.JRKAN)
+
     private fun jrsHtml(id: String, teams: Pair<String, String> = "湖人" to "凯尔特人") = """
         <div class="list"><p class="list-title">2026-10-23</p>
         <a href="/live/$id.html" class="list-con">
@@ -47,7 +59,7 @@ class LoadOutcomeTest {
 
     @Test
     fun `两源都成功时没有失败源`() = runBlocking {
-        val outcome = repo.loadMatchesWithOutcome { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome(enabled = twoSources) { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Ok(jrsHtml("555"))
             else FetchResult.Ok(jrkanJs("900"))
         }
@@ -58,7 +70,7 @@ class LoadOutcomeTest {
 
     @Test
     fun `JRS 被拒时把 JRS 记为失败源`() = runBlocking {
-        val outcome = repo.loadMatchesWithOutcome { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome(enabled = twoSources) { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Rejected(403)
             else FetchResult.Ok(jrkanJs("900"))
         }
@@ -72,7 +84,7 @@ class LoadOutcomeTest {
 
     @Test
     fun `JRKAN 网络不通时把 JRKAN 记为失败源`() = runBlocking {
-        val outcome = repo.loadMatchesWithOutcome { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome(enabled = twoSources) { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Ok(jrsHtml("555"))
             else FetchResult.Unreachable("timeout")
         }
@@ -81,11 +93,13 @@ class LoadOutcomeTest {
     }
 
     @Test
-    fun `两个源都失败时两个都记为失败源`() = runBlocking {
+    fun `全源都失败时每个源都记为失败源`() = runBlocking {
+        // 全源失败（fetch 对所有 URL 都 Unreachable）：第三源接入后这里必须报**三个**源，
+        // 而不是继续写两个 —— 少报一个源，用户就会以为那一个还在正常解析。
         val outcome = repo.loadMatchesWithOutcome { _, _ -> FetchResult.Unreachable("timeout") }
         assertEquals(
-            "两源都挂时两个都要记，用户才知道是网络问题而不是「今天没比赛」",
-            listOf(Provider.JRS, Provider.JRKAN),
+            "所有源都挂时每一个都要记，用户才知道是网络问题而不是「今天没比赛」",
+            listOf(Provider.JRS, Provider.JRKAN, Provider.K88),
             outcome.failedProviders.toList().sortedBy { it.ordinal },
         )
         assertTrue("两源都失败时列表为空", outcome.matches.isEmpty())
@@ -100,7 +114,7 @@ class LoadOutcomeTest {
      */
     @Test
     fun `源站返回 200 但一场都没解析出来也算该源失败`() = runBlocking {
-        val outcome = repo.loadMatchesWithOutcome { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome(enabled = twoSources) { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Ok("<html>改版了，一个 .list-con 都没有</html>")
             else FetchResult.Ok(jrkanJs("900"))
         }
@@ -113,7 +127,7 @@ class LoadOutcomeTest {
 
     @Test
     fun `失败源里有网络原因可读文案`() = runBlocking {
-        val outcome = repo.loadMatchesWithOutcome { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome(enabled = twoSources) { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Rejected(429)
             else FetchResult.Ok(jrkanJs("900"))
         }
@@ -131,7 +145,7 @@ class LoadOutcomeTest {
 
     @Test
     fun `生产入口两源都成功时给出全部场次`() = runBlocking {
-        val outcome = repo.loadMatchesWithOutcome { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome(enabled = twoSources) { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Ok(jrsHtml("555")) else FetchResult.Ok(jrkanJs("900"))
         }
         assertEquals(2, outcome.matches.size)
@@ -139,14 +153,22 @@ class LoadOutcomeTest {
     }
 
     @Test
-    fun `生产入口两源都空时如实报出两个失败源`() = runBlocking {
+    fun `生产入口全源都空时如实报出每一个失败源`() = runBlocking {
         // 原约定是"两源都空必须抛异常（而不是显示今天没比赛）"。
         // 生产入口不抛异常（抛了 UI 只剩错误页、拿不到部分数据），
-        // 改为**如实报出两个失败源** —— partialError() 会给出可读文案。
+        // 改为**如实报出失败源** —— partialError() 会给出可读文案。
+        //
+        // ⚠️ 第三源接入后这里期望**三个**源：夹具对任何 URL 都回 Unreachable，
+        // 那正是"全源失败"的场景；继续只写两个等于默认"少报一个源是可接受的"，
+        // 而少报的那个源在界面上看起来一切正常。
         val outcome = repo.loadMatchesWithOutcome { _, _ -> FetchResult.Unreachable("timeout") }
         assertEquals(
-            "两源都空必须让用户知道是源站问题，而不是「今天没比赛」",
-            listOf(com.nbalive.app.data.model.Provider.JRS, com.nbalive.app.data.model.Provider.JRKAN),
+            "所有源都空必须让用户知道是源站问题，而不是「今天没比赛」",
+            listOf(
+                com.nbalive.app.data.model.Provider.JRS,
+                com.nbalive.app.data.model.Provider.JRKAN,
+                com.nbalive.app.data.model.Provider.K88,
+            ),
             outcome.failedProviders,
         )
         assertTrue(outcome.matches.isEmpty())
@@ -155,7 +177,7 @@ class LoadOutcomeTest {
 
     @Test
     fun `生产入口单源成功时不报整次失败`() = runBlocking {
-        val outcome = repo.loadMatchesWithOutcome { url, _ ->
+        val outcome = repo.loadMatchesWithOutcome(enabled = twoSources) { url, _ ->
             if (url.contains("jrszbt")) FetchResult.Ok(jrsHtml("555")) else FetchResult.Unreachable("timeout")
         }
         assertTrue("部分成功不该让整次加载失败（否则旧列表会被错误态顶掉）", outcome.matches.isNotEmpty())

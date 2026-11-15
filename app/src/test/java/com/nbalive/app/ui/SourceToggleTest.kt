@@ -42,11 +42,15 @@ class SourceTogglePolicyTest {
     }
 
     @Test
-    fun `关掉一个后另一个仍然开着`() {
+    fun `关掉一个后其余源仍然开着`() {
+        // ⚠️ 第三源（2026-11-15）接入后不写死 `setOf(Provider.JRKAN)`：
+        // 这条判据要守的是"**只**关掉被点的那一个源"，与源总数无关。
+        // 写死集合的话，加一个源就红一次，而红了也说明不了行为错了。
         val after = SourceTogglePolicy.toggle(SourceTogglePolicy.ALL, Provider.JRS, on = false)
-        assertEquals(setOf(Provider.JRKAN), after)
+        assertEquals(SourceTogglePolicy.ALL - Provider.JRS, after)
         assertFalse(SourceTogglePolicy.isEnabled(after, Provider.JRS))
         assertTrue(SourceTogglePolicy.isEnabled(after, Provider.JRKAN))
+        assertTrue(SourceTogglePolicy.isEnabled(after, Provider.K88))
     }
 
     @Test
@@ -72,8 +76,10 @@ class SourceTogglePolicyTest {
 
     @Test
     fun `两个都开着时任何一个都能关`() {
-        assertTrue(SourceTogglePolicy.canDisable(SourceTogglePolicy.ALL, Provider.JRS))
-        assertTrue(SourceTogglePolicy.canDisable(SourceTogglePolicy.ALL, Provider.JRKAN))
+        // 名字保留（"两个都开着"是历史语境），判据本身是"全开时任一源可关"
+        SourceTogglePolicy.ALL.forEach { provider ->
+            assertTrue("全开时 $provider 必须可以被关掉", SourceTogglePolicy.canDisable(SourceTogglePolicy.ALL, provider))
+        }
     }
 
     @Test
@@ -81,8 +87,9 @@ class SourceTogglePolicyTest {
         val onlyJrs = setOf(Provider.JRS)
         assertFalse("它已经是关的，不需要再关", SourceTogglePolicy.canDisable(onlyJrs, Provider.JRKAN))
         assertEquals(
-            "关着的源必须能重新打开",
-            SourceTogglePolicy.ALL,
+            "关着的源必须能重新打开（结果 = 原集合 + 它自己，而不是'回到全开'——" +
+                "第三源接入后 ALL 含 K88，写成 ALL 会把这条判据偷换成'点一个开全部'）",
+            setOf(Provider.JRS, Provider.JRKAN),
             SourceTogglePolicy.toggle(onlyJrs, Provider.JRKAN, on = true),
         )
     }
@@ -92,6 +99,12 @@ class SourceTogglePolicyTest {
         val names = SourceTogglePolicy.toStorage(setOf(Provider.JRKAN))
         assertEquals(setOf("JRKAN"), names)
         assertEquals(setOf(Provider.JRKAN), SourceTogglePolicy.fromStorage(names))
+
+        // 第三源的枚举名也必须能往返：存的是**枚举名集合**（不是序号/位掩码），
+        // 加源时旧数据不受影响，但新名字读不回来的话用户开关就白点了。
+        val three = SourceTogglePolicy.toStorage(SourceTogglePolicy.ALL)
+        assertEquals(SourceTogglePolicy.ALL, SourceTogglePolicy.fromStorage(three))
+        assertTrue("K88 的名字必须能落盘并读回：$three", three.contains("K88"))
     }
 
     @Test
@@ -120,9 +133,16 @@ class SourceTogglePolicyTest {
 
     @Test
     fun `摘要文案要能说清当前在解析哪些源`() {
-        assertEquals("JRS / JRKAN", SourceTogglePolicy.summary(SourceTogglePolicy.ALL))
+        // ⚠️ 期望值从 Provider.entries 派生而不是写死 "JRS / JRKAN"：
+        // 这条判据要守的是"摘要把开着的源都列出来、顺序按枚举"，
+        // 写死字符串的话加一个源就红一次 —— 而红的原因是夹具过期，不是行为错了。
+        assertEquals(
+            Provider.entries.joinToString(" / ") { it.displayName },
+            SourceTogglePolicy.summary(SourceTogglePolicy.ALL),
+        )
         assertEquals("仅 JRKAN", SourceTogglePolicy.summary(setOf(Provider.JRKAN)))
         assertEquals("仅 JRS", SourceTogglePolicy.summary(setOf(Provider.JRS)))
+        assertEquals("仅 88看球", SourceTogglePolicy.summary(setOf(Provider.K88)))
     }
 }
 
@@ -256,8 +276,12 @@ class SourceToggleWiringTest {
         settle()
         vm.setProviderEnabled(Provider.JRS, enabled = false)
         settle()
-        assertEquals(setOf(Provider.JRKAN), prefs.enabledProviders.value)
-        assertEquals(setOf(Provider.JRKAN), vm.enabledProviders.value)
+        // ⚠️ 期望 = "全开减去 JRS"，不是写死的 {JRKAN}：
+        // 第三源接入后默认全开含 K88，写死两个会让这条判据把
+        // "K88 也被顺手关了"这种真故障读成"正常"。
+        val expected = SourceTogglePolicy.ALL - Provider.JRS
+        assertEquals(expected, prefs.enabledProviders.value)
+        assertEquals(expected, vm.enabledProviders.value)
     }
 
     // ---------------- 界面：开关真的渲染出来并接到 ViewModel ----------------

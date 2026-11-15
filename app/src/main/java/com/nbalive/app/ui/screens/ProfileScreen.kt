@@ -194,7 +194,7 @@ fun ProfileScreen(
                 .padding(Space.md),
             verticalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
-            InfoRow(label = "数据来源", value = "JRS / JRKAN 双源")
+            InfoRow(label = "数据来源", value = SourceTogglePolicy.allSummary())
             InfoRow(label = "支持联赛", value = "NBA / CBA")
             InfoRow(label = "播放内核", value = "Media3 ExoPlayer")
             InfoRow(label = "版本", value = versionName)

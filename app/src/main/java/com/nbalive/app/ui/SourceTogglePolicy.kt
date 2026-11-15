@@ -76,7 +76,13 @@ object SourceTogglePolicy {
         return parsed.ifEmpty { ALL }
     }
 
-    /** 「我的」页开关下面那行摘要：一眼看出现在在解析哪些源。 */
+    /**
+     * 「我的」页开关下面那行摘要：一眼看出现在在解析哪些源。
+     *
+     * ⚠️ 全部源的名字**不许**在界面里另写一份字面量（"JRS / JRKAN 双源" 这种）：
+     * 第三源接入时那份文案就成了假的，而它是 `InfoRow` 的静态文本，
+     * 没有任何测试能发现"少写了一个源"。用 [allSummary] 派生。
+     */
     fun summary(enabled: Set<Provider>): String {
         val active = Provider.entries.filter { it in enabled }
         return when (active.size) {
@@ -85,6 +91,9 @@ object SourceTogglePolicy {
             else -> active.joinToString(" / ") { it.displayName }
         }
     }
+
+    /** 全部源的摘要（详情页/我的页的"数据来源"一行用）。 */
+    fun allSummary(): String = summary(ALL)
 
     /** 关最后一个源时给用户的一句解释（不是错误，是取舍说明）。 */
     fun lastOneHint(): String = "至少保留一个源，否则没有线路可解析"
