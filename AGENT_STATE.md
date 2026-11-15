@@ -21,6 +21,49 @@
 > 判据 **714 → 844 条**（120 suites，debug+release 各 844/0/0）；debug 包 21.26 → **14.73 MB**。
 
 ## 最近几个回合的提交
+### 2026-11-15 第二十回合（用户：「继续」→ 授权上传 secrets / 「等下个版本再验证」）：配齐 release.yml 的签名 secrets
+**根因闭合**：`gh secret list` 是**空的**（我是 owner，空表 = 真的没有，不是看不见），
+这就是 `release.yml` 从 v1.2.23 起每次失败在「检查签名 secrets」的全部原因；
+v1.2.23/24/25 的 Release 附件 `state=uploaded` 也印证它们是手工传的。
+**动作**（用户明确授权"由我执行 gh secret set"）：`KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` /
+`KEY_ALIAS` / `KEY_PASSWORD` 已写入仓库 secrets。写入方式有两处刻意的讲究：
+ 1. **值走 stdin 且不加尾随换行**（`` $value | gh secret set `` 会让 PowerShell 补 `\n`，
+    而口令多一个 `\n` = "只在 CI 签名失败"这种最难查的形态）；口令不进命令行参数
+    （命令行在 CreateProcess 期间对其它进程可见）。
+ 2. 解析 `keystore.properties` 时**只 TrimStart**、不 Trim：
+    `java.util.Properties`（Gradle 用的就是它）只吃键与 `=` 之后**前导**空白，
+    **尾部空白属于值本身**——`Trim()` 会静默改掉一个以空格结尾的口令。
+    实测本仓四个值均为纯 ASCII、无 `\` `:` `=`、无首尾空白 ⇒ 两种解析结果逐字节相同。
+
+**取证（本地，不触碰任何 Release）**：
+| 证明了什么 | 怎么证明的 |
+|---|---|
+| base64 往返无损（CI 就是 `base64 -d`） | 解码回来**逐字节**比对原 jks，2716 B |
+| 材料**完整**且是**同一把发布密钥** | 用解码出的 jks 真跑一次 `apksigner sign` → 成功；`verify --print-certs` 得 `62bd4ee4ebddb7c7…`，**与已发布 v1.2.25 APK 的证书逐字相同** |
+| `keyPassword` 真的解得开私钥 | 上面那次 sign（此前 `keytool -list` 只验到 `storePassword` + 别名，**没验到 keyPassword**） |
+
+**没证明的（不许越界声称）**：GitHub 侧是否原样存下了这些值（secrets 写入后不可读回，本地无法验证）；
+`release.yml` 在真实 runner 上跑绿一次。**下一次发版是它的首次真实演练**。
+
+**过程中我自己踩的两个坑（都记下来，都是"看起来是产品问题、其实是我的探针写错"）**：
+1. 第一版模拟脚本判不出真伪就"通过"了：`app-release.apk` 的 mtime 仍是**改动前**的时间戳
+   ⇒ `packageRelease` 是 UP-TO-DATE，**根本没重新签名**，apksigner 验的是上一次用真凭据产出的包。
+   ⇒ 用"是否重新构建"取证时**必须核对产物时间戳**，或显式 `--rerun-tasks`；否则是假证据。
+   该脚本还挂住 30 分钟被我 kill（`keystore.properties` 已按 sha256 核对还原、无 `release.jks` 残留）。
+2. `--ks-pass env:NAME` 取的是 `NAME` 的**值本身**当口令，我又给它加了 `pass:` 前缀
+   ⇒ 实际口令变成字面量 `pass:…`，报 `Failed to load signer "signer #1"`。
+   排查时另注意：PS 5.1 下 `$ErrorActionPreference='Stop'` 会把原生 stderr **变成终止错误并吞掉原文**，
+   要看真实报错得临时降到 `Continue` 并显式 `2>&1`。
+3. **`.ps1` 里的中文注释会让 Windows PowerShell 5.1 解析失败**（按 GBK 读 UTF-8 文件）：
+   临时脚本一律写纯 ASCII；要中文说明就放 `.md`/`.py`（Python 显式按 UTF-8 读）。
+   另：`ProcessStartInfo.ArgumentList` 在 .NET Framework（= `powershell` 5.1）上**不存在**，
+   这台机器只有 5.1，得用 `.Arguments` 字符串（自己保证 token 可信）。
+
+**未修的缺口（诚实记录）**：`ReleasePipelineGuardTest` 只能钉 workflow **文件内容**，
+钉不住"GitHub 上这四个 secret 是否存在"——仓库内的 JVM 测试**原理上**测不到远端配置。
+所以"守卫全绿 + 流水线常红"这个形态无法用一条测试封死；
+缓解办法是把它写进 README/本文件（已写），以及**首次真实发版时把它当演练看**。
+
 ### 2026-11-15 第十九回合（用户：发版 → 「apk也要放到release里」→ 「需要」修两处 CI 问题）：v1.2.25 发版 + 两个 CI 缺陷修复
 **发版 v1.2.25**（`versionCode 29`，tag → `b660f8f`）：APK `nba-live-1.2.25.apk` **2,781,136 B**，
 sha256 `ed7e609c…`，`apksigner verify` 通过、`aapt2` 实读包内版本一致；
