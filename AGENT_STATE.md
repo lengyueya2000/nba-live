@@ -34,6 +34,9 @@ sha256 `ed7e609c…`，`apksigner verify` 通过、`aapt2` 实读包内版本一
 | `UiFixInjectionTest > U16 老化…` 在 runner 上红 | **不是 runner 抖动**：本地 `--tests '*UiFixInjectionTest*'` 单独跑 **12/12 稳定红**，跑全量则绿。堆栈是 `CoroutinesInternalError`（`Caused by: Module with the Main dispatcher had failed to initialize`）挂在 `Dispatchers.IO` 线程上，栈里是 `ScoreboardRepository.kt:98` —— 与 U16 **毫无关系**，U16 只是"当时恰好在跑的那个测试"。<br>**机理**：`U5 比分源拿不到数据时静默` 用 `repeat(50) { runCurrent(); Thread.yield() }` 这种**有界自旋**等 `viewModelScope` 里的比分协程。`viewModelScope` 不是 `runTest` 作用域的子级（`advanceUntilIdle` 等不到它），而 `withContext(Dispatchers.IO)` 的续体还要**再跳回 Main**；自旋不够用时协程活到测试体外，`vmTest` 的 finally 已 `Dispatchers.resetMain()` ⇒ 续体落地即抛、被 `handleFatalException` 打到线程的 UEH 上，由 Gradle 记到别的测试名下。<br>**修法**：`MainViewModel.refreshScores()` 改为**返回 Job**（并把 `_scoresJobActive: Boolean` 换成 `scoresJob: Job?`，因为标志位答不出"是哪一次在飞"，而取消收尾只清自己那一次，同 `refreshWith` 的 `stillCurrent()` 纪律），测试侧 `job.join()` 确定性等待。界面调用点是 `() -> Unit` lambda，返回值自动丢弃，行为不变。<br>**回退实验**：把 `join` 换回有界自旋 ⇒ 4/4 红（且红 2 条，再次证明"记错人"）；恢复后隔离跑 6/6 绿。 |
 
 **本轮遗留（事实，不是待办的猜测）**：
+- ✅ **两处修复都已在真实 GitHub runner 上取证**（run `43690872802`，`ci.yml`，全步骤 success）：
+  「全量单测（debug + release 两变体）」「**debug 变体打包**」「lint（debug 变体）」三步全绿 ——
+  这正是发版当天必挂的那一步（修前：run `43673127673` 的 `> Task :app:packageDebug FAILED`）。
 - `release.yml` **从 v1.2.23 起就没成功过**：日志 `缺少签名 secret：KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD`。
   所以 v1.2.23/24/25 的 GitHub Release **都是手工 `gh release create` 上传**的（v1.2.25 的附件 `state=uploaded`）。
   要么补上那 4 个 secret，要么把 README 的「CI 发版」一节改成"手工清单为准"。`ReleasePipelineGuardTest` 只钉 workflow **文件内容**，钉不住 secrets 是否存在 —— 属于"守卫全绿而流水线常红"的形态。
