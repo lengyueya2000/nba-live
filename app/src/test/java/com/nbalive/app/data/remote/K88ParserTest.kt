@@ -190,6 +190,36 @@ class K88ParserTest {
     }
 
     @Test
+    fun `列表入口地址跟随取到正文的那个 host`() {
+        // 主域名死了、正文是从镜像拿到的时候，入口地址若仍拼写死的首位域名，
+        // 展开线路敲的还是死域名 —— 换域名等于没做（P1-9 同一条纪律，
+        // JrkanParser.parseChannels 的 playHost 参数是同一个教训）。
+        val matches = parser.parseList(listHtml(), origin = "https://www.88zhibo.me")
+        val entry = matches.first { it.homeTeam == "鹈鹕" }.sources.single()
+        assertTrue(
+            "线路入口必须落在真正取到正文的 host 上，实际：${entry.pageUrl}",
+            entry.pageUrl.startsWith("https://www.88zhibo.me/live/131401/source"),
+        )
+    }
+
+    @Test
+    fun `噪声位数变化时仍能解码 不是按固定位数切`() {
+        // 实测见过 6/2（131401）与 6/1（另一场）两种头尾噪声长度；
+        // 若实现按"固定去头 6 去尾 2"切，头 6 尾 2 的样本能过、尾 1 的样本直接解不出，
+        // 整个源静默 0 条线路 —— 所以位数必须多样本钉住。
+        listOf(2 to 1, 6 to 2, 3 to 3, 0 to 0).forEach { (head, tail) ->
+            val inner = """{"links":[{"url":"http://play.sportsteam368.com/play/kbs/?id=1&id2=","name":"线路1"}]}"""
+            val b64 = java.util.Base64.getEncoder().encodeToString(inner.toByteArray(Charsets.UTF_8))
+            val payload = """{"data":"${"x".repeat(head)}$b64${"y".repeat(tail)}"}"""
+            assertEquals(
+                "头 $head 位 / 尾 $tail 位噪声时必须仍能解出线路（实际解出 0 条）",
+                1,
+                parser.parseSourcePage(payload, k88Match()).size,
+            )
+        }
+    }
+
+    @Test
     fun `data 解不出合法 JSON 时返回空表而不是抛异常`() {
         // base64 里全是非法字符、或整个 payload 不是 JSON：都给空列表，绝不抛出去
         //（单个源的解析异常不许带走别的源的数据）。

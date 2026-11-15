@@ -1,6 +1,7 @@
 package com.nbalive.app.data.repository
 
 import com.nbalive.app.data.remote.JrkanParser
+import com.nbalive.app.data.remote.K88Parser
 
 /**
  * 源站端点**候选列表**（review/02-data.md P1-9）。
@@ -77,24 +78,26 @@ object SourceEndpoints {
      * 路径口径不同，不能当篮球镜像用。
      */
     val K88_LIST: List<String> = listOf(
-        "https://www.88kanqiu.cx/match/1/live",
-        "https://www.88kanqiu.tw/match/1/live",
-        "https://www.88zhibo.me/match/1/live",
-    )
+        K88Parser.SITE_ORIGIN,
+        "https://www.88kanqiu.tw",
+        "https://www.88zhibo.me",
+    ).map { it + K88Parser.LIST_PATH }
 
     /**
      * 88看球线路接口 URL 候选（`https://<host>/live/<id>/source`）。
      *
-     * 与 [jrsDetailUrls] 同一条纪律：**由列表候选派生**而不是另写一份模板。
-     * 实测教训（review/02-data.md P2-6）：写死模板的两处副本改一处漏一处时，
-     * "刷新线路"会清 A 的缓存、读 B 的缓存，按钮变摆设且不报错。
+     * 两层纪律叠在这里：
+     *  - **由列表候选派生**而不是另写一份域名模板（与 [jrsDetailUrls] 同一条）：
+     *    实测教训（review/02-data.md P2-6）是"两处副本改一处漏一处"时，
+     *    "刷新线路"会清 A 的缓存、读 B 的缓存，按钮变摆设且不报错；
+     *  - **路径模板只有 [com.nbalive.app.data.remote.K88Parser.sourceUrl] 一份**：
+     *    本对象原先也写了一遍 `/live/$id/source`，与解析器里那份就是同源副本 ——
+     *    源站把接口改成 `/live/{id}/links` 时改一处漏一处，
+     *    列表给出的入口能解、候选列表给的不能，换域名逻辑静默失效。
+     *    所以这里**调用解析器的那个函数**，方向也对（repository -> remote）。
      */
-    fun k88SourceUrls(detailId: String): List<String> = K88_LIST.map { url ->
-        "${originOf(url).trimEnd('/')}/live/$detailId/source"
-    }
-
-    /** 88看球播放页地址里"线路接口"的 host 特征（`loadSignals` 据此分派展开方式）。 */
-    const val K88_SOURCE_MARK = "/source"
+    fun k88SourceUrls(detailId: String): List<String> =
+        K88_LIST.map { origin -> K88Parser.sourceUrl(detailId, originOf(origin)) }
 
     /**
      * JRKAN 播放主机候选。

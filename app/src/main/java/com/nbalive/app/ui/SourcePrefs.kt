@@ -22,6 +22,15 @@ object SourcePrefs {
     private const val NAME = "source_prefs"
     private const val KEY_ENABLED = "enabled_providers"
 
+    /**
+     * 「新增源迁移做过没有」的标记（2026-11-15 第三源接入）。
+     *
+     * ⚠️ 必须是**独立**的布尔键，不能从 `enabled_providers` 里推断：
+     * "用户自己关掉 K88"之后磁盘上剩的 `{JRS, JRKAN}` 与老用户的旧数据**逐字相同**，
+     * 没有标记就只能靠猜，而猜错的代价是每次启动替用户打开一个他刚关掉的源。
+     */
+    private const val KEY_NEW_SOURCE_MIGRATED = "new_source_migrated"
+
     private var store: SharedPreferences? = null
 
     private val _enabled = MutableStateFlow(SourceTogglePolicy.ALL)
@@ -53,10 +62,24 @@ object SourcePrefs {
         // ⚠️ 不用 loaded 短路（与 AppPrefs/PlayerPrefs 的既有约定一致）：
         // 任何早于 MainActivity.onCreate 的读取都该拿到用户真实设置。
         val sp = sp()
-        _enabled.value = SourceTogglePolicy.fromStorage(
+        val migrated = sp.contains(KEY_NEW_SOURCE_MIGRATED)
+        val resolved = SourceTogglePolicy.fromStorage(
             // 未存过 → null → fromStorage 回落到全开
             if (sp.contains(KEY_ENABLED)) sp.getStringSet(KEY_ENABLED, emptySet()) else null,
+            migrated = migrated,
         )
+        _enabled.value = resolved
+        // ⚠️ 迁移那一次必须**同时**落两样东西：标记 + 迁移后的集合。
+        // 只落标记是错的：磁盘上仍是 {JRS, JRKAN}，用户没碰过开关的话，
+        // **第二次**启动就走到 migrated=true 的"原样读回"分支，K88 又关了 ——
+        // 现象变成"升级后第一天能看新源、之后又没了"，比一直不迁移更难排查。
+        // 写回是幂等的：中途被杀进程，下次启动补开的是同一个源。
+        if (!migrated) {
+            sp.edit()
+                .putBoolean(KEY_NEW_SOURCE_MIGRATED, true)
+                .putStringSet(KEY_ENABLED, SourceTogglePolicy.toStorage(resolved))
+                .apply()
+        }
     }
 
     /** 写入（无 `Context` 形参）。 */

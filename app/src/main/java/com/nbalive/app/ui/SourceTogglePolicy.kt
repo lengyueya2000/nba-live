@@ -64,17 +64,71 @@ object SourceTogglePolicy {
     fun toStorage(enabled: Set<Provider>): Set<String> = enabled.map { it.name }.toSet()
 
     /**
-     * 从存储还原。
+     * 从存储还原（**含老用户升级迁移**）。
      *
      * 空集 / 全部读不出来 → [ALL]。理由见类 KDoc 的"为什么存的是开着的集合"：
      * 让用户对着一个永远空列表，比"多解析了一个源"糟得多。
+     *
+     * ⚠️ 但"合法的旧集合"是第三种情况，原来的推理漏了它：存储的是**开着的集合**，
+     * 老用户磁盘上是 `{JRS, JRKAN}`，原样读回 = 新源**默认关** ——
+     * 与本文件选"存开着的集合"时写下的取舍（"功能默认可用"）正好相反。
+     * 后果不是小事：接入第三源后，**所有升级用户都看不见它**，
+     * 而界面上显示"已关闭"，谁都分不清是自己关的还是没升级。
+     * 迁移只做一次（[migrated] 来自磁盘标记），且**不许**顺带打开用户自己关掉的源。
+     *
+     * @param migrated 磁盘上是否已记录"新源迁移做过"。默认 **true**：
+     *   既有调用点与测试一行都不用改，它们的语义本来就是"直接读回"。
+     *   ⚠️ 迁移入口必须这么窄 —— 别处若也传 false，用户每次冷启动都会
+     *   被重新打开一次他关掉的源。
      */
-    fun fromStorage(names: Set<String>?): Set<Provider> {
-        val parsed = names.orEmpty()
+    fun fromStorage(names: Set<String>?, migrated: Boolean = true): Set<Provider> {
+        val raw = names.orEmpty()
+        val parsed = raw
             .mapNotNull { name -> Provider.entries.firstOrNull { it.name == name } }
             .toSet()
-        return parsed.ifEmpty { ALL }
+        if (parsed.isEmpty()) return ALL
+        if (migrated) return parsed
+        // 两道闸叠加，缺一不可：
+        //  - [isLegacyShapedNames] 保证只动"旧时代形态"的数据。标记位与数据是两次写入，
+        //    标记丢了而数据其实已是升级后写的（含 K88）时，没有这道闸就会替他补开 JRKAN；
+        //  - [newSourcesAfterLegacy] 只补"旧时代之后新增、且数据里没有"的源，
+        //    用户自己关掉的旧源不在其列。
+        // 已知余量：标记写失败时，用户下次启动会被再补开一次新增源（他重新关一次就好）——
+        // 比"升级后新源永远不出现"轻得多，所以这里不追求两次写入的原子性。
+        if (!isLegacyShapedNames(raw)) return parsed
+        return parsed + newSourcesAfterLegacy(parsed)
     }
+
+    /**
+     * 这份磁盘名字是不是"旧时代形态"（非空，且只含 [LEGACY_NAMES] 里的名字）。
+     *
+     * ⚠️ 判定用"子集"而不是 `size == 2`：加第四个源时，"三源里开两个"与
+     * "旧时代两源都开"的 size 相同会撞车；而子集判定回答的正是它该回答的问题
+     * ——"这份数据里有没有新源时代的痕迹"。
+     * 空集返回 false：那是坏数据，走 [ALL] 回落，不许被迁移改出第四种状态。
+     */
+    fun isLegacyShapedNames(names: Set<String>): Boolean =
+        names.isNotEmpty() && LEGACY_NAMES.containsAll(names)
+
+    /**
+     * 旧时代之后新增、且这份数据里没出现的源（迁移要补开的那些）。
+     *
+     * ⚠️ 判定只看**名字属于哪一代**，不看"有没有脏名字"：
+     * `{JRS, BOGUS}` 解析后剩 `{JRS}`，仍属旧时代数据 → 该补开 K88；
+     * 而 `{JRS, K88}` 里已有新源时代的痕迹 → 说明这份数据是升级之后写的，
+     * 用户没开 JRKAN 是他的选择，一次都不该替他改（上面那道闸也会拦住它）。
+     */
+    private fun newSourcesAfterLegacy(enabled: Set<Provider>): Set<Provider> =
+        Provider.entries.filter { it.name !in LEGACY_NAMES && it !in enabled }.toSet()
+
+    /**
+     * 接入第三源**之前**存在磁盘上的那批源。
+     *
+     * ⚠️ 写死这份**历史**名单，而不是 `Provider.entries - K88`：
+     * 用减法的话，将来加第四源时这批人又会被判成"旧时代"、再被补开一次，
+     * 把用户后来手动关掉的源悄悄打开 —— 那已经是篡改设置了。
+     */
+    private val LEGACY_NAMES: Set<String> = setOf(Provider.JRS.name, Provider.JRKAN.name)
 
     /**
      * 「我的」页开关下面那行摘要：一眼看出现在在解析哪些源。

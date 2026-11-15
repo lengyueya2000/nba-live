@@ -3,8 +3,8 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **714 通过 / 0 失败 / 0 跳过**，
-  debug 与 release 两个变体同数，104 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **885 通过 / 0 失败 / 0 跳过**，
+  debug 与 release 两个变体同数，124 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
 - 测试结果 XML 在 `app/build/test-results/testDebugUnitTest/`（**多人并行时会被覆盖，要在 Gradle 锁内拷走再计数**；XML 带 BOM，用 `[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))` 读）
@@ -21,6 +21,20 @@
 > 判据 **714 → 844 条**（120 suites，debug+release 各 844/0/0）；debug 包 21.26 → **14.73 MB**。
 
 ## 最近几个回合的提交
+### 2026-11-15 第十八回合（用户：对比 88看球播放源 → 「可以」接入第三源）：88看球 K88 + 线路级去重 + 升级迁移
+提交 `81f60cb`（判据接入主体）→ 本次收尾（单一来源清理、真实抓取固化测试、迁移与接线守卫）。
+全量 **debug 885/0/0 + release 885/0/0（124 suites）**；`assembleDebug` **15,733,077 B**；`:app:lintDebug` **0 errors / 3 warnings**（均为既有 warning）。判据 876 → **885（+9）**。
+| 内容 | 说明 |
+|---|---|
+| **来源对比** | 88看球 `/live/{id}/source` 一场 13 条线路：国内线路⑤–⑨与 JRS/JRKAN **逐条等价**（`player.{kbs,vxt,txf,…}/?id=` 同 id）；真增量只有 rtmpcdn 直连 m3u8、A1/Q2/Q3（88player.top 包装）、`aarray` 带新鲜 `auth_key`。`sportsteam356` ≡ `sportsteam368` 为同系统镜像（同 `playerUrlBase64`→`demo.songzenet.com/paps.html?id=`，仅 per-request `encodedStr` 不同）—— 实证，非猜测 |
+| **K88 接入** | `Provider.K88("88看球")`；`K88Parser`（列表 `li.group-game-item` + source 端点有界噪声 base64：`Base64Decode.decodeWithNoise(maxHead 8, maxTail 4)`，噪声位数实测 6/2 与 6/1 会变）；`SourceEndpoints.K88_LIST` 三镜像（`.tw`/`88zhibo.me`/`.cx`；`88zhibo.tv` DNS 已死**故意排除**）；403 → 不再试镜像 + 冷却 |
+| **LineEquivalence** | 线路键 `player:/steam:/sm:/hls:/raw:` 五类；wrapper（`m3u8.html?url=`）与裸 `.m3u8` 归一（用 **rawQuery**，`URI.query` 会把解码后的 `&` 再切）；kbs≠vxt **故意不合并**（同 id 不同域名服务不同）；`MatchMerger`/`loadSignals` 跨源按线路去重，**只有真去重掉才重写 signalCount**（保住 JRS `-1`「未解析」语义） |
+| **升级迁移** | 存储是**开着的集合** → 老用户 `{JRS,JRKAN}` 原样读回 = K88 静默关。`SourceTogglePolicy.fromStorage(names, migrated)`：空集→ALL；已迁移→原样；未迁移→**双闸**（`isLegacyShapedNames` 子集判定 + `newSourcesAfterLegacy` 只补新代源）。`SourcePrefs.init` 迁移一次**同时写回**标记与集合（只写标记 = 第二次启动 K88 又关，比不迁移更难排查）。`LEGACY_NAMES` **写死** JRS/JRKAN，不许 `entries - K88` 减法（第四源时会篡改用户设置） |
+| **零消费清理** | `PlayerPageResolver.decodeBase64` 委托 `Base64Decode.decode`（单一来源）；`StreamUrlResolver` 对 `wrappedM3u8Url` 短路直连；`K88_SOURCE_MARK` 删除；`/live/{id}/source` 模板收敛 `SourceEndpoints.k88SourceUrls` 一处；界面「JRS / JRKAN 双源」字面量 → `allSummary()` 派生 |
+| **回退实验（第 1–4 轮）** | R1 四处（player 分支/包装判据/merge 去重/k88 expand）→ 8 红；R2 四处→ 4 红但 **origin 传递未抓**→ 补可观测测试；R3 origin-only → 1 红确认；**R4 迁移四处**：size 闸门→2 红；只写标记不写集合→1 红；`migrated=true` 不传盘→1 红；**`LEGACY_NAMES` 改减法→0 红（守卫漏洞！）**→ 当场按 RED 流程补强守卫（钉声明形状：含两个标识符、不含 `entries`/`filter`），变异态下先红、恢复后绿 |
+| **真实抓取测试** | `K88RealCaptureTest` 把今日真实字节（sha `4cc97f21…`）内联进测试钉 13 条线路；KDoc 写明**字节过期要重抓、不许放松断言** |
+| **诚实边界** | K88 海外/CCTV 线路不接入（会被 WebNavigationPolicy 白名单拦，无意义）；白名单**没有**放宽（包装页只当直连源用、从不进 WebView）；merge 顺序 jrkan→jrs→k88（k88 日期来自 group header，只补位不覆盖）；**未做实机验证**（模拟器证据本轮未采） |
+
 ### 2026-11-01/02 第十七回合（用户：全部修复 → 在雷电模拟器测试 → 继续做完剩余项）：**75 条收口**
 检查点 `57eb33a`（65/5/5）→ 用户要求做完全部剩余项 → **73 全落地 / 2 部分 / 0 未落地**。
 全量 **debug 844/0/0 + release 844/0/0（120 suites）**；`assembleDebug` **14.73 MB**（B3 前 21.26，−31%）/
@@ -346,6 +360,11 @@ P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~12、
   别为了守卫过而牺牲可读性 —— 改守卫，别改注释。
 - **"同值副本"能骗过相等断言**：把单一来源抄成**同样的字面量**，`assertEquals(派生, 副本)`
   照样绿（实测 E3 22/0）。要拦这种形态只能加**源码派生断言**（`X = Source.map{...}`）。
+- **守卫查"标识符还在"拦不住"值被换掉"**（第十八回合 R4 实测）：`LEGACY_NAMES` 写成
+  `Provider.entries - K88` 的减法后，`stripNonCode(...).contains("LEGACY_NAMES")` 全绿 ——
+  而这条减法恰恰是判据要禁的那个形态（将来加第四源会篡改用户设置）。
+  钉**声明形状**（赋值右侧含哪几个标识符、不许出现 `entries`/`filter`）才有效；
+  改法本身仍按 RED 流程：变异态下先跑出红，再恢复生产代码验绿。
 - **回退验证必须"编译得过"**：故意删掉被守卫保护的调用（保留注释/声明）才是有效验证；
   把仓库改到编译不过只是"炸了"，不是"守卫红了"。
 - **有些测试编码了"生产走不到的时序"**：`PlayerBackStackTest` 原来在 PLAYER 上再调

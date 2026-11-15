@@ -66,7 +66,13 @@ class K88Parser {
         /** 源站 origin（候选首位；线路接口与图片相对路径的基准）。 */
         const val SITE_ORIGIN = "https://www.88kanqiu.cx"
 
-        /** 列表页路径模板（候选域名见 `SourceEndpoints.K88_LIST`）。 */
+        /**
+         * 列表页路径（篮球 NBA）。
+         *
+         * ⚠️ 提成常量并被 `SourceEndpoints.K88_LIST` 消费（与 [SITE_ORIGIN] 拼首位候选），
+         * 不是"声明了没人用"：三镜像的路径完全相同，只有 host 不同，
+         * 把 `/match/1/live` 抄三遍就是三处副本漂移的来源（改一处漏两处）。
+         */
         const val LIST_PATH = "/match/1/live"
 
         /**

@@ -181,6 +181,25 @@ class K88SourceIntegrationTest {
     // ---------------- 判据 2：线路展开（详情页） ----------------
 
     @Test
+    fun `主域名不可达时列表给出的线路入口落在真正取到正文的镜像上`() = runBlocking {
+        // P1-9 那一条纪律在第三源上的形态：fetchK88Outcome 必须把
+        // **"取到正文的那个 URL"** 交给解析器去拼入口地址。
+        // 写成 `parseList(body)`（用写死首位）时，列表是从镜像拿到的、
+        // 入口却还是死域名 —— 展开线路要先白撞一次超时才轮到候选镜像，
+        // 而且 host 失败记账表被无辜污染。
+        val outcome = MatchRepository().loadMatchesWithOutcome(enabled = setOf(Provider.K88)) { url, _ ->
+            if (url.contains("88kanqiu.cx")) FetchResult.Unreachable("dns 失败")
+            else FetchResult.Ok(k88ListHtml())
+        }
+        val card = outcome.matches.single()
+        val entry = card.sources.single { it.provider == Provider.K88 }
+        assertTrue(
+            "线路入口必须落在真正取到正文的 host 上，实际：${entry.pageUrl}",
+            entry.pageUrl.contains("88kanqiu.tw") || entry.pageUrl.contains("88zhibo.me"),
+        )
+    }
+
+    @Test
     fun `详情页展开 88 的线路接口拿到裸 m3u8 并判为可直连`() = runBlocking {
         val match = matchWith(
             id = "k88-131401", provider = Provider.K88,

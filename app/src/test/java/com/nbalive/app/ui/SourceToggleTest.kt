@@ -131,6 +131,60 @@ class SourceTogglePolicyTest {
         )
     }
 
+    /**
+     * 老用户升级后的迁移判据（2026-11-15 第三源接入时新增）。
+     *
+     * ## 这不是可选的润色，是"功能上线但用户看不见"的缺陷
+     *
+     * 存储的是**开着的集合**。老用户存的是 `{JRS, JRKAN}`，升级后按 [fromStorage]
+     * 原样读回 → K88 = 关 → 第三源**静默不解析**，界面上开关显示"已关闭"，
+     * 用户不会知道是自己关的还是没升级。
+     * [SourceTogglePolicy] 的类 KDoc 早就写了取舍："前者（默认开）符合功能默认可用"，
+     * 但那份推理只覆盖了"空集/未知值"两种坏数据，**没覆盖"合法的旧集合"**这一种。
+     *
+     * 迁移必须只发生一次，且不许覆盖用户自己的选择：
+     *  1. 没迁移过 + 存的是旧时代集合 → 补上"旧时代之后新增的源"；
+     *  2. 用户自己关掉的旧源**不许**被顺带打开（那不是升级，是改他的设置）；
+     *  3. 已经迁移过 → 原样读回，此后用户关新源的意愿必须被尊重。
+     */
+    @Test
+    fun `老用户升级后新增的源默认打开 但用户自己关掉的旧源不许被顺带打开`() {
+        val legacy = setOf("JRS", "JRKAN")
+        assertEquals(
+            "旧时代集合升级后必须补上新增源",
+            SourceTogglePolicy.ALL,
+            SourceTogglePolicy.fromStorage(legacy, migrated = false),
+        )
+        assertEquals(
+            "用户明确关掉的 JRS 不许被升级顺带打开",
+            setOf(Provider.JRKAN, Provider.K88),
+            SourceTogglePolicy.fromStorage(setOf("JRKAN"), migrated = false),
+        )
+        assertEquals(
+            "迁移只做一次：已迁移过的数据原样读回（用户后来关掉新源的意愿必须被尊重）",
+            setOf(Provider.JRS, Provider.JRKAN),
+            SourceTogglePolicy.fromStorage(legacy, migrated = true),
+        )
+    }
+
+    @Test
+    fun `迁移不许把坏数据读成可用状态`() {
+        // 空集/null/全是未知值仍是"配置坏了"，走原有的全开回落，
+        // 不许被迁移逻辑改出第四个状态（两套语义会让人读不懂哪个是哪个）。
+        assertEquals(SourceTogglePolicy.ALL, SourceTogglePolicy.fromStorage(emptySet(), migrated = false))
+        assertEquals(SourceTogglePolicy.ALL, SourceTogglePolicy.fromStorage(null, migrated = false))
+        assertEquals(SourceTogglePolicy.ALL, SourceTogglePolicy.fromStorage(setOf("BOGUS"), migrated = false))
+    }
+
+    @Test
+    fun `旧时代集合的判定不依赖枚举顺序`() {
+        // 判据是"存进磁盘的名字 ⊆ 旧时代已知源"，不是 size==2 ——
+        // 否则将来再加第四个源时，"两源都开"与"三源里开两个"两种数据会撞车。
+        assertTrue(SourceTogglePolicy.isLegacyShapedNames(setOf("JRS", "JRKAN")))
+        assertFalse(SourceTogglePolicy.isLegacyShapedNames(setOf("JRS", "K88")))
+        assertFalse(SourceTogglePolicy.isLegacyShapedNames(setOf("JRS", "JRKAN", "K88")))
+    }
+
     @Test
     fun `摘要文案要能说清当前在解析哪些源`() {
         // ⚠️ 期望值从 Provider.entries 派生而不是写死 "JRS / JRKAN"：
@@ -330,6 +384,65 @@ class SourceToggleWiringTest {
         val prefs = source("SourcePrefs.kt")
         assertTrue("SourcePrefs 没有写 SharedPreferences", prefs.contains("putStringSet"))
         assertTrue("SourcePrefs 没有在 attach 后读一次", prefs.contains("fun init()"))
+    }
+
+    /**
+     * 迁移判据的**接线**（判据写了没人消费 = 假安全感，本仓库的老问题）。
+     *
+     * `migrated` 形参与 [SourceTogglePolicy.isLegacyShapedNames] 都可以
+     * "声明得漂亮但生产零调用" —— 那样升级用户照样看不见新源，
+     * 而 SourceTogglePolicyTest 全绿。所以这里扫源码钉死三件事：
+     * 读标记、把标记**传进**判据、迁移那一次**同时**写回标记与集合
+     * （只写标记会留下"第二次启动又变回关"的窗口，见 SourcePrefs 的注释）。
+     */
+    @Test
+    fun `迁移判据在生产里真的被消费 且迁移那一次同时写回标记与集合`() {
+        val prefsFile = TestPaths.productionFile("SourcePrefs.kt")
+        val prefs = GuardSourceScan.stripNonCode(prefsFile.readText())
+        // ⚠️ 查**标识符**而不是字面量 "new_source_migrated"：那个值在字符串里，
+        // 而 stripNonCode 连字符串一起剔（本仓库守卫铁律①），查字面量只会假红。
+        // 标识符被 putBoolean / contains 两处消费，恰好就是"真的在用"的证据。
+        assertTrue("SourcePrefs 没有独立的迁移标记键", prefs.contains("KEY_NEW_SOURCE_MIGRATED"))
+        assertTrue(
+            "SourcePrefs 没有把磁盘标记传给 fromStorage(migrated=…)",
+            prefs.contains("migrated = migrated"),
+        )
+        val body = GuardSourceScan.functionBody(prefsFile.readText(), "fun init(")
+        assertTrue(
+            "迁移那一次必须同时写回标记与迁移后的集合：只写标记的话第二次启动会被读成旧数据",
+            body.contains("putBoolean(KEY_NEW_SOURCE_MIGRATED, true)") &&
+                body.contains("putStringSet(KEY_ENABLED, SourceTogglePolicy.toStorage(resolved))"),
+        )
+        assertTrue(
+            "只有**未迁移过**才写回（已迁移用户的设置一个字节都不许动）",
+            body.contains("if (!migrated)"),
+        )
+
+        val policyFile = TestPaths.productionFile("SourceTogglePolicy.kt")
+        assertTrue(
+            "isLegacyShapedNames 必须在 fromStorage 里当闸门用，而不是只被测试引用",
+            GuardSourceScan.functionBody(policyFile.readText(), "fun fromStorage(")
+                .contains("isLegacyShapedNames("),
+        )
+        assertTrue(
+            "旧时代名单不许写成 Provider.entries 的减法（加第四源时会把用户关掉的源再打开一次）",
+            GuardSourceScan.stripNonCode(policyFile.readText()).contains("LEGACY_NAMES"),
+        )
+        // ⚠️ 上一句只钉住"名字还在"，钉不住值被改成 `entries - K88` 的减法派生
+        //（回退实验第 4 轮实测：改成减法后守卫全绿）。这里钉**声明形状**：
+        // 写死的名单 = 赋值右侧出现两个旧源的标识符；减法派生 = 出现 entries/filter。
+        val declaration = Regex("""LEGACY_NAMES\s*:\s*Set<String>\s*=\s*(.+)""")
+            .find(GuardSourceScan.stripNonCode(policyFile.readText()))
+            ?: error("LEGACY_NAMES 的声明找不到了 —— 这条守卫会静默全绿，所以直接失败")
+        val value = declaration.groupValues[1]
+        assertTrue(
+            "LEGACY_NAMES 必须写死 JRS/JRKAN 两个标识符（历史名单不随枚举长大）",
+            value.contains("Provider.JRS.name") && value.contains("Provider.JRKAN.name"),
+        )
+        assertFalse(
+            "LEGACY_NAMES 不许从 Provider.entries 派生（减法会把未来的第四源用户也判成旧时代）",
+            value.contains("entries") || value.contains("filter"),
+        )
     }
 
 
