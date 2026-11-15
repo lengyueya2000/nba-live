@@ -187,7 +187,17 @@ android {
 // 名字对不上时这段检查**静默不执行**，等于没有保护。
 // 改为按任务类型匹配（Zip 类任务里名字含 Release 的打包任务），
 // 并用 withType 覆盖所有打包变体。
-tasks.withType<com.android.build.gradle.tasks.PackageAndroidArtifact>().configureEach {
+//
+// ⚠️ v1.2.25 实测教训（发版当天的 ci.yml）：**上面那句"名字含 Release"从来没落实到代码上**。
+// `withType<PackageAndroidArtifact>()` 单独用会匹配**所有**打包任务，含 `packageDebug`，
+// 于是 runner 上没有 `keystore.properties` 时，debug 打包报「release 打包缺少签名凭据」当场失败
+// （日志：`> Task :app:packageDebug FAILED`）。而 debug 用的是 AGP 自带的 debug keystore，
+// 跟发布红线毫无关系 —— 这道闸把日常 CI 变成了"永远红"，反而让真该拦的 release 路径没人看。
+// 加 `.matching { it.name.contains("Release") }`：既覆盖 packageRelease 与各 flavor 的
+// `packageXxxRelease`（换 AGP 版本也不会静默失效），又放过 debug。
+tasks.withType<com.android.build.gradle.tasks.PackageAndroidArtifact>()
+    .matching { it.name.contains("Release") }
+    .configureEach {
     doFirst {
         if (!skipSigning && missingKeystoreKeys.isNotEmpty()) {
             throw GradleException(

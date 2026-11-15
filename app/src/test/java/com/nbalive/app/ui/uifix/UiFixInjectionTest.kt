@@ -136,20 +136,41 @@ class UiFixInjectionTest {
             id = "m1", home = "勇士", away = "湖人", league = League.NBA,
             status = MatchStatus.LIVE, startAtMillis = START, timeLabel = "10:00",
         )
+        // 失败路径上 scores 一直是空表，**没有任何可观测的完成信号**，
+        // 所以让注入的假 fetch 自己报告"我在 IO 线程上跑完了"。
+        // 用 AtomicBoolean：写发生在真实 IO 线程、读发生在测试线程，
+        // 裸 Boolean 既没有可见性保证（本仓库实测过并发丢更新），synchronized 又比它啰嗦。
+        val fetchReturned = java.util.concurrent.atomic.AtomicBoolean(false)
         val vm = MainViewModel(
             loadMatches = { Result.success(listOf(nba)) },
-            scoreboard = ScoreboardRepository(fetch = { _, _ -> FetchResult.Unreachable("offline") }),
+            scoreboard = ScoreboardRepository(fetch = { _, _ ->
+                FetchResult.Unreachable("offline").also { fetchReturned.set(true) }
+            }),
             clock = { 0L },
             wallClock = { 0L },
         )
         settle()
-        vm.refreshScores()
+        val job = vm.refreshScores()
         // 失败是静默的：比分表保持空，不抛异常、不影响列表。
-        // 这里自旋让 IO 回程落地，避免"还没跑完就断言空表"的假通过。
-        repeat(50) {
-            runCurrent()
-            Thread.yield()
-        }
+        //
+        // ⚠️ 必须 **join 这条 Job**，不能靠 `repeat(50) { runCurrent(); Thread.yield() }`
+        // 这种有界自旋碰运气（v1.2.25 之前的原实现就是这么写的）。理由：
+        //  - `refreshScores` 跑在 `viewModelScope`，它**不是** `runTest` 作用域的子级，
+        //    所以 `advanceUntilIdle()` 等不到它；
+        //  - 比分链的 `withContext(Dispatchers.IO)` 回程要**再跳回 Main** 才算结束；
+        //  - 有界自旋没跑完时，这条协程就活到测试体之外，而 `vmTest` 的 finally 会
+        //    `Dispatchers.resetMain()` —— Main 随即变回"没装 Android Main 的缺失分发器"，
+        //    续体落地时抛 `IllegalStateException: Module with the Main dispatcher had
+        //    failed to initialize`，被 kotlinx 的 `handleFatalException` 包成
+        //    `CoroutinesInternalError` 打到**该 IO 线程**的未捕获异常处理器上，
+        //    最终由 Gradle 记在"**当时恰好在跑的别的测试**"名下。
+        // 实测（2026-11-15）：`--tests '*UiFixInjectionTest*'` 单独跑本类 **12/12 红**，
+        // 而红的是完全无关的 `U16 老化…`（堆栈里却是 `ScoreboardRepository.kt:98`）；
+        // 跑全量则"恰好"绿 —— 因为下一步跑的是谁、机器快慢，都会改变结论。
+        // 这类"记错人"的失败最费排障时间，修法是让等待变得**确定性**。
+        // join 之后 `_scores` 保持空表这一断言才真的是在"完成之后"取证。
+        job.join()
+        assertTrue("假 fetch 必须真的被调用过（否则这条用例什么都没测）", fetchReturned.get())
         assertTrue("比分拿不到时只能是空表（绝不能拖垮列表）", vm.scores.value.isEmpty())
         assertEquals("列表不受影响", 1, vm.listState.value.matches.size)
     }

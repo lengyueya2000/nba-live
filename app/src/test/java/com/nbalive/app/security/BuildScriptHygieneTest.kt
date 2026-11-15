@@ -135,6 +135,61 @@ class BuildScriptHygieneTest {
         )
     }
 
+    /**
+     * P2-8 过度泛化的修复：**release 签名凭据闸不得拖挂 debug 打包**。
+     *
+     * 事故形态（v1.2.25 发版时 `ci.yml` 的 debug 打包步骤实测红）：
+     * `tasks.withType<PackageAndroidArtifact>().configureEach { doFirst { if (缺凭据) throw } }`
+     * 匹配的是**所有**打包任务，含 `packageDebug`。CI runner 上没有 `keystore.properties`，
+     * 于是 debug 构建报「release 打包缺少签名凭据」当场失败 —— 而 debug 用 AGP 自带的
+     * debug keystore，压根不该被"发布用的 release 凭据"拦下。
+     * 脚本注释（P2-8）本意写的是"名字含 Release 的打包任务"，代码漏了这层过滤。
+     */
+    @Test
+    fun `release 签名凭据闸必须只作用于 release 打包 不得拖挂 debug`() {
+        val scoped = releaseKeystoreGateIsScopedToRelease(GuardSourceScan.stripComments(script.readText()))
+        assertTrue(
+            "withType<PackageAndroidArtifact> 的签名 doFirst 闸没有按 Release 过滤 —— " +
+                "runner 上没有 keystore.properties 时 assembleDebug 会被误伤（v1.2.25 CI 实测 packageDebug FAILED）",
+            scoped,
+        )
+    }
+
+    /**
+     * 判据自检：检测函数必须**放过**按 Release 过滤的写法、**抓住**未过滤的旧写法。
+     * 否则守卫要么恒绿（旧写法也判成有过滤）、要么恒红（真修好了仍报没修）—— 两者都是假安全感。
+     */
+    @Test
+    fun `检测函数能区分按 Release 过滤与未过滤的签名闸`() {
+        val oldShape = """
+            tasks.withType<com.android.build.gradle.tasks.PackageAndroidArtifact>().configureEach {
+                doFirst { if (!skipSigning && missingKeystoreKeys.isNotEmpty()) { throw GradleException("x") } }
+            }
+        """.trimIndent()
+        val newShape = """
+            tasks.withType<com.android.build.gradle.tasks.PackageAndroidArtifact>().matching { it.name.contains("Release") }.configureEach {
+                doFirst { if (!skipSigning && missingKeystoreKeys.isNotEmpty()) { throw GradleException("x") } }
+            }
+        """.trimIndent()
+        assertFalse("未过滤的旧写法必须被判成「闸没有作用域」", releaseKeystoreGateIsScopedToRelease(oldShape))
+        assertTrue("按 Release 过滤的写法必须被判成「作用域正确」", releaseKeystoreGateIsScopedToRelease(newShape))
+    }
+
+    /**
+     * [text] 里 `withType<PackageAndroidArtifact>` 到它自己的 `configureEach` 之间，
+     * 是否出现了 Release 过滤（`matching { … contains("Release") … }` 之类）。
+     * 必须喂**只剔注释**的文本：脚本注释里就写着"名字含 Release"，用原文会假绿（H2 同一条陷阱）。
+     */
+    private fun releaseKeystoreGateIsScopedToRelease(text: String): Boolean {
+        val anchor = "PackageAndroidArtifact"
+        val i = text.indexOf(anchor)
+        if (i < 0) return false
+        val selector = text.substring(i, minOf(text.length, i + 200))
+        val gateStart = selector.indexOf("configureEach")
+        if (gateStart < 0) return false
+        return selector.substring(anchor.length, gateStart).contains("Release")
+    }
+
     private fun moduleBuildScript(): File {
         val cwd = TestPaths.workingDirPath()
         return listOf(

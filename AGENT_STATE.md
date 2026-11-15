@@ -3,7 +3,7 @@
 ## 工程
 - 路径：G:\flutter\work\nba
 - 类型：Flutter + Kotlin 混合（Android 侧原生 WebView/ExoPlayer 播放 NBA 直播源）
-- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **885 通过 / 0 失败 / 0 跳过**，
+- 构建/测试：`.\gradlew.bat :app:testDebugUnitTest --rerun-tasks`（全量 **887 通过 / 0 失败 / 0 跳过**，
   debug 与 release 两个变体同数，124 suites）。**单测 JVM 时区已钉死为 UTC**（见 `app/build.gradle.kts` 的
   `testOptions`，审计「怀疑 #1」的落地），所以验收口径是"**UTC 下**全绿"，比东八区更严格。
 - 验收还要跑 `.\gradlew.bat :app:assembleDebug`
@@ -21,6 +21,25 @@
 > 判据 **714 → 844 条**（120 suites，debug+release 各 844/0/0）；debug 包 21.26 → **14.73 MB**。
 
 ## 最近几个回合的提交
+### 2026-11-15 第十九回合（用户：发版 → 「apk也要放到release里」→ 「需要」修两处 CI 问题）：v1.2.25 发版 + 两个 CI 缺陷修复
+**发版 v1.2.25**（`versionCode 29`，tag → `b660f8f`）：APK `nba-live-1.2.25.apk` **2,781,136 B**，
+sha256 `ed7e609c…`，`apksigner verify` 通过、`aapt2` 实读包内版本一致；
+附件已挂到 [GitHub Release v1.2.25](https://github.com/lengyueya2000/nba-live/releases/tag/v1.2.25)（下载回来再核 sha256 一致）。
+⚠️ **用户本轮要求"简化流程，去掉测试"**，所以发版前**没有**跑本地全量单测/lint（发版后的修复回合才补跑）。
+
+**发版当天 CI 的两个真问题（均已按 TDD 修复）**：
+| 问题 | 根因与修法 |
+|---|---|
+| `ci.yml` 的「debug 变体打包」**每次必挂** | `app/build.gradle.kts` 的 release 签名凭据闸写成 `tasks.withType<PackageAndroidArtifact>().configureEach { doFirst { 缺凭据就 throw } }`，`withType` 匹配**所有**打包任务（含 `packageDebug`），而 CI runner 上没有 `keystore.properties` ⇒ debug 构建报「release 打包缺少签名凭据」。P2-8 的注释本意就是"名字含 Release 的打包任务"，代码漏了这层过滤。修法：加 `.matching { it.name.contains("Release") }`。**判据先 RED**（`BuildScriptHygieneTest` 新增 2 条：一条钉生产脚本形状，一条**自检检测函数**能区分"按 Release 过滤"与"未过滤"，防恒绿/恒红）；实测无凭据时 `assembleDebug` BUILD SUCCESSFUL、`assembleRelease` 仍被拦（keystore 用哈希核对后还原）。 |
+| `UiFixInjectionTest > U16 老化…` 在 runner 上红 | **不是 runner 抖动**：本地 `--tests '*UiFixInjectionTest*'` 单独跑 **12/12 稳定红**，跑全量则绿。堆栈是 `CoroutinesInternalError`（`Caused by: Module with the Main dispatcher had failed to initialize`）挂在 `Dispatchers.IO` 线程上，栈里是 `ScoreboardRepository.kt:98` —— 与 U16 **毫无关系**，U16 只是"当时恰好在跑的那个测试"。<br>**机理**：`U5 比分源拿不到数据时静默` 用 `repeat(50) { runCurrent(); Thread.yield() }` 这种**有界自旋**等 `viewModelScope` 里的比分协程。`viewModelScope` 不是 `runTest` 作用域的子级（`advanceUntilIdle` 等不到它），而 `withContext(Dispatchers.IO)` 的续体还要**再跳回 Main**；自旋不够用时协程活到测试体外，`vmTest` 的 finally 已 `Dispatchers.resetMain()` ⇒ 续体落地即抛、被 `handleFatalException` 打到线程的 UEH 上，由 Gradle 记到别的测试名下。<br>**修法**：`MainViewModel.refreshScores()` 改为**返回 Job**（并把 `_scoresJobActive: Boolean` 换成 `scoresJob: Job?`，因为标志位答不出"是哪一次在飞"，而取消收尾只清自己那一次，同 `refreshWith` 的 `stillCurrent()` 纪律），测试侧 `job.join()` 确定性等待。界面调用点是 `() -> Unit` lambda，返回值自动丢弃，行为不变。<br>**回退实验**：把 `join` 换回有界自旋 ⇒ 4/4 红（且红 2 条，再次证明"记错人"）；恢复后隔离跑 6/6 绿。 |
+
+**本轮遗留（事实，不是待办的猜测）**：
+- `release.yml` **从 v1.2.23 起就没成功过**：日志 `缺少签名 secret：KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD`。
+  所以 v1.2.23/24/25 的 GitHub Release **都是手工 `gh release create` 上传**的（v1.2.25 的附件 `state=uploaded`）。
+  要么补上那 4 个 secret，要么把 README 的「CI 发版」一节改成"手工清单为准"。`ReleasePipelineGuardTest` 只钉 workflow **文件内容**，钉不住 secrets 是否存在 —— 属于"守卫全绿而流水线常红"的形态。
+- `refreshScores()` 现在返回 `Job`，是**新的公开签名**；`scoresJob` 取代了 `_scoresJobActive`。
+  全仓无别的消费点（grep 过），但下一个人若再写"轮询状态"的测试，应优先 join 这类返回的 Job。
+
 ### 2026-11-15 第十八回合（用户：对比 88看球播放源 → 「可以」接入第三源）：88看球 K88 + 线路级去重 + 升级迁移
 提交 `81f60cb`（判据接入主体）→ 本次收尾（单一来源清理、真实抓取固化测试、迁移与接线守卫）。
 已发版 **v1.2.25**（`versionCode 29`，tag `v1.2.25`，APK `nba-live-1.2.25.apk` 2,781,136 B，sha256 `ed7e609c…`）。
@@ -366,6 +385,18 @@ P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~12、
   而这条减法恰恰是判据要禁的那个形态（将来加第四源会篡改用户设置）。
   钉**声明形状**（赋值右侧含哪几个标识符、不许出现 `entries`/`filter`）才有效；
   改法本身仍按 RED 流程：变异态下先跑出红，再恢复生产代码验绿。
+- **"红在无关测试上"要先怀疑"记错人"**（第十九回合）：线程未捕获异常（`CoroutinesInternalError` 这类）
+  被 Gradle 归给**当时恰好在跑**的测试，不是始作俑者。判据：**缩小选择范围看是否稳定复现** ——
+  本例 `--tests '*UiFixInjectionTest*'` 本地 12/12 红、跑全量则绿，于是"runner 抖动"这个结论当场作废。
+  真正原因是**有界自旋等不到 `viewModelScope`**：`viewModelScope` 不是 `runTest` 作用域的子级
+  （`advanceUntilIdle` 不覆盖它），`withContext(Dispatchers.IO)` 回程还要再跳回 Main，
+  跳出测试体就撞上 `finally` 里的 `Dispatchers.resetMain()`。
+  ⇒ 测这类协程**必须拿到那条 Job 去 join**（生产侧为此把 `refreshScores()` 改为返回 `Job`），
+  而不是"轮询状态 + 固定次数 yield"；轮询对有界自旋的依赖，本质就是赌机器快慢。
+- **`withType<…>().configureEach { }` 的隐藏代价**：它匹配**所有**该类型任务，
+  包括你不打算管的那些（`PackageAndroidArtifact` 含 `packageDebug`）。
+  判据里写"针对 release"就必须真的按名字过滤，否则日常 CI 变常红，
+  而**常红的流水线等于没有流水线**（没人再看它的输出，真故障混在里面）。
 - **回退验证必须"编译得过"**：故意删掉被守卫保护的调用（保留注释/声明）才是有效验证；
   把仓库改到编译不过只是"炸了"，不是"守卫红了"。
 - **有些测试编码了"生产走不到的时序"**：`PlayerBackStackTest` 原来在 PLAYER 上再调

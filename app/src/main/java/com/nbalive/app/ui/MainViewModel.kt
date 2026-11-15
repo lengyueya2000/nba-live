@@ -415,11 +415,20 @@ class MainViewModel(
      *
      * 由界面在列表可见时定时调用（与 [ageListStatuses] 同一个节奏位）。
      * **失败静默**：比分是锦上添花，拿不到就少一行，绝不能影响列表。
+     *
+     * ⚠️ 返回 [Job]（2026-11-15）：`viewModelScope` 不是 `runTest` 作用域的子级，
+     * 比分链的"IO 回程 → Main"若落在测试体的 `Dispatchers.resetMain()` 之后，
+     * 会抛 `CoroutinesInternalError`（Module with the Main dispatcher had failed to initialize）
+     * 并记在**当时恰好运行的别的测试**名下（v1.2.25 CI 实测：红的是无关的 U16，
+     * 堆栈里却是 `ScoreboardRepository.load`）。测试侧唯一的确定性等待方式就是 join 这条 Job ——
+     * 在 Main 侧轮询状态，又不给失败路径任何可观测信号。界面调用点是 `() -> Unit` lambda，
+     * 返回值被自动丢弃，行为不变。
+     *
+     * @return 本次启动（或仍在飞而被复用的那一次）的比分刷新任务，供测试 `join`。
      */
-    fun refreshScores() {
-        if (_scoresJobActive) return
-        _scoresJobActive = true
-        viewModelScope.launch {
+    fun refreshScores(): Job {
+        scoresJob?.let { if (it.isActive) return it }
+        return viewModelScope.launch {
             try {
                 val snapshot = scoreboard.load(prefs.enabledProviders.value)
                 if (snapshot.isEmpty()) {
@@ -434,13 +443,21 @@ class MainViewModel(
                 debugLog("Scores", "ESPN 比分板 ${snapshot.games.size} 场，匹配上 ${map.size} 场")
                 _scores.value = map
             } finally {
-                _scoresJobActive = false
+                // 只清"我自己"那一次：被后续刷新替换掉的旧协程不许把新 Job 抹掉
+                // （与 [refreshWith] 里 `stillCurrent()` 同一条纪律）。
+                if (scoresJob === coroutineContext[Job]) scoresJob = null
             }
-        }
+        }.also { scoresJob = it }
     }
 
-    /** 比分刷新是否在飞（防重叠：20 秒一次，网络慢时会叠）。 */
-    private var _scoresJobActive = false
+    /**
+     * 比分刷新是否在飞（防重叠：20 秒一次，网络慢时会叠）。
+     *
+     * ⚠️ 原来是一个 `Boolean` 标志位，现在直接用 Job 引用：
+     * 标志位只能回答"有没有在飞"，回答不了"是哪一次在飞"，
+     * 而调用方（测试）要 join 的正是那一次。
+     */
+    private var scoresJob: Job? = null
 
     private val _detailState = MutableStateFlow(MatchDetailUiState())
     val detailState: StateFlow<MatchDetailUiState> = _detailState.asStateFlow()
