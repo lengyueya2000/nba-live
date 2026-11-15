@@ -22,9 +22,14 @@
 
 ## 最近几个回合的提交
 ### 2026-11-15 第二十回合（用户：「继续」→ 授权上传 secrets / 「等下个版本再验证」）：配齐 release.yml 的签名 secrets
-**根因闭合**：`gh secret list` 是**空的**（我是 owner，空表 = 真的没有，不是看不见），
-这就是 `release.yml` 从 v1.2.23 起每次失败在「检查签名 secrets」的全部原因；
-v1.2.23/24/25 的 Release 附件 `state=uploaded` 也印证它们是手工传的。
+**根因闭合**：`gh secret list` 是**空的**（我是 owner，空表 = 真的没有，不是看不见）。
+逐条核对了 `release.yml` 的**全部 10 次 run：0 次成功**，失败点分两类：
+ - **v1.2.16 ~ v1.2.24（9 次）**全部死在「缺少签名 secret」；
+ - **v1.2.25**（`43673130887`）**更早就挂了**——死在「两变体全量单测」，
+   就是本轮修掉的 U16 协程泄漏（根本没走到 secrets 检查那一步）。
+ ⇒ 所以「从 v1.2.23 起」这个说法是我先前写错的（范围与原因都不对），已改正；
+ v1.2.17–v1.2.25 的 Release 附件 `state=uploaded` 也印证它们全是手工 `gh release create` 传的。
+ **两个已知拦路石现在都已排除**（secret 配齐 + 单测修复已在 `0b9ab41`），下次发版将是这条流水线的**首次成功运行**。
 **动作**（用户明确授权"由我执行 gh secret set"）：`KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` /
 `KEY_ALIAS` / `KEY_PASSWORD` 已写入仓库 secrets。写入方式有两处刻意的讲究：
  1. **值走 stdin 且不加尾随换行**（`` $value | gh secret set `` 会让 PowerShell 补 `\n`，
@@ -80,9 +85,13 @@ sha256 `ed7e609c…`，`apksigner verify` 通过、`aapt2` 实读包内版本一
 - ✅ **两处修复都已在真实 GitHub runner 上取证**（run `43690872802`，`ci.yml`，全步骤 success）：
   「全量单测（debug + release 两变体）」「**debug 变体打包**」「lint（debug 变体）」三步全绿 ——
   这正是发版当天必挂的那一步（修前：run `43673127673` 的 `> Task :app:packageDebug FAILED`）。
-- `release.yml` **从 v1.2.23 起就没成功过**：日志 `缺少签名 secret：KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD`。
-  所以 v1.2.23/24/25 的 GitHub Release **都是手工 `gh release create` 上传**的（v1.2.25 的附件 `state=uploaded`）。
-  要么补上那 4 个 secret，要么把 README 的「CI 发版」一节改成"手工清单为准"。`ReleasePipelineGuardTest` 只钉 workflow **文件内容**，钉不住 secrets 是否存在 —— 属于"守卫全绿而流水线常红"的形态。
+- `release.yml` **从来没成功过**（逐条核对：10 次 run、0 次成功）。v1.2.16~v1.2.24 死在
+  日志 `缺少签名 secret：KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD`；
+  v1.2.25 死得更早——两变体全量单测的协程泄漏（就是下面第 2 处修复），压根没走到 secrets 检查。
+  所以 v1.2.17–v1.2.25 的 GitHub Release **都是手工 `gh release create` 上传**的（附件 `state=uploaded`）。
+  **已于第二十回合处置**：四个 secret 配齐（用户授权），单测泄漏已修 ⇒ 两个拦路石都已排除。
+  残留的形态缺口仍在：`ReleasePipelineGuardTest` 只钉 workflow **文件内容**，钉不住远端 secrets 是否存在
+  —— 属于"守卫全绿而流水线常红"，仓库内测试原理上测不到远端配置。
 - `refreshScores()` 现在返回 `Job`，是**新的公开签名**；`scoresJob` 取代了 `_scoresJobActive`。
   全仓无别的消费点（grep 过），但下一个人若再写"轮询状态"的测试，应优先 join 这类返回的 Job。
 
@@ -443,6 +452,16 @@ P0-1、P0-2、01-P1-2/3/4/6、01-P2-1~8/10/11/12、02-P1-1~9、02-P2-1~12、
   包括你不打算管的那些（`PackageAndroidArtifact` 含 `packageDebug`）。
   判据里写"针对 release"就必须真的按名字过滤，否则日常 CI 变常红，
   而**常红的流水线等于没有流水线**（没人再看它的输出，真故障混在里面）。
+- **"从 X 版本起才坏"这类范围断言必须逐条数历史，不能从两次样本外推**：
+  我先前根据 v1.2.23/v1.2.24 两次失败写成"release.yml 从 v1.2.23 起没成功过"，
+  实际是 `gh run list --limit 100` 数出来的 **10 次 run、0 次成功**（最早 v1.2.16），
+  而且 v1.2.25 的失败点还**换了原因**（死在单测，没走到 secrets）。
+  两处都错了：范围小了、原因也不止一个。取证成本极低（一条命令 + 逐条 `--log-failed`），
+  而写进文档的结论一旦偏了，下一个人会照错的因果去做决策。
+- **用"是否重新构建"取证时，必须核对产物的时间戳**（第二十回合实测）：
+  模拟 CI 签名后 `apksigner verify` 是绿的，但 `app-release.apk` 的 mtime **早于脚本启动**
+  ⇒ `packageRelease` 是 UP-TO-DATE，压根没重新签名，验的是上一次的旧产物 = **假证据**。
+  要么核对时间戳/大小变化，要么显式 `--rerun-tasks`。
 - **回退验证必须"编译得过"**：故意删掉被守卫保护的调用（保留注释/声明）才是有效验证；
   把仓库改到编译不过只是"炸了"，不是"守卫红了"。
 - **有些测试编码了"生产走不到的时序"**：`PlayerBackStackTest` 原来在 PLAYER 上再调

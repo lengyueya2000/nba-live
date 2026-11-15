@@ -142,9 +142,11 @@ git tag vX.Y.Z
 workflow 里 `storeFile=release.jks` 写的是**相对仓库根**的路径（`app/build.gradle.kts` 用
 `rootProject.file(...)` 解析），CI 上不需要绝对路径。四个 secret 少任何一个，流水线在打包前就失败。
 
-> ✅ **2026-11-15 已配齐这四个 secret**（此前 `gh secret list` 是空的，所以
-> `release.yml` 从 v1.2.23 起每次都失败在「检查签名 secrets」这一步，
-> v1.2.23–v1.2.25 的 GitHub Release 全部是手工 `gh release create` 上传的）。
+> ✅ **2026-11-15 已配齐这四个 secret**。此前 `gh secret list` 是空的，因此
+> `release.yml` 的**全部 10 次运行没有一次成功**：v1.2.16~v1.2.24 都死在「缺少签名 secret」，
+> v1.2.25 更早（死在两变体全量单测的协程泄漏，没走到 secret 检查）。
+> v1.2.17–v1.2.25 的 Release 附件全是手工 `gh release create` 上传的（`state=uploaded`）。
+> 两个拦路石现均已排除（secrets 配齐 + 单测泄漏已修），**下次发版将是这条流水线的首次成功运行**。
 >
 > **已验证的**（本地，用与 CI 完全相同的材料处理路径）：把 `release.jks` 编码成 base64、
 > 再解码回来**逐字节比对一致**；用解码出的 jks + 两个口令真的跑了一次
