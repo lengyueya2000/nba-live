@@ -159,6 +159,20 @@ data class PlayerUiState(
      */
     val playbackSuspect: Boolean = false,
     /**
+     * **本条线路**的死胡同是否已经执行过换线处置（P18 去重账，v1.2.26 语义修正）。
+     *
+     * ⚠️ 修复前 [onPageDeadEnd] 拿 [playbackSuspect] 当"已处理"的守卫，
+     * 而恢复条 1.5 秒就通过 `onDeadEndSuspectOnly` 把它置成 true（那是 P18
+     * 为堵"1.5~9.5 秒坏小窗窗口"加的**健康信号**）。于是 9.5 秒自动换线与
+     * 用户点「换线路」双双被守卫吞掉 —— 两个出口同时失灵，用户卡在源站的
+     * 死面板上，正是这个功能要修的事故本身。
+     *
+     * 现在"已处理"换成本标志：它只由 [onPageDeadEnd] 写、只由 [onPageDeadEnd] 读，
+     * 随线路切换/返回复位；[playbackSuspect] 回归纯粹的健康信号。
+     * 判据测试：`PageDeadEndTest.恢复条已上报疑似后 自动换线与换线路按钮仍必须生效`。
+     */
+    val deadEndHandled: Boolean = false,
+    /**
      * 错误提示的自增序号。
      *
      * 界面用它当 LaunchedEffect 的 key：只拿 [errorMessage] 当 key 时，
@@ -430,9 +444,18 @@ class MainViewModel(
         scoresJob?.let { if (it.isActive) return it }
         return viewModelScope.launch {
             try {
-                val snapshot = scoreboard.load(prefs.enabledProviders.value)
+                val snapshot = scoreboard.load(prefs.enabledProviders.value) { wallNowMs() }
                 if (snapshot.isEmpty()) {
                     debugLog("Scores", "ESPN 比分板为空（源站列表里没有对得上的场次，或网络失败）")
+                    return@launch
+                }
+                // ⚠️ v1.2.26（D7 接线补全）：last-good 快照超过 [ScoreboardRepository.STALE_AFTER_MS]
+                // 就**剔除**，而不是继续当实时比分画。修复前 fetchedAtMs 在生产零消费 ——
+                // ESPN 持续失败时几十分钟前的旧比分无标记常显（"用户以为比赛停在这个比分"）。
+                // 判据在仓储侧（isStale），这里只做消费与清空。
+                if (scoreboard.isStale(snapshot, wallNowMs())) {
+                    debugLog("Scores", "ESPN 比分板陈旧（>2 分钟未成功刷新），剔除")
+                    _scores.value = emptyMap()
                     return@launch
                 }
                 val map = _listState.value.matches.mapNotNull { m ->
@@ -689,6 +712,17 @@ class MainViewModel(
      */
     private fun PlayerUiState.markPlaybackSuspect(suspect: Boolean): PlayerUiState =
         copy(playbackSuspect = suspect)
+
+    /**
+     * 记一笔「本条线路的死胡同已处置」（P18 去重账，与 [markPlaybackSuspect] 分开）。
+     *
+     * ⚠️ 修复前 [onPageDeadEnd] 用 playbackSuspect 当"已处理"守卫，而恢复条
+     * 1.5 秒就把它置成了 true（P18 的健康信号）—— 9.5 秒自动换线与
+     * 「换线路」按钮双双被吞（v1.2.26 修复）。现在守卫只认这本独立的账，
+     * 随线路切换/返回复位。
+     */
+    private fun PlayerUiState.markDeadEndHandled(): PlayerUiState =
+        copy(deadEndHandled = true)
 
     /**
      * 同一时刻只允许一个解析任务：用户快速连点线路时，
@@ -1109,7 +1143,9 @@ class MainViewModel(
                 it.copy(resolving = true, streamUrl = null, streamReferer = null,
                     webFallbackUrl = null, sniffedStream = false, failedSniffUrl = null,
                     // 重新开始解析：上一轮"播不出来 / 疑似异常"的判定全部作废
-                    playbackDead = false, playbackSuspect = false)
+                    playbackDead = false, playbackSuspect = false,
+                    // 新会话：死胡同账也要清零（否则换场后第一次真死胡同被旧账吞掉）
+                    deadEndHandled = false)
                         .withError(null)
             }
 
@@ -1219,6 +1255,8 @@ class MainViewModel(
                     // 这里若急着置 true，会在网页还没加载完时就把小窗收掉/禁止自动小窗。
                     playbackDead = false,
                     playbackSuspect = false,
+                    // 新线路/离开播放页：死胡同账从零开始（v1.2.26）。
+                    deadEndHandled = false,
                 ).withError(
                     when {
                         resolveError != null -> "解析失败：${resolveError}"
@@ -1377,9 +1415,12 @@ class MainViewModel(
         val state = _playerState.value
         // 已经在直连播了就不管（页面组件可能滞后于嗅探升级才回调）
         if (state.streamUrl != null) return
-        // 同一条线路只处理一次：探测是每秒轮询的，回调可能连发
-        if (state.playbackSuspect) return
-        _playerState.update { it.markPlaybackSuspect(true) }
+        // 同一条线路只处置一次：守卫只看**死胡同账**（v1.2.26）。
+        // 原来这里读 playbackSuspect —— 那是恢复条 1.5 秒就置位的**健康信号**（P18），
+        // 于是 9.5 秒自动换线与用户点「换线路」双双被吞掉。
+        // 两条判据各管各的：去重只认 deadEndHandled。
+        if (state.deadEndHandled) return
+        _playerState.update { it.markPlaybackSuspect(true).markDeadEndHandled() }
         advanceAfterNoSignal(state, WebPageDeadEndPolicy.advanceNote())
     }
 
@@ -1510,6 +1551,8 @@ class MainViewModel(
                     // 退回网页后网页还在加载，不是"彻底死了"，也还没到"疑似"
                     playbackDead = false,
                     playbackSuspect = false,
+                    // 新线路/离开播放页：死胡同账从零开始（v1.2.26）。
+                    deadEndHandled = false,
                     // ⚠️ 必须给用户一句提示：
                     // 这里只 copy 不 withError 的话 errorId 不变，
                     // 界面的 LaunchedEffect 不会重启 —— 用户只看到画面从直连变回网页，
@@ -1568,6 +1611,8 @@ class MainViewModel(
                         failedSniffPage = null,
                         playbackDead = false,
                         playbackSuspect = false,
+                        // 离开播放页：死胡同账清零（v1.2.26）。
+                        deadEndHandled = false,
                     ).withError(null)
                 }
                 // ⚠️ 进场拉线路途中按返回：loadJob 被取消，它尾部那句

@@ -1,5 +1,6 @@
 package com.nbalive.app.security
 
+import com.nbalive.app.GuardSourceScan
 import com.nbalive.app.TestPaths
 import java.io.File
 import org.junit.Assert.assertFalse
@@ -131,27 +132,143 @@ class CleartextPolicyTest {
                 "锚点缺失时明文策略守卫会静默全绿，所以直接失败而不是跳过",
             xml != null,
         )
+        // ⚠️ 判据锚在 **base-config 开标签本身**（v1.2.26 修正）：原来是对全文
+        // `contains("cleartextTrafficPermitted=\"true\"")` —— 任何一个 domain-config
+        // 写成 true、甚至注释里留一句（注释现在已被剥掉），都能替 base-config 满足它，
+        // 于是"删掉 base-config 许可"这种真正会断播放的改动静默绿。
+        val baseOpen = Regex("""<base-config\b[^>]*>""", setOf(RegexOption.DOT_MATCHES_ALL))
+            .find(xml!!)
         assertTrue(
             "base-config 的明文许可不能删：m3u8 清单主机名是源站运行时混淆生成的，\n" +
                 "写死白名单就等于播放器拿不到清单（这是产品硬需求，不是疏忽）。",
-            xml!!.contains("cleartextTrafficPermitted=\"true\""),
+            baseOpen != null &&
+                Regex("""cleartextTrafficPermitted\s*=\s*"true"""").containsMatchIn(baseOpen.value),
+        )
+    }
+
+    // ---------- 守卫自检（审计纪律：判据本体也要被钉住） ----------
+
+    /** 假配置写在注释里 → 剥注释后必须不被看见（审计 A2 的 XML 侧）。 */
+    @Test
+    fun `注释里的假配置不能骗过判据`() {
+        val fake = """
+            <network-security-config>
+                <!-- <domain-config cleartextTrafficPermitted="false">
+                        <domain includeSubdomains="true">jrszbt.com</domain>
+                     </domain-config> -->
+                <base-config cleartextTrafficPermitted="true"/>
+            </network-security-config>
+        """.trimIndent()
+        assertFalse(
+            "禁明文条目只存在于注释里 —— 判据必须看不见它",
+            hasDomainConfig(GuardSourceScan.stripXmlComments(fake), "jrszbt.com", cleartextPermitted = false),
+        )
+        val fakeAllow = """
+            <network-security-config>
+                <!-- 这里写一段"曾经允许明文"的事故证据：
+                     <domain-config cleartextTrafficPermitted="true">
+                        <domain includeSubdomains="true">play.sportsteam368.com</domain>
+                     </domain-config>
+                -->
+                <base-config/>
+            </network-security-config>
+        """.trimIndent()
+        val stripped = GuardSourceScan.stripXmlComments(fakeAllow)
+        assertFalse(
+            "允许明文条目只存在于注释里 —— hasDomainConfig 必须看不见它",
+            hasDomainConfig(stripped, "play.sportsteam368.com", cleartextPermitted = true),
+        )
+        val baseOpen = Regex("""<base-config\b[^>]*>""", setOf(RegexOption.DOT_MATCHES_ALL)).find(stripped)
+        assertTrue(
+            "base-config 判据同样不能把注释里的属性当真：真标签没写许可时判据必须为 false",
+            baseOpen != null &&
+                !Regex("""cleartextTrafficPermitted\s*=\s*"true"""").containsMatchIn(baseOpen.value),
+        )
+    }
+
+    /** 域匹配必须有点边界：`.jrszbt.com` 式后缀不能覆盖 `eviljrszbt.com`。 */
+    @Test
+    fun `域匹配必须带点边界`() {
+        val xml = """
+            <network-security-config>
+                <domain-config cleartextTrafficPermitted="false">
+                    <domain includeSubdomains="true">jrszbt.com</domain>
+                </domain-config>
+            </network-security-config>
+        """.trimIndent()
+        assertTrue("真子域必须被覆盖", hasDomainConfig(xml, "www.jrszbt.com", cleartextPermitted = false))
+        assertFalse("同后缀的旁域（eviljrszbt.com）不许被覆盖", hasDomainConfig(xml, "eviljrszbt.com", cleartextPermitted = false))
+    }
+
+    /** includeSubdomains="false" 的条目只覆盖该域本身，不覆盖子域。 */
+    @Test
+    fun `includeSubdomains 为 false 时不覆盖子域`() {
+        val xml = """
+            <network-security-config>
+                <domain-config cleartextTrafficPermitted="false">
+                    <domain includeSubdomains="false">jrszbt.com</domain>
+                </domain-config>
+            </network-security-config>
+        """.trimIndent()
+        assertTrue("域本身仍被覆盖", hasDomainConfig(xml, "jrszbt.com", cleartextPermitted = false))
+        assertFalse("子域不被 includeSubdomains=false 的条目覆盖", hasDomainConfig(xml, "www.jrszbt.com", cleartextPermitted = false))
+    }
+
+    /** 属性缺省按 Android minSdk 24 语义视为 false：删属性放松纪律不许变绿。 */
+    @Test
+    fun `cleartextTrafficPermitted 缺省按 false 处理`() {
+        val xml = """
+            <network-security-config>
+                <domain-config>
+                    <domain includeSubdomains="true">jrszbt.com</domain>
+                </domain-config>
+            </network-security-config>
+        """.trimIndent()
+        assertFalse(
+            "条目删掉 cleartextTrafficPermitted 属性后不能仍被算作「允许明文」（minSdk 24 默认 false）",
+            hasDomainConfig(xml, "jrszbt.com", cleartextPermitted = true),
+        )
+        assertTrue(
+            "缺省按禁止明文：把真配置改成无属性（= 收紧），「必须禁止明文」判据仍成立",
+            hasDomainConfig(xml, "jrszbt.com", cleartextPermitted = false),
         )
     }
 
     // ---------- helpers ----------
 
-    private fun configText(): String? {
-        val candidates = listOf(
-            File("src/main/res/xml/network_security_config.xml"),
-            File("app/src/main/res/xml/network_security_config.xml"),
-            File(TestPaths.workingDirPath(), "src/main/res/xml/network_security_config.xml"),
-        )
-        return candidates.firstOrNull { it.isFile }?.readText()
-    }
+    /**
+     * 读配置**并剥掉全部 XML 注释**（v1.2.26 守卫修正）。
+     *
+     * ⚠️ 原来三个判据都直接在**原文**上跑正则，而这份文件恰恰以大段注释
+     * 记录黑屏事故（`<!-- … cleartextTrafficPermitted="false" … -->` 形态的证据文字
+     * 就在文件里）。把真配置挪进注释、或只留注释里的假配置，原文匹配会
+     * **跟着注释一起变绿** —— 审计 A2 在 XML 侧的原形。
+     * 现在统一走 `stripXmlComments`（保留换行，行号仍与文件对应）。
+     */
+    private fun configText(): String? = configCandidates().firstOrNull { it.isFile }
+        ?.let { GuardSourceScan.stripXmlComments(it.readText()) }
 
-    /** 是否存在对 `host`（含其子域）的 domain-config，且明文许可为期望值。 */
+    private fun configCandidates() = listOf(
+        File("src/main/res/xml/network_security_config.xml"),
+        File("app/src/main/res/xml/network_security_config.xml"),
+        File(TestPaths.workingDirPath(), "src/main/res/xml/network_security_config.xml"),
+    )
+
+    /**
+     * 是否存在对 `host` **生效**的 domain-config，且明文许可为期望值。
+     *
+     * 判据按 Android `NetworkSecurityConfig` 的真实语义实现（v1.2.26 修正）：
+     *  1. 域匹配：条目与 host **全等**，或条目是 host 的真父域且**该条**
+     *     `<domain includeSubdomains="true">` —— 原来用 `host.endsWith(tail)`
+     *     没有点边界，`.jrszbt.com` 形态的条目会匹配到 `eviljrszbt.com`；
+     *     而本仓库配置实际用的是 `includeSubdomains` 属性（`.example.com`
+     *     只是书写惯例，Android 并不按前导点开子域）。
+     *  2. 明文许可：`cleartextTrafficPermitted` 缺省时，**API 24+ 默认 false**
+     *     （Android 文档语义；本应用 minSdk 24）。原来缺省按 true 处理，
+     *     恰好把"有人删掉属性想放松纪律"判成合规 —— 方向性错误。
+     *  3. 没有任何匹配条目的 host 不在此判定（由 base-config 那条测试单独钉）。
+     */
     private fun hasDomainConfig(xml: String, host: String, cleartextPermitted: Boolean): Boolean {
-        // 抓出所有 <domain-config ...>...</domain-config> 块（含跨行）
         val blocks = Regex(
             """<domain-config\b([^>]*)>(.*?)</domain-config>""",
             setOf(RegexOption.DOT_MATCHES_ALL),
@@ -159,17 +276,16 @@ class CleartextPolicyTest {
         for (b in blocks) {
             val attrs = b.groupValues[1]
             val permitted = Regex("""cleartextTrafficPermitted="(true|false)"""")
-                .find(attrs)?.groupValues?.get(1)?.toBoolean() ?: true
+                .find(attrs)?.groupValues?.get(1)?.toBoolean() ?: false // minSdk 24：缺省 false
             if (permitted != cleartextPermitted) continue
-            val domains = Regex("""<domain[^>]*>([^<]+)</domain>""")
+            val matchesHost = Regex("""<domain([^>]*)>([^<]+)</domain>""")
                 .findAll(b.groupValues[2])
-                .map { it.groupValues[1].trim().lowercase() }
-                .toList()
-            // Android 语义：`example.com` 只匹配该域本身，`.example.com` 才含子域。
-            // 这里按"能覆盖该 host"来判断：要么显式列了它，要么列了 .父域。
-            if (domains.any { d -> d == host || d == ".$host" || host.endsWith(d.removePrefix(".")) && d.startsWith(".") }) {
-                return true
-            }
+                .any { m ->
+                    val d = m.groupValues[2].trim().lowercase().removePrefix(".")
+                    val sub = Regex("""includeSubdomains\s*=\s*"true"""").containsMatchIn(m.groupValues[1])
+                    d == host || (sub && host.endsWith(".$d"))
+                }
+            if (matchesHost) return true
         }
         return false
     }

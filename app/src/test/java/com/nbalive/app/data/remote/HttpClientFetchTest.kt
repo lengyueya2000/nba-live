@@ -32,12 +32,23 @@ class HttpClientFetchTest {
     private lateinit var client: HttpClient
     private var port: Int = 0
     private var serverThread: Thread? = null
+    private var pool: java.util.concurrent.ExecutorService? = null
 
     @Before
     fun setUp() {
         client = HttpClient()
     }
 
+    /**
+     * 确定性收尾（v1.2.26）：先关监听（accept 以 SocketException 醒来），
+     * 再 shutdownNow 打断在途 worker，最后 **join** 等 accept 线程真的退出。
+     *
+     * 原来只 close + interrupt 不 join：线程池是**非守护**线程，
+     * 上一轮的 worker 可能在 JVM 里多活一会儿（Junit 每方法新建实例，
+     * 共享的 status/body 其实按实例捕获，不是串扰源 —— 真正的风险是
+     * 非守护线程拖住 JVM 退出，以及"线程还活着就断言测试环境已清干净"
+     * 这种隐性假设被下一个真实 socket 测试继承）。join(2s) 给死锁一个上界。
+     */
     @After
     fun tearDown() {
         try {
@@ -45,19 +56,31 @@ class HttpClientFetchTest {
         } catch (_: Exception) {
             // 可能没起过
         }
-        serverThread?.interrupt()
+        pool?.shutdownNow()
+        serverThread?.let { t ->
+            t.interrupt()
+            try {
+                t.join(2_000)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            assertTrue("服务线程必须在 2 秒内退出（close 监听后 accept 应以异常醒来）", !t.isAlive)
+        }
+        pool = null
+        serverThread = null
     }
 
     /** 起一个只回固定状态码的最小 HTTP 服务器 */
     private fun serve(status: Int, body: String) {
         server = ServerSocket(0)
         port = server.localPort
+        val executor = Executors.newSingleThreadExecutor()
+        pool = executor
         serverThread = Thread {
-            val pool = Executors.newSingleThreadExecutor()
             try {
                 while (!server.isClosed) {
                     val socket: Socket = server.accept()
-                    pool.execute {
+                    executor.execute {
                         try {
                             socket.use { s ->
                                 // 读完请求头（直到空行）
@@ -86,7 +109,7 @@ class HttpClientFetchTest {
             } catch (_: Exception) {
                 // 服务器关闭
             } finally {
-                pool.shutdown()
+                executor.shutdown()
             }
         }
         serverThread?.isDaemon = true

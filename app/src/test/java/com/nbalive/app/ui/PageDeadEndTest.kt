@@ -113,6 +113,71 @@ class PageDeadEndTest {
     }
 
     // ---------------------------------------------------------------
+    // v1.2.26 组合回归：P18 的恢复条上报与 onPageDeadEnd 的去重守卫
+    // ---------------------------------------------------------------
+
+    /**
+     * 线上现场（修复前双双失效的正是这两条出口）：
+     * 恢复条 1.5 秒出现 → `onDeadEndSuspectOnly` 置 playbackSuspect；
+     * 9.5 秒探测循环到点 → `onPageDeadEnd` —— 原来它的守卫读 playbackSuspect，
+     * 于是被 1.5 秒那次上报吞掉，自动换线与「换线路」按钮双双失灵。
+     */
+    @Test
+    fun `恢复条已上报疑似后 自动换线与换线路按钮仍必须生效`() = vmTest {
+        val watching = match("watching")
+        val vm = vmWithSignals(watching, PAGE_A, PAGE_B)
+        settle()
+        vm.playMatch(watching)
+        waitForLoadSignals(vm)
+        settle()
+
+        // 1.5 秒：恢复条出现，只置疑似、不换线（P18）
+        vm.onDeadEndSuspectOnly()
+        settle()
+        assertEquals("P18：恢复条出现不许换线", 0, vm.playerState.value.selectedIndex)
+
+        // 9.5 秒：探测循环到点，自动换线**必须**发生（修复前被守卫吞掉）
+        vm.onPageDeadEnd()
+        settle()
+        assertEquals("恢复条上报过疑似 ≠ 死胡同已处置 —— 9.5s 自动换线不许被吞", 1, vm.playerState.value.selectedIndex)
+        assertEquals(PAGE_B, vm.playerState.value.webFallbackUrl)
+    }
+
+    @Test
+    fun `恢复条上报后 用户点换线路按钮也必须换线`() = vmTest {
+        val watching = match("watching")
+        val vm = vmWithSignals(watching, PAGE_A, PAGE_B, "http://play.example.com/play/mgxl/?id=11&id2=")
+        settle()
+        vm.playMatch(watching)
+        waitForLoadSignals(vm)
+        settle()
+
+        // 恢复条出现（1.5s）→ 用户点了「换线路」（PlayerScreen 浮层按钮走同一个出口）
+        vm.onDeadEndSuspectOnly()
+        vm.onPageDeadEnd()
+        settle()
+
+        assertEquals("用户点「换线路」必须换下一条", 1, vm.playerState.value.selectedIndex)
+    }
+
+    @Test
+    fun `同一条线路上死胡同重复上报仍只换一条线`() = vmTest {
+        val watching = match("watching")
+        val vm = vmWithSignals(watching, PAGE_A, PAGE_B, "http://play.example.com/play/mgxl/?id=11&id2=")
+        settle()
+        vm.playMatch(watching)
+        waitForLoadSignals(vm)
+        settle()
+
+        // 探测每秒轮询：同一条死线可能连发多次 onPageDeadEnd
+        vm.onPageDeadEnd()
+        repeat(5) { vm.onPageDeadEnd() }
+        settle()
+
+        assertEquals("死胡同账随线路只记一次，不许连跳", 1, vm.playerState.value.selectedIndex)
+    }
+
+    // ---------------------------------------------------------------
 
     private fun vmWithSignals(watching: Match, vararg pages: String): MainViewModel {
         val signals = pages.mapIndexed { i, page -> source("watching-s$i", page) }

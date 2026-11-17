@@ -406,3 +406,52 @@ tasks.register<JacocoReport>("jacocoDebugUnitTestReport") {
     // 精确到"这个任务产出的那一个文件"，不要扫整个 build 目录。
     executionData.setFrom(layout.buildDirectory.file("jacoco/testDebugUnitTest.exec"))
 }
+
+/*
+ * 覆盖率**闸**（v1.2.26，本轮审查第 6 条建议）。
+ *
+ * ## 要解决什么
+ * 报告任务一直存在，但既没接进 CI、也没有最低阈值 —— "有覆盖率数据"
+ * 和"覆盖率不许掉"是两回事。本仓库约 45% 的用例是"把源码当字符串匹配"的
+ * 结构守卫，真实行为覆盖到底多少，只有这个数字能回答。
+ *
+ * ## 阈值怎么定
+ * 实测（2026-11-16，jacocoDebugUnitTestReport）：**行 46.5% / 分支 26.6% / 方法 53.2%**。
+ * 这里钉 **40% 行覆盖**，取值理由：
+ *  - 明显低于现状 → 不是"恰好等于今天"的脆闸（改一行就红会让人直接删闸）；
+ *  - 又足以挡住"整片功能没测还全绿"的滑坡（掉到 39% 即红）。
+ * 之后只许往上调，不许往下调。
+ *
+ * ⚠️ 只统计 **debug 单测的 .exec**，与上面的报告任务同源；用
+ * JacocoCoverageVerification（Gradle 公开任务类型），不碰任何 AGP 内部实现类
+ * （04-P2-7 的纪律）。
+ */
+tasks.register<JacocoCoverageVerification>("jacocoCoverageGate") {
+    group = "verification"
+    description = "覆盖率闸：debug 单测行覆盖低于阈值即失败（CI 消费，见 ci.yml）"
+    dependsOn("testDebugUnitTest")
+
+    sourceDirectories.setFrom(files("src/main/java"))
+    classDirectories.setFrom(
+        files(
+            fileTree(layout.buildDirectory.dir("tmp/kotlin-classes/debug")) {
+                exclude("**/R.class", "**/R\$*.class", "**/BuildConfig.*", "**/Manifest*.*")
+            },
+            fileTree(layout.buildDirectory.dir("intermediates/javac/debug/classes")) {
+                exclude("**/R.class", "**/R\$*.class", "**/BuildConfig.*")
+            },
+        ),
+    )
+    executionData.setFrom(layout.buildDirectory.file("jacoco/testDebugUnitTest.exec"))
+
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                value = "COVEREDRATIO"
+                // 与实测 46.5% 之间留 6.5 个百分点的余量（见上方说明）
+                minimum = "0.40".toBigDecimal()
+            }
+        }
+    }
+}

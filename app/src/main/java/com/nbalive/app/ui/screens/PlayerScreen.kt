@@ -372,11 +372,18 @@ fun PlayerScreen(
     // 布尔事件在重组合并时可能被吞掉，计数只增不减，永远不会丢。
     var webDeadEndReloadRequests by remember(webFallbackUrl) { mutableIntStateOf(0) }
 
+    // 滚动状态必须**无条件** remember（v1.2.26）：
+    // 原来写成 `.then(if (videoOnly) Modifier else Modifier.verticalScroll(rememberScrollState()))`
+    // —— remember 落在条件分支里，进出全屏/小窗时那条槽位消失又重建，
+    // 列表滚到哪儿全丢了（用户退全屏回到顶上，而视频区还在放）。
+    // 无条件 remember 之后滚动位置跨全屏保持；videoOnly 时只是**不挂**这个修饰符。
+    val scrollState = rememberScrollState()
+
     Box(modifier = modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .then(if (videoOnly) Modifier else Modifier.verticalScroll(rememberScrollState()))
+            .then(if (videoOnly) Modifier else Modifier.verticalScroll(scrollState))
             .then(if (videoOnly) Modifier else Modifier.padding(bottom = 24.dp)),
     ) {
         // ---------- 视频区 ----------

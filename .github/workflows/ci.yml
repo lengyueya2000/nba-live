@@ -67,6 +67,20 @@ jobs:
       - name: lint（debug 变体）
         run: ./gradlew :app:lintDebug --stacktrace
 
+      # v1.2.26（本轮审查第 6 条）：覆盖率从"能生成报告"升级为"必须达到闸"。
+      # 阈值 40% 行覆盖（实测 46.5%，留 6.5 个百分点余量），只许升不许降；
+      # 判据本体在 app/build.gradle.kts 的 jacocoCoverageGate。
+      - name: 覆盖率闸（debug 单测行覆盖 ≥ 40%）
+        run: ./gradlew :app:jacocoCoverageGate :app:jacocoDebugUnitTestReport --stacktrace
+
+      - name: 上传覆盖率报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report-${{ github.sha }}
+          path: app/build/reports/jacoco/**/*.html
+          if-no-files-found: warn
+
       - name: 上传 lint 报告
         if: always()
         uses: actions/upload-artifact@v4

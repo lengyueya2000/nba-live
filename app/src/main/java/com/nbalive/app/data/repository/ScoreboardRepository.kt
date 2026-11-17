@@ -76,8 +76,10 @@ class ScoreboardRepository(
      * 拉一次比分板。
      *
      * @param enabled 用户开着的数据源（「我的」页开关）—— 全关掉时也没必要拉比分
+     * @param nowWallMs 墙上钟注入点（测试用它把"陈旧"变成确定性判据；
+     *   生产默认 `System.currentTimeMillis()`，与 [Snapshot.fetchedAtMs] 同一口径）
      */
-    suspend fun load(enabled: Set<Provider> = Provider.entries.toSet()): Snapshot {
+    suspend fun load(enabled: Set<Provider> = Provider.entries.toSet(), nowWallMs: () -> Long = { System.currentTimeMillis() }): Snapshot {
         // ⚠️ D8：`enabled` 必须真的被消费（review/optimization-review.md D8）。
         // 旧实现只在签名里收下它、函数体一次都没读，KDoc 却写"全关掉时也没必要拉比分"——
         // 声明与实现相反，两源全关的过渡态仍会打 ESPN。
@@ -106,7 +108,7 @@ class ScoreboardRepository(
                     ok += league
                 }
             }
-            Snapshot(games, ok, fetchedAtMs = System.currentTimeMillis())
+            Snapshot(games, ok, fetchedAtMs = nowWallMs())
         }
         // ⚠️ D7：失败（空快照）**不许覆盖 last-good**（review/optimization-review.md D7）。
         // 旧实现把空快照写进 20 秒 TTL 缓存，于是 ESPN 不通期间卡片一直挂着
@@ -133,6 +135,21 @@ class ScoreboardRepository(
         return TeamNameBridge.findGame(snapshot.games, match.homeTeam, match.awayTeam)
     }
 
+    /**
+     * 快照是否已经**陈旧**（消费 [Snapshot.fetchedAtMs] 的唯一生产判据）。
+     *
+     * ⚠️ v1.2.26：这个函数把 D7 的承诺接完 —— `fetchedAtMs` 与"UI 靠它剔除
+     * 陈旧比分"的注释在 review D7 就写下了，但生产里没有任何消费点
+     * （VM 只取 `Map<String, GameScore>`，时间戳被丢弃），ESPN 持续失败时
+     * 旧比分被当实时比分无限挂着。判据在此，消费点在
+     * [com.nbalive.app.ui.MainViewModel.refreshScores]，回归见 `ScoreboardStalenessTest`。
+     *
+     * 空快照（EMPTY / 从未成功，`fetchedAtMs = 0`）**不算陈旧**——
+     * 它本来就没有内容可标旧，由调用方按 isEmpty 处理。
+     */
+    fun isStale(snapshot: Snapshot, nowWallMs: Long): Boolean =
+        !snapshot.isEmpty() && nowWallMs - snapshot.fetchedAtMs > STALE_AFTER_MS
+
     /** 联赛 → ESPN 比分板地址；没有数据的联赛返回 null（不发请求）。 */
     private fun scoreboardUrl(league: League): String? = when (league) {
         League.NBA -> "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
@@ -142,8 +159,11 @@ class ScoreboardRepository(
         else -> null
     }
 
-    private companion object {
+    companion object {
         /** 有比分数据的联赛（CBA 不在内，理由见 [scoreboardUrl]）。 */
         val LEAGUES_WITH_SCORES = listOf(League.NBA)
+
+        /** 一份 last-good 快照"还能当实时比分显示"的墙上钟上限（见 [isStale]）。 */
+        const val STALE_AFTER_MS: Long = 120_000L
     }
 }
