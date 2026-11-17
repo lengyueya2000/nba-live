@@ -80,6 +80,23 @@ class K88RealCaptureTest {
         )
     }
 
+    @Test
+    fun `真实抓包里腾讯超清排第一`() {
+        // 用户 2026-11-17 点名「88看球里优先把腾讯超清线路排第一」。
+        // 这条判据必须打在**真实字节**上，不是只打在手写夹具上：
+        // 那份抓包里可直连线路的源站顺序是 线路Q1 → 腾讯超清1 → 线路A1 → 线路Q3，
+        // 旧实现（只按可直连排序）默认选中的是 线路Q1 —— 也就是说
+        // "腾讯超清排第一"在真实数据上当时并不成立，只有真字节能证明它现在成立。
+        val sources = parser.parseSourcePage(REAL_SOURCE_BODY, match())
+        assertEquals(
+            "真实抓包的第一条必须是腾讯超清（实际：${sources.map { it.label }}）",
+            "腾讯超清1",
+            sources.first().label,
+        )
+        // 且不许把只能走网页的云直播线路提到它前面（两级顺序不可颠倒）
+        assertTrue("第一条必须可直连", sources.first().isDirectHls)
+    }
+
     private fun match() = Match(
         id = "k88-131401",
         league = League.NBA,

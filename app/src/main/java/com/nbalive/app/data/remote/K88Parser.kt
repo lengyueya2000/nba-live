@@ -103,6 +103,43 @@ class K88Parser {
 
         /** m3u8 代理壳 host。 */
         private const val M3U8_WRAPPER_HOST = "88player.top"
+
+        /**
+         * 用户点名的优先线路关键字（2026-11-17「88看球里优先把腾讯超清线路排第一」）。
+         *
+         * ⚠️ 只按**线路名**判，不按上游 host 判：实测 腾讯超清 的上游是
+         * `rtmpcdn.com/live/qq1.m3u8`，而 `线路Q1` 的上游是另一个域
+         * （`hello.ooo0ooo.top`）—— 上游域是源站随时会换的实现细节，
+         * 线路名才是源站面向用户的那层，也是用户据以提需求的依据。
+         *
+         * ⚠️ 关键字命中不到时的行为必须是"退回原顺序"而不是"没有线路"：
+         * 源站哪天把名字改掉，这里静默失效、默认选中回到第一条可直连的线路，
+         * 用户照样能播（代价只是没按偏好排序），不许因此报错或过滤掉任何线路。
+         */
+        private const val PREFERRED_LINE_KEYWORD = "腾讯超清"
+
+        /**
+         * 线路优先级键（0 = 更该被默认选中）。两级，顺序**不可颠倒**：
+         *
+         * 1. **可静态直连优先**（既有纪律）：直连是"秒开"，网页承载是实测
+         *    0.1~27 秒的加载波动。用户点名某条线路不许越过这一级 ——
+         *    否则一条"只能走网页的腾讯超清"会把默认体验从秒开拖成十几秒黑屏。
+         * 2. **同名优先线路排在同级前面**（本次新增）。
+         *
+         * 用 `sortedWith` 而不是多次 `sortedBy`：比较器只返回 0/1，
+         * Kotlin 的排序是稳定的 ⇒ 同级之间**完整保留源站顺序**，
+         * 不含关键字时整体顺序与改动前逐条相同（有判据钉住）。
+         */
+        private fun lineRank(path: String, label: String): Int {
+            val direct = isStaticallyResolvablePlayPage(path)
+            val preferred = label.contains(PREFERRED_LINE_KEYWORD)
+            return when {
+                direct && preferred -> 0
+                direct -> 1
+                preferred -> 2
+                else -> 3
+            }
+        }
     }
 
     /**
@@ -230,9 +267,13 @@ class K88Parser {
         val admitted = ChannelAdmission.admit(raw).filter { isWorthwhile(it.path) }
 
         return admitted
-            // 可直连的排前面：本源恰好给了本 App 最想要的裸 m3u8，
-            // 默认选中第一条就应该落在它上面（与 JrkanParser.parseChannels 同一条排序纪律）
-            .sortedByDescending { (path, _) -> isStaticallyResolvablePlayPage(path) }
+            // 排序纪律见 [lineRank]：可直连优先（省一次 0.1~27 秒的网页加载），
+            // 同级里用户点名的 腾讯超清 再靠前；同级之间保持源站顺序。
+            // ⚠️ 显式带原始下标而不是"靠稳定排序"：稳定是 Kotlin 的实现细节，
+            // 把"保持源站顺序"写成比较器的一部分，才是这条纪律被钉住的形式。
+            .mapIndexed { order, channel -> order to channel }
+            .sortedWith(compareBy({ lineRank(it.second.path, it.second.rawLabel) }, { it.first }))
+            .map { it.second }
             .mapIndexed { lineIndex, (path, rawLabel) ->
                 StreamSource(
                     // ⚠️ id 带来源维度（与 JRS 同款教训）：播放器把它当 LazyColumn 的 key。

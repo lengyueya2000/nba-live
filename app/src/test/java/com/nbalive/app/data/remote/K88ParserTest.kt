@@ -231,6 +231,63 @@ class K88ParserTest {
         assertTrue(parser.parseSourcePage("", k88Match()).isEmpty())
     }
 
+    // ---------- 线路优先级（2026-11-17 用户点名） ----------
+
+    @Test
+    fun `腾讯超清排在其它可直连线路之前`() {
+        // 真实抓包里 88 的可直连线路顺序是 线路Q1 → 腾讯超清1 → 线路A1 → 线路Q3，
+        // 旧实现只按"能不能直连"排序（稳定排序 ⇒ 保持源站顺序），
+        // 于是默认选中的永远是 线路Q1。用户点名要 腾讯超清 优先。
+        val payload = sourceJson(
+            """
+            {"links":[
+              {"url":"https://play.88player.top/m3u8.html?url=https%3A%2F%2Fhello.ooo0ooo.top%2Flive%2F3931673.m3u8","name":"线路Q1"},
+              {"url":"https://play.88player.top/m3u8.html?url=https%3A%2F%2Fwww.rtmpcdn.com%2Flive%2Fqq1.m3u8","name":"腾讯超清1"},
+              {"url":"https://play.88player.top/m3u8.html?url=https%3A%2F%2Fwww.rtmpcdn.com%2Flive%2Fp-342.m3u8","name":"线路A1"}
+            ]}
+            """.trimIndent(),
+        )
+        val sources = parser.parseSourcePage(payload, k88Match())
+        assertEquals(3, sources.size)
+        assertEquals("腾讯超清1 必须是第一条（默认选中它）", "腾讯超清1", sources[0].label)
+        // 其余线路之间仍按源站顺序（稳定排序，不许顺手打乱别的线）
+        assertEquals(listOf("线路Q1", "线路A1"), sources.drop(1).map { it.label })
+    }
+
+    @Test
+    fun `腾讯超清优先不许把只能网页播放的线路提到直连之前`() {
+        // 两条纪律的先后必须是：可直连 > 不可直连，**然后**才是 腾讯超清 优先。
+        // 反过来说：如果哪天 腾讯超清 变成一条只能走 WebView 的线路，
+        // 它也不许越过可直连的线路 —— 否则默认选中项从"秒开"退化成"0.1~27 秒的网页加载"。
+        val payload = sourceJson(
+            """
+            {"links":[
+              {"url":"http://play.sportsteam368.com/play/mgxl/?id=00588403&id2=","name":"腾讯超清（改版后变成网页壳）"},
+              {"url":"https://play.88player.top/m3u8.html?url=https%3A%2F%2Fwww.rtmpcdn.com%2Flive%2Fqq1.m3u8","name":"可直连线路"}
+            ]}
+            """.trimIndent(),
+        )
+        val sources = parser.parseSourcePage(payload, k88Match())
+        assertEquals("可直连必须仍然优先", listOf("可直连线路"), sources.take(1).map { it.label })
+    }
+
+    @Test
+    fun `没有腾讯超清时顺序与旧实现完全一致`() {
+        // 防"加了优先级就把整张表打乱"：不含关键字时，必须退回既有的
+        // 「可直连在前 + 源站顺序」，一条都不许动。
+        val payload = sourceJson(
+            """
+            {"links":[
+              {"url":"http://play.sportsteam368.com/play/kbs/?id=10022600231&id2=","name":"国内线路 Q ⑤"},
+              {"url":"https://play.88player.top/m3u8.html?url=https%3A%2F%2Fhello.ooo0ooo.top%2Flive%2F3931673.m3u8","name":"线路Q1"},
+              {"url":"http://play.sportsteam368.com/play/mgxl/?id=00588403&id2=","name":"国内线路 M⑥"}
+            ]}
+            """.trimIndent(),
+        )
+        val sources = parser.parseSourcePage(payload, k88Match())
+        assertEquals(listOf("线路Q1", "国内线路 Q ⑤", "国内线路 M⑥"), sources.map { it.label })
+    }
+
     // ---------- 夹具 ----------
 
     private fun k88Match() = Match(
