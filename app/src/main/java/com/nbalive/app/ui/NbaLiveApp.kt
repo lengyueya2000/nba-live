@@ -362,6 +362,8 @@ private fun PlayerBranch(
         streamUrl = playerState.streamUrl,
         streamReferer = playerState.streamReferer,
         webFallbackUrl = playerState.webFallbackUrl,
+        // 重连意图序号：地址不变时它是"用户要求重来"唯一的可观察信号（见 reconnectNonce 的 KDoc）
+        reconnectNonce = playerState.reconnectNonce,
         // 非全屏时常驻提示卡（全屏下卡片不渲染，由 Snackbar 负责）
         errorMessage = playerState.errorMessage,
         onSignalSelected = viewModel::selectSignal,

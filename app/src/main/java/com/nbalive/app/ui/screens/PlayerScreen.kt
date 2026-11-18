@@ -208,6 +208,14 @@ fun PlayerScreen(
     onAspectChange: (AspectMode) -> Unit = {},
     /** 重连：重新解析当前线路（直播地址带时效签名，过期后需要换新地址） */
     onReconnect: () -> Unit = {},
+    /**
+     * 「用户要求重连」的意图序号（根因见 [com.nbalive.app.ui.PlayerUiState.reconnectNonce]）。
+     *
+     * ⚠️ 必须一路传到 VideoSurface / WebSurface：重连时地址常常**逐字不变**
+     * （嗅探缓存命中，或网页线路本来就是同一个播放页），
+     * 界面只看地址就判定"没变化"，于是用户点了刷新、什么都不发生。
+     */
+    reconnectNonce: Long = 0L,
     /** 正在直播的其他场次（"同时在播"面板数据源） */
     liveMatches: List<Match> = emptyList(),
     onLiveMatchClick: (Match) -> Unit = {},
@@ -409,6 +417,7 @@ fun PlayerScreen(
                     aspectMode = aspectMode,
                     handle = videoHandle,
                     onError = onPlaybackError,
+                    reconnectNonce = reconnectNonce,
                 )
                 webFallbackUrl != null -> {
                     // ⚠️ 网页兜底全屏时，WebView **不能铺满整个容器**。
@@ -464,6 +473,7 @@ fun PlayerScreen(
                                     // 渲染在**手势层之后**的浮层区（见 PlayerDeadEndBar）
                                     onDeadEndBarChanged = { webDeadEndBar = it },
                                     reloadRequest = webDeadEndReloadRequests,
+                                    reconnectNonce = reconnectNonce,
                                 )
                             }
                         }
@@ -2010,8 +2020,13 @@ private fun VideoSurface(
     aspectMode: AspectMode,
     handle: VideoPlayerHandle,
     onError: () -> Unit,
+    /** 「用户要求重连」的意图序号；根因见 [com.nbalive.app.ui.PlayerUiState.reconnectNonce] */
+    reconnectNonce: Long = 0L,
 ) {
-    val reportedRef = remember { mutableSetOf<String>() }
+    // 每条地址只上报一次错误 —— 但**必须按"轮"记**：重连时地址常常逐字不变
+    // （嗅探缓存命中），若集合不随重连清零，重连后的第二次失败会被静默吞掉，
+    // 用户看到的是"点了刷新以后连自动换线都不发生了"。
+    val reportedRef = remember(streamUrl, reconnectNonce) { mutableSetOf<String>() }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     val onErrorState = rememberUpdatedState(onError)
     // ⚠️ 监听器只在工厂里注册**一次**（播放器复用），所以它必须读**当前**的地址：
@@ -2021,10 +2036,19 @@ private fun VideoSurface(
     val currentReferer = rememberUpdatedState(referer)
     // 已经**应用到播放器上**的媒体地址（换线"一次性"的守卫，判据见 LineSwitchPolicy）。
     var appliedUrl by remember { mutableStateOf<String?>(null) }
+    // 已经消费掉的**重连意图**序号。
+    // ⚠️ 为什么不能只靠 appliedUrl：重连时地址往往一模一样（嗅探缓存还没过期），
+    // 只看地址的判据会 Ignore —— 用户点了刷新，一次 prepare() 都没跑。
+    // 这个序号让"用户要求重投"成为一个独立于地址的信号，且**只生效一次**
+    // （消费后写回），所以普通重组仍不会重复 prepare（P9 / P11 的原意保住）。
+    var appliedNonce by remember { mutableStateOf(-1L) }
     // 是否曾经进入过 READY：直播流正常也会周期性重缓冲（STATE_BUFFERING），
     // 只看"当前不是 READY"会把健康线路误判成卡死。
     // ⚠️ 按 streamUrl remember：换线路是"重新开始"，必须回到"未就绪"。
-    var reachedReady by remember(streamUrl) { mutableStateOf(false) }
+    // ⚠️ 也必须按 reconnectNonce remember（2026-11-17「刷新没反应」的二阶问题）：
+    // 重连时地址常常不变，若不回到 false，首帧看门狗会因"曾经就绪过"永久失效，
+    // 用户点完刷新后连自动换线都不再发生 —— 比原来的空转更难发现。
+    var reachedReady by remember(streamUrl, reconnectNonce) { mutableStateOf(false) }
     // 单调时钟（P14）：卡死看门狗的采样时刻全部走它。
     val clock = remember { PlayerClock.System }
     // P3：音频模式轮询链的重投开关。
@@ -2245,7 +2269,9 @@ private fun VideoSurface(
     // 自动跳走，用户看到"线路莫名被跳走且回不来"。
     // 现在失败记账本身有 TTL（SourceFailureBook，5 分钟自动解封），
     // 双重降低"一次误判 = 整场看不了"的概率。
-    LaunchedEffect(streamUrl) {
+    // ⚠️ key 里必须带 reconnectNonce：重连时地址常常不变，不带的话这一轮
+    // 永远不会再被首帧看门狗盯（配合上面 reachedReady 的复位，两条是同一个二阶问题）。
+    LaunchedEffect(streamUrl, reconnectNonce) {
         delay(FIRST_FRAME_WATCHDOG_MS)
         val player = playerView?.player
         // 只有"从未就绪过"才算卡死：直播流正常重缓冲时状态就是 BUFFERING，
@@ -2269,7 +2295,9 @@ private fun VideoSurface(
     //    （重叠会让首帧慢的线路被两边各判一次、连续换两条线）；
     //  - 已就绪且连续缓冲满阈值 -> STALLED，触发一次换线；
     //  - 同一段卡死只报一次，避免连续触发多次故障切换。
-    LaunchedEffect(streamUrl) {
+    // ⚠️ key 里必须带 reconnectNonce：Tracker 记的是"上一段卡死只报一次"，
+    // 重连后地址不变的话这个记忆会跨轮存活，新一轮的真卡死就再也报不出来。
+    LaunchedEffect(streamUrl, reconnectNonce) {
         val tracker = StalledPlayback.Tracker()
         while (isActive) {
             delay(STALL_POLL_INTERVAL_MS)
@@ -2296,7 +2324,7 @@ private fun VideoSurface(
     //
     // ⚠️ key 里带 `playerView`：工厂是"布局阶段"才跑、把 view 写进这个状态的，
     // 所以首轮 effect 可能看到 null（直接返回），view 就绪后会再跑一次。
-    LaunchedEffect(streamUrl, playerView) {
+    LaunchedEffect(streamUrl, playerView, reconnectNonce) {
         val view = playerView ?: return@LaunchedEffect
         val player = view.player ?: return@LaunchedEffect
         when (
@@ -2304,11 +2332,14 @@ private fun VideoSurface(
                 appliedUrl = appliedUrl,
                 newUrl = streamUrl,
                 playingIntent = player.playWhenReady,
+                // 本轮重连还没被消费过 → 强制重投一次（地址相同也要 prepare）
+                forceReapply = reconnectNonce != appliedNonce,
             )
         ) {
             LineSwitchPolicy.Action.Ignore -> Unit
             is LineSwitchPolicy.Action.Apply -> {
                 appliedUrl = streamUrl
+                appliedNonce = reconnectNonce
                 // 换线时先清掉上一线的画质标签：新线首帧到达前显示旧分辨率是错的
                 handle.clearQuality()
                 player.setMediaItem(MediaItem.fromUri(streamUrl))
@@ -2495,6 +2526,14 @@ private fun WebSurface(
      * （同一取舍见 `PipState.expandRequests`）。
      */
     reloadRequest: Int = 0,
+    /**
+     * 「用户要求重连」的意图序号（根因见 [com.nbalive.app.ui.PlayerUiState.reconnectNonce]）。
+     *
+     * ⚠️ 网页线路的重连**只能**靠它：`play()` 会把同一个播放页地址原地写回，
+     * `navigationTag` 不变 → `update` 块不调 `loadUrl`，WebView 原样停在死页上。
+     * 用户点刷新"没反应"，指的就是这一支。
+     */
+    reconnectNonce: Long = 0L,
 ) {
     val onStreamFoundState = rememberUpdatedState(onStreamFound)
     val onPlaybackDeadState = rememberUpdatedState(onPlaybackDead)
@@ -2551,12 +2590,15 @@ private fun WebSurface(
     // 于是「重新加载」只能 `reload()` 当前地址 —— 捷径路径下那正是**同一个旧签名**。
     // 现在"重新跑一次捷径"变成显式代次（进 effect 的 key）：点重新加载 → 代次 +1。
     var reloadSeq by remember(url) { mutableIntStateOf(0) }
-    // 导航标识 = 代次 + 目标地址。
+    // 导航标识 = 代次 + 重连意图 + 目标地址。
     // ⚠️ 只比较地址会让"地址没变但要求重新加载"落空（旧实现在捷径路径下就是这样），
     // 带上代次之后，即使 targetUrl 与当前 tag 相同也会真的 `loadUrl` 一次。
-    val navigationTag = "$reloadSeq|$targetUrl"
-    LaunchedEffect(url, reloadSeq) {
-        // ⚠️ 首轮与「重新加载」走**同一条路**：拉壳页 → 算新的 paps → 让 WebView 直接加载它。
+    // ⚠️ reconnectNonce 也必须进来（2026-11-17「刷新没反应」）：底栏那个刷新图标
+    // 走的是 VM 的 reconnect，它把**同一个播放页地址**原地写回，
+    // 只有意图序号能让这里观察到"用户要求重来一次"。
+    val navigationTag = "$reloadSeq|$reconnectNonce|$targetUrl"
+    LaunchedEffect(url, reloadSeq, reconnectNonce) {
+        // ⚠️ 首轮、「重新加载」与「重连」走**同一条路**：拉壳页 → 算新的 paps → 让 WebView 直接加载它。
         // 解析失败时 targetUrl 保持 url（回退语义与改动前一致，只是现在每次都显式写一遍）。
         val html = kotlinx.coroutines.withTimeoutOrNull(PlayerPageResolver.SHELL_FETCH_TIMEOUT_MS) {
             runCatching {
@@ -2640,9 +2682,11 @@ private fun WebSurface(
     var pageErrorAt by remember(url) { mutableLongStateOf(0L) }
     // 连续「干净」的探测轮数：P12 的退避输入（探到错误立刻归零）
     var cleanProbes by remember(url) { mutableIntStateOf(0) }
-    LaunchedEffect(url, targetUrl) {
+    LaunchedEffect(url, targetUrl, reconnectNonce) {
         // 导航变化 → 这条循环重启：与**上一个**页面绑定的出口状态先清零（P4/P5 的同一入口）。
         // 不清的话，上一个页面留下的错误时刻会让新页面刚打开就顶着恢复条。
+        // ⚠️ reconnectNonce 也进 key：重连就是一次新的 loadUrl，
+        // 地址没变时只有它能让这条探测循环回到"重新开始"的基准。
         pageErrorAt = 0L
         pageDeadEnd = false
         cleanProbes = 0
@@ -2898,6 +2942,13 @@ private fun WebSurface(
                 // 那样每次重组都会重新 loadUrl，把正在播的流打断。用 tag 记住"我们请求的导航"。
                 if (view.tag != navigationTag) {
                     view.tag = navigationTag
+                    // ⚠️ 真机取证锚点（与 H6 那条同一条纪律）：用户报"点了刷新没反应"时，
+                    // 这一行是"重连意图确实变成了一次真实导航"的唯一客观证据 ——
+                    // 没有它，"界面没收到意图"与"收到了但导航没发生"分不开。
+                    // ⚠️ 绝不能整串打 navigationTag：它拼了 targetUrl，
+                    // 而捷径路径下那是带 encodedStr 签名的 paps 地址 —— 签名会直接进 logcat。
+                    // 只打代次/意图这两个数 + 脱敏后的地址。
+                    debugLog("WebSurface", "navigate seq=$reloadSeq nonce=$reconnectNonce → ${redactUrl(targetUrl)}")
                     view.loadUrl(targetUrl)
                 }
             },

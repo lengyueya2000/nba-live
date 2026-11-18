@@ -46,7 +46,22 @@ internal object LineSwitchPolicy {
      *   （首轮工厂跑完、view 就绪时的第一次应用）
      * @param newUrl 当前要播的线路地址
      * @param playingIntent 换线前一刻的 `player.playWhenReady`
+     * @param forceReapply **用户刚要求重连**（本轮 nonce 还没消费）。
+     *
+     *   ⚠️ 为什么必须有这个参数（2026-11-17「视频播放失败时，有时候刷新没反应」）：
+     *   `Ignore` 的原意是「**没人要求重来**，别因为重组就重新装载」，
+     *   而不是「地址字符串相同就别动」。两者在重连时正好冲突：
+     *   嗅探缓存命中时 `play()` 写回的是**逐字相同**的 m3u8（签名没过期，复用是对的），
+     *   于是只看地址的判据会 Ignore —— 用户点了刷新，播放器一次 `prepare()` 都没跑，
+     *   画面原样停在那儿。地址相同 + 用户要求重投 = 必须 Apply。
+     *   默认 `false`，所以普通重组的行为与改动前逐字相同（P9 / P11 的原意保住）。
      */
-    fun decide(appliedUrl: String?, newUrl: String, playingIntent: Boolean): Action =
-        if (appliedUrl == newUrl) Action.Ignore else Action.Apply(playWhenReady = playingIntent)
+    fun decide(
+        appliedUrl: String?,
+        newUrl: String,
+        playingIntent: Boolean,
+        forceReapply: Boolean = false,
+    ): Action =
+        if (appliedUrl == newUrl && !forceReapply) Action.Ignore
+        else Action.Apply(playWhenReady = playingIntent)
 }

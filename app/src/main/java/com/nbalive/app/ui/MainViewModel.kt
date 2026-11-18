@@ -179,6 +179,27 @@ data class PlayerUiState(
      * 同样的文案连着报两次，StateFlow 会合并相等值 → 第二次不再弹提示。
      */
     val errorId: Long = 0,
+    /**
+     * 「用户要求重连」的自增意图序号。
+     *
+     * ⚠️ 为什么需要它（2026-11-17「视频播放失败时，有时候刷新没反应」）：
+     * [MainViewModel.reconnect] 原本只是再调一次 `play(selectedIndex)`，而 `play()`
+     * 在网页承载的两条分支上，**两次状态写入之间没有任何挂起点**：
+     *  - 嗅探缓存命中：先写 `streamUrl = null`，同一轮里又写回逐字相同的缓存地址；
+     *  - 缓存未命中：先写 `webFallbackUrl = null`，同一轮里又写回同一个播放页。
+     * StateFlow / Compose 快照会把「变了又变回来」合并掉，界面观察不到中间态，
+     * 于是 [com.nbalive.app.ui.screens.LineSwitchPolicy] 判 Ignore、
+     * `WebSurface` 的 navigationTag 判相同不调 loadUrl —— 用户点了刷新，**什么都没发生**。
+     *
+     * 只有静态直连那条分支中间有 `resolveStream` 这个挂起点，所以现象才是「有时候」：
+     * 实测（雷电 / Android 14）直连线路重连会看到 Release → m3u8 OK → Init，
+     * 网页承载的线路（过滤掉主播线路后的大多数）全部空转。
+     *
+     * 所以重连必须表达成一次**意图**，而不是一个地址：界面把它进 effect key，
+     * 并在本轮未消费时强制重投一次。序号只在点击那一次生效，
+     * 重组仍不会重复 prepare（P9 / P11 的原意不变）。
+     */
+    val reconnectNonce: Long = 0,
 )
 
 class MainViewModel(
@@ -1006,6 +1027,10 @@ class MainViewModel(
                 selectedIndex = index,
                 resolving = true,
                 failedSniffPage = null,
+                // 用户主动点线路 = 一次"再试这条"的意图（2026-11-17「刷新没反应」）：
+                // 点的是**当前那条**时地址不会变，界面只看地址就会 Ignore，
+                // 于是"重复点同一条线路"这个自救动作根本不存在。
+                reconnectNonce = it.reconnectNonce + 1,
             ).withError(null)
         }
         play(index)
@@ -1021,11 +1046,34 @@ class MainViewModel(
      * （WebView 销毁重建 + 4~6 个文档 + 1 个 m3u8），
      * 用户每点一次"重连"就是一轮完整重放 —— 这是最容易把源站打出限流的路径。
      * 真要恢复这条线，用户可以主动切走再切回来（selectSignal）。
+     *
+     * ⚠️ 必须递增 [PlayerUiState.reconnectNonce]（2026-11-17「刷新没反应」）：
+     * 光调 `play()` 不够 —— 网页承载的两条分支会把同一个地址/同一个播放页
+     * 原地写回，界面判"没变化"就什么都不做。意图要显式传下去。
      */
     fun reconnect() {
         val state = _playerState.value
-        if (state.signals.isEmpty()) return
+        if (state.signals.isEmpty()) {
+            // 旧实现这里 `return`：线路拉空（源站改版/限流冷却）时，
+            // 用户唯一的自救按钮连一个请求都不发，只能退出播放页重进。
+            // 重连的语义就是"重来一次"，这里退化成重新拉线路再播。
+            val m = state.match ?: return
+            // ⚠️ 必须先让详情页缓存失效：`loadSignals` 走的是 5 分钟 TTL 的
+            // JrsDetailCache，不失效的话重连拿回的是**同一份旧正文**、解出同样的空列表 ——
+            // 生产里照样空转，而注入 loadSignals 的单测根本看不见这一层。
+            // 与 [refreshSignals]（详情页「刷新线路」）同一条纪律。
+            m.jrsDetailId?.let { repository.invalidateDetailCache(it) }
+            playMatch(m)
+            return
+        }
         state.signals.getOrNull(state.selectedIndex)?.let { failedSources.clear(it.pageUrl) }
+        val nonce = state.reconnectNonce + 1
+        _playerState.update { it.copy(reconnectNonce = nonce) }
+        // ⚠️ 这条路径必须留一行日志（与 PlayerScreen 里 H6 那条同一条纪律）：
+        // 用户报的是"点了刷新没反应"，而"根本没点到"与"点了、但界面判定地址没变所以
+        // 什么都没做"在界面上长得一模一样，排查方向完全相反。没有这行日志就只能靠猜。
+        // 只打线路序号与意图序号：播放页地址含签名，不进 logcat。
+        debugLog("Reconnect", "用户要求重连：线路 ${state.selectedIndex} → nonce #$nonce")
         play(state.selectedIndex)
     }
 
