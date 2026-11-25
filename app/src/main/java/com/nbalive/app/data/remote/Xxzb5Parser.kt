@@ -6,6 +6,8 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.MatchStatusClock
 import com.nbalive.app.data.model.Provider
+import com.nbalive.app.data.model.ReplayItem
+import com.nbalive.app.data.model.ReplayLine
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isStaticallyResolvablePlayPage
 
@@ -60,6 +62,13 @@ class Xxzb5Parser {
 
         /** 从线路接口地址回推比赛 id（改版/外部拼入时用来尝试候选 origin）。 */
         internal val DETAIL_ID = Regex("""/api/v1/matches/(\d+)/progress""")
+
+        /**
+         * 回放列表接口：`/api/v1/replays?matchId={id}`（注意 replays 是复数）。
+         * ⚠️ 单数 `/api/v1/replay/{id}` 是**另一个足球实体**，不是回放，别混用。
+         */
+        fun replayListUrl(matchId: String, origin: String = SITE_ORIGIN): String =
+            "${origin.trimEnd('/')}/api/v1/replays?matchId=$matchId"
 
         /** 腾讯超清优先关键字（用户点名，与 88看球当时同一条要求）。 */
         private const val PREFERRED_LINE_KEYWORD = "腾讯超清"
@@ -173,6 +182,79 @@ class Xxzb5Parser {
                     pageUrl = channel.path,
                 )
             }
+    }
+
+    /**
+     * 从窗口赛程里挑出「篮球 + 已完赛 + 有 replayId」的场次，作为录像候选。
+     *
+     * lines 此刻为空，由 `MatchRepository.loadReplays` 再逐场拉 `/replays?matchId=` 填充。
+     * 联赛只做 NBA/CBA 的过滤交给上层（与直播列表一致，这里保留原始 league 名）。
+     */
+    fun parseReplayCandidates(body: String): List<ReplayItem> {
+        if (body.isBlank()) return emptyList()
+        val items = EspnScoreboard.JsonCursor(body).array("items") ?: return emptyList()
+        val out = mutableListOf<ReplayItem>()
+        for (item in items) {
+            if (item.string("sport").orEmpty().trim() != "篮球") continue
+            val status = item.string("status").orEmpty().trim().lowercase()
+            if (status != "finished" && status != "ft") continue
+            val replayId = item.int("replayId") ?: item.number("replayId")?.toIntOrNull() ?: 0
+            if (replayId <= 0) continue // 没有录像
+            val matchId = item.number("id") ?: item.string("id") ?: continue
+            val home = item.obj("home")?.string("name").orEmpty().trim()
+            val away = item.obj("away")?.string("name").orEmpty().trim()
+            if (home.isEmpty() || away.isEmpty()) continue
+            val startsAt = item.string("startsAt")
+            val startAtMillis = startsAt?.let {
+                runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull()
+            }
+            out += ReplayItem(
+                matchId = matchId,
+                league = League.resolve(item.string("league").orEmpty(), home, away),
+                leagueRawName = item.string("league").orEmpty().trim(),
+                homeTeam = home,
+                awayTeam = away,
+                homeScore = item.int("homeScore"),
+                awayScore = item.int("awayScore"),
+                timeLabel = startAtMillis?.let { formatBeijing(it) } ?: "",
+                startAtMillis = startAtMillis,
+                lines = emptyList(),
+            )
+        }
+        return out
+    }
+
+    /**
+     * 解析 `/api/v1/replays?matchId=` 的线路列表。
+     *
+     * 只收 `published=true`、http(s) 开头且是裸 m3u8 的线路；按源站 `sort` 升序，
+     * 让「标清 → 中文高清 → 英文高清」按产品顺序呈现，播放器里可直接换线。
+     */
+    fun parseReplays(body: String): List<ReplayLine> {
+        if (body.isBlank()) return emptyList()
+        val items = EspnScoreboard.JsonCursor(body).array("items") ?: return emptyList()
+        data class RawLine(val sort: Int, val matchId: String, val label: String, val url: String)
+        val raw = mutableListOf<RawLine>()
+        var order = 0
+        for (item in items) {
+            // published 缺省按「有数据」处理（老响应可能没这个字段但仍给线路）。
+            if (item.bool("published") == false) continue
+            val url = item.string("url").orEmpty().trim()
+            if (!url.startsWith("http") || !isStaticallyResolvablePlayPage(url)) continue
+            val title = item.string("title").orEmpty().trim()
+            val matchId = item.number("matchId") ?: item.string("matchId") ?: ""
+            raw += RawLine(
+                sort = item.int("sort") ?: order,
+                matchId = matchId,
+                label = title.ifBlank { "录像${order + 1}" },
+                url = url,
+            )
+            order++
+        }
+        // id 用排序后的位置：播放器按这个索引切线路，id 与视觉顺序一致更好排查。
+        return raw.sortedBy { it.sort }.mapIndexed { index, l ->
+            ReplayLine(id = "replay-${l.matchId}-c$index", label = l.label, url = l.url)
+        }
     }
 
     /** UTC 毫秒 → 北京时间的 `MM-dd HH:mm`（与两个既有源同一口径）。 */

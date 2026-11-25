@@ -7,7 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.nbalive.app.BuildConfig
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
+import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.Provider
+import com.nbalive.app.data.model.ReplayItem
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.remote.EspnScoreboard
@@ -98,6 +100,15 @@ data class MatchListUiState(
         League.OTHER to matches.count { it.league == League.OTHER },
     )
 }
+
+/** 录像页状态（2026-11-25 新增）。 */
+@Immutable
+data class ReplayUiState(
+    val loading: Boolean = true,
+    val refreshing: Boolean = false,
+    val items: List<ReplayItem> = emptyList(),
+    val error: String? = null,
+)
 
 /** 详情页状态（U6：标 `@Immutable`，理由见 [MatchListUiState]）。 */
 @Immutable
@@ -234,6 +245,8 @@ class MainViewModel(
         { enabled, forceRefresh ->
             repository.loadMatchesOutcome(enabled = enabled, forceRefresh = forceRefresh)
         },
+    /** 录像加载入口（测试注入，覆盖空/失败时序；生产走 [MatchRepository.loadReplays]）。 */
+    private val reloadReplays: suspend () -> List<ReplayItem> = { repository.loadReplays() },
     /**
      * 信号加载入口。测试注入它以驱动"进场期间返回/抛异常"等时序，
      * 也覆盖 loadSignals 的取消与失败路径（与 [loadMatches] 同一个理由）。
@@ -428,6 +441,9 @@ class MainViewModel(
 
     private val _listState = MutableStateFlow(MatchListUiState())
     val listState: StateFlow<MatchListUiState> = _listState.asStateFlow()
+
+    private val _replayState = MutableStateFlow(ReplayUiState())
+    val replayState: StateFlow<ReplayUiState> = _replayState.asStateFlow()
 
     // ---------- 比赛比分（2026-10-31 用户需求） ----------
 
@@ -754,6 +770,7 @@ class MainViewModel(
     private var detailJob: Job? = null
     private var loadJob: Job? = null
     private var refreshJob: Job? = null
+    private var replayJob: Job? = null
 
     /**
      * 「直连失败、退回网页」之后的宽限计时（2026-10-30 解析播放太慢）。
@@ -785,6 +802,78 @@ class MainViewModel(
      * 显式操作被缓存吞掉（fix-data 把 `forceRefresh` 暴露出来正是为了这个）。
      */
     fun refresh() = refreshWith(forceRefresh = true)
+
+    // ---------- 录像（2026-11-25 新增） ----------
+
+    /** 加载录像列表；`force` 时连点也不会并发打源站（取消上一次）。 */
+    fun loadReplays(force: Boolean = false) {
+        if (!force && _replayState.value.items.isNotEmpty()) return
+        replayJob?.cancel()
+        val firstLoad = _replayState.value.items.isEmpty()
+        _replayState.update { it.copy(loading = firstLoad, refreshing = !firstLoad, error = null) }
+        replayJob = viewModelScope.launch {
+            val items = try {
+                reloadReplays()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                safeLogWarn("MainViewModel", "loadReplays failed", t)
+                _replayState.update {
+                    it.copy(loading = false, refreshing = false, error = "加载录像失败：${safeMessage(t)}")
+                }
+                return@launch
+            }
+            _replayState.update {
+                it.copy(loading = false, refreshing = false, items = items, error = null)
+            }
+        }
+    }
+
+    /**
+     * 播放一场录像：把清晰度线路转成 `StreamSource`，直接走进播放器直连链路。
+     *
+     * 不再经过 `loadSignals`（线路已在手），也不经过状态校正（比赛已结束）。
+     * 合成一个 `Match` 只为播放器顶栏/元信息展示；它不进列表、不参与任何源开关。
+     */
+    fun playReplay(item: ReplayItem) {
+        if (item.lines.isEmpty()) return
+        playJob?.cancel()
+        cancelSniffRecovery()
+        loadJob?.cancel()
+        detailJob?.cancel()
+        failedSources.clearAll()
+        autoTriedIndices.clear()
+        setNav(_nav.value.openPlayer(item.id))
+        val synthetic = Match(
+            id = item.id,
+            league = item.league,
+            leagueRawName = item.leagueRawName,
+            homeTeam = item.homeTeam,
+            awayTeam = item.awayTeam,
+            homeLogo = null,
+            awayLogo = null,
+            timeLabel = item.timeLabel,
+            startAtMillis = item.startAtMillis,
+            status = MatchStatus.FINISHED,
+            signalCount = item.lines.size,
+            sources = emptyList(),
+        )
+        val signals = item.lines.mapIndexed { index, line ->
+            StreamSource(
+                id = line.id,
+                label = line.label,
+                provider = Provider.XXZB5,
+                pageUrl = line.url, // 裸 m3u8，isDirectHls = true
+            )
+        }
+        _playerState.value = PlayerUiState(
+            match = synthetic,
+            signals = signals,
+            selectedIndex = 0,
+            resolving = true,
+        )
+        play(0)
+    }
 
     /**
      * 刷新实现。

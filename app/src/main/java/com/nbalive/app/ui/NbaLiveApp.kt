@@ -2,6 +2,7 @@ package com.nbalive.app.ui
 
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -176,6 +177,7 @@ private fun RouteHost(
     onCloseSearch: () -> Unit,
 ) {
     val listState by viewModel.listState.collectAsStateWithLifecycle()
+    val replayState by viewModel.replayState.collectAsStateWithLifecycle()
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     // 比分（2026-10-31 用户需求）：**在这里收集**，不在根节点 ——
@@ -191,6 +193,13 @@ private fun RouteHost(
     // 测试侧又抄了一份逐字相同的 —— 生产加条件时测试不会红。
     val liveMatches = remember(listState.matches) {
         liveOnly(listState.matches)
+    }
+
+    // 首次切到「录像」标签时拉一次；之后靠下拉刷新，不重复打源站。
+    LaunchedEffect(tab) {
+        if (tab == NavTab.REPLAY && replayState.items.isEmpty() && !replayState.loading) {
+            viewModel.loadReplays()
+        }
     }
 
     // 锁定（防误触）：只认解锁键解锁，所以返回键在锁定时不该退出播放页。
@@ -271,6 +280,7 @@ private fun RouteHost(
             // 数据源开关（2026-10-31 用户需求）：「我的」页要读它
             enabledProviders = enabledProviders,
             scores = scores,
+            replayState = replayState,
             updateState = updateState,
             checkingUpdate = checkingUpdate,
             onSetFullscreen = onSetFullscreen,

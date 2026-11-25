@@ -178,6 +178,17 @@ object EspnScoreboard {
 
         fun int(key: String): Int? = string(key)?.toIntOrNull() ?: number(key)?.toIntOrNull()
 
+        /** 取 JSON 布尔字段（不带引号的 true/false）；缺省返回 null。 */
+        fun bool(key: String): Boolean? {
+            val idx = keyIndex(key) ?: return null
+            var i = skipWs(idx + key.length + 2)
+            if (i >= end || src[i] != ':') return null
+            i = skipWs(i + 1)
+            if (src.startsWith("true", i)) return true
+            if (src.startsWith("false", i)) return false
+            return null
+        }
+
         /**
          * 取**不带引号**的数字字段（ESPN 里 `"period":4`、`"clock":720.0` 都是这种形态）。
          *

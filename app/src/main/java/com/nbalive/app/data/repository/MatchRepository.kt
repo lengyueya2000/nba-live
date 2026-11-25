@@ -4,6 +4,7 @@ import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
 import com.nbalive.app.data.model.MatchStatusClock
 import com.nbalive.app.data.model.Provider
+import com.nbalive.app.data.model.ReplayItem
 import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isDirectHls
 import com.nbalive.app.data.remote.FetchResult
@@ -421,6 +422,9 @@ class MatchRepository(
         /** 状态校正时并发拉详情页的上限：防止一次刷新把源站打爆。 */
         private const val MAX_DETAIL_CONCURRENCY = 4
 
+        /** 录像详情并发上限（每场一次 `/replays?matchId=`）：同样防止打爆源站。 */
+        private const val MAX_REPLAY_CONCURRENCY = 4
+
         /**
          * 状态校正时**总**拉详情页的上限。
          *
@@ -631,6 +635,49 @@ class MatchRepository(
         loadMatchesWithOutcome(enabled = enabled, forceRefresh = forceRefresh) { url, referer ->
             http.fetch(url, referer)
         }
+
+    /**
+     * 加载已完赛录像（2026-11-25 新增，数据源 xxzb5 → xixizb.com）。
+     *
+     * 先用窗口赛程挑出「篮球 + 已完赛 + 有 replayId」的场次（保留真实比分），
+     * 再按 matchId 并发拉 `/api/v1/replays?matchId=` 的清晰度线路。
+     *
+     * ⚠️ 单场详情失败（超时/404）只让那场没有线路，**不影响其它场次** ——
+     * 卡片仍保留比分，点进去提示暂无线路，而不是整页失败。
+     * 并发封顶 [MAX_REPLAY_CONCURRENCY]，避免对源站一次打几十个请求。
+     */
+    suspend fun loadReplays(
+        fetch: suspend (String, String?) -> FetchResult = { url, referer -> http.fetch(url, referer) },
+    ): List<ReplayItem> = withContext(Dispatchers.IO) {
+        val today = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
+        val origin = SourceEndpoints.XXZB5_LIST.firstOrNull() ?: Xxzb5Parser.SITE_ORIGIN
+        val windowUrl = Xxzb5Parser.listUrl(
+            from = today.minusDays(1).toString(),
+            to = today.plusDays(1).toString(),
+            origin = origin,
+        )
+        val windowBody = when (val r = fetch(windowUrl, null)) {
+            is FetchResult.Ok -> r.body
+            else -> return@withContext emptyList()
+        }
+        val candidates = xxzb5Parser.parseReplayCandidates(windowBody)
+        if (candidates.isEmpty()) return@withContext emptyList()
+
+        val gate = Semaphore(MAX_REPLAY_CONCURRENCY)
+        val withLines = candidates.map { candidate ->
+            async {
+                gate.withPermit {
+                    val detailUrl = Xxzb5Parser.replayListUrl(candidate.matchId, origin)
+                    val lines = when (val r = fetch(detailUrl, null)) {
+                        is FetchResult.Ok -> xxzb5Parser.parseReplays(r.body)
+                        else -> emptyList()
+                    }
+                    candidate.copy(lines = lines)
+                }
+            }
+        }.awaitAll()
+        withLines
+    }
 
     /**
      * 带失败信息的列表加载。

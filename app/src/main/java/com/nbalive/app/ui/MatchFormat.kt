@@ -2,6 +2,7 @@ package com.nbalive.app.ui
 
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.ReplayItem
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -28,6 +29,17 @@ internal val systemZone: ZoneId by lazy { ZoneId.systemDefault() }
 
 /** 联赛展示名：优先用源站原名（如"美职篮"），为空时退回枚举名。 */
 fun Match.leagueLabel(): String = leagueRawName.ifBlank { league.displayName }
+
+/**
+ * 录像卡片的展示时间：有可解析时间戳时按北京时间格式化成 `MM-dd HH:mm`，
+ * 否则退回解析阶段已格式化好的文案。集中放在这里，避免 screen 直接渲染源站 timeLabel。
+ */
+fun ReplayItem.displayTime(): String {
+    val t = startAtMillis?.let { Instant.ofEpochMilli(it).atZone(com.nbalive.app.data.model.MatchStatusClock.SOURCE_ZONE) }
+    return if (t != null) {
+        String.format(Locale.ROOT, "%02d-%02d %02d:%02d", t.monthValue, t.dayOfMonth, t.hour, t.minute)
+    } else timeLabel
+}
 
 /**
  * 展示用开赛时刻 "HH:mm"。

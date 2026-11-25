@@ -11,6 +11,8 @@ package com.nbalive.app.ui
 enum class NavTab(val label: String) {
     MATCHES("赛事"),
     LIVE("直播"),
+    /** 已完赛录像（2026-11-25 新增，数据来自 xxzb5 → xixizb.com）。 */
+    REPLAY("录像"),
     PROFILE("我的"),
 }
 

@@ -59,6 +59,7 @@ import com.nbalive.app.ui.components.SquareIconButton
 import com.nbalive.app.ui.screens.LiveNowScreen
 import com.nbalive.app.ui.screens.MatchListScreen
 import com.nbalive.app.ui.screens.ProfileScreen
+import com.nbalive.app.ui.screens.ReplayScreen
 import com.nbalive.app.ui.theme.GradLive
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
@@ -120,6 +121,7 @@ internal fun AppShell(
 internal fun bottomTabIcon(tab: NavTab, active: Boolean): ImageVector = when (tab) {
     NavTab.MATCHES -> if (active) AppIcons.filled_CalendarMonth else AppIcons.outlined_CalendarMonth
     NavTab.LIVE -> if (active) AppIcons.filled_PlayCircle else AppIcons.outlined_PlayCircle
+    NavTab.REPLAY -> AppIcons.filled_Schedule
     NavTab.PROFILE -> if (active) Icons.Filled.Person else Icons.Outlined.Person
 }
 
@@ -443,6 +445,8 @@ internal fun ListBranch(
      * 由 `RouteHost` 从 VM 收集后传进来；CBA 永远为空（ESPN 无 CBA 数据）。
      */
     scores: Map<String, EspnScoreboard.GameScore>,
+    /** 录像页状态（2026-11-25 新增） */
+    replayState: ReplayUiState,
     /** 检查更新状态（2026-10-31 用户需求）；null = 还没查过 */
     updateState: UpdateCheckPolicy.Decision?,
     /** 是否正在检查更新 */
@@ -501,6 +505,16 @@ internal fun ListBranch(
                     onSetFullscreen(true)
                     viewModel.playMatch(m)
                 },
+            )
+
+            // 已完赛录像（2026-11-25 新增）：按 matchId 拉源站 VOD，可换清晰度
+            NavTab.REPLAY -> ReplayScreen(
+                state = replayState,
+                onMatchClick = { item ->
+                    onSetFullscreen(true)
+                    viewModel.playReplay(item)
+                },
+                onRefresh = { viewModel.loadReplays(force = true) },
             )
 
             // 我的：真实生效的播放/外观设置

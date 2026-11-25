@@ -137,6 +137,56 @@ class Xxzb5ParserTest {
         assertEquals("裸 m3u8 的地址已经在手，不该再发一次请求", 0, fetches)
     }
 
+    // ---------- 录像 / 回放（2026-11-25 新增） ----------
+
+    @Test
+    fun `回放列表接口按 matchId 拼地址`() {
+        assertEquals(
+            "https://www.xixizb.com/api/v1/replays?matchId=2451",
+            Xxzb5Parser.replayListUrl("2451"),
+        )
+        assertEquals(
+            "https://mirror.example.com/api/v1/replays?matchId=2451",
+            Xxzb5Parser.replayListUrl("2451", origin = "https://mirror.example.com/"),
+        )
+    }
+
+    @Test
+    fun `从窗口接口只挑篮球且已完赛且带 replayId 的场次`() {
+        val candidates = parser.parseReplayCandidates(replayWindowBody())
+        // 3 篮球完赛（含 replayId），1 篮球完赛但 replayId=0（无录像，剔除），
+        // 1 足球完赛（剔除），1 篮球直播（剔除）
+        assertEquals(listOf("2451", "2452", "2453"), candidates.map { it.matchId })
+        val first = candidates.first()
+        assertEquals("NBA", first.leagueRawName)
+        assertEquals("老鹰", first.homeTeam)
+        assertEquals("活塞", first.awayTeam)
+        assertEquals(107, first.homeScore)
+        assertEquals(97, first.awayScore)
+        assertEquals("11-23 04:30", first.timeLabel) // 20:30Z → 北京 11-23 04:30
+    }
+
+    @Test
+    fun `回放详情解出多条清晰度线路并按 sort 排序`() {
+        val lines = parser.parseReplays(replayBody())
+        assertEquals(listOf("标清回放", "中文高清回放", "英文高清回放"), lines.map { it.label })
+        assertTrue(lines.all { it.url.startsWith("https://") && it.url.endsWith(".m3u8") })
+        assertEquals("replay-2451-c0", lines.first().id)
+    }
+
+    @Test
+    fun `回放详情过滤未发布与非 m3u8 线路`() {
+        val lines = parser.parseReplays(replayBodyWithUnpublishedAndBadUrl())
+        assertEquals(listOf("标清回放"), lines.map { it.label })
+    }
+
+    @Test
+    fun `回放详情为空或垃圾正文返回空表`() {
+        assertTrue(parser.parseReplays("").isEmpty())
+        assertTrue(parser.parseReplays("garbage").isEmpty())
+        assertTrue(parser.parseReplays("""{"items":[]}""").isEmpty())
+    }
+
     // ---------- 夹具 ----------
 
     private fun xxzb5Match() = Match(
@@ -207,6 +257,55 @@ class Xxzb5ParserTest {
     {"available":true,"signals":[
       {"name":"主播解说①","url":"https://www.rtmpcdn.com/live/anchor.m3u8"},
       ${hd()}
+    ]}
+    """.trimIndent()
+
+    /** 窗口接口切片：篮球完赛(带/不带 replayId) + 足球完赛 + 篮球直播。 */
+    private fun replayWindowBody() = """
+    {"items":[
+      {"id":2451,"league":"NBA","sport":"篮球","status":"finished","replayId":8490,
+       "home":{"name":"老鹰"},"away":{"name":"活塞"},
+       "startsAt":"2026-11-22T20:30:00Z","homeScore":107,"awayScore":97},
+      {"id":2452,"league":"NBA","sport":"篮球","status":"finished","replayId":8498,
+       "home":{"name":"热火"},"away":{"name":"雷霆"},
+       "startsAt":"2026-11-22T23:00:00Z","homeScore":123,"awayScore":113},
+      {"id":2453,"league":"CBA","sport":"篮球","status":"ft","replayId":8502,
+       "home":{"name":"辽宁"},"away":{"name":"广东"},
+       "startsAt":"2026-11-23T11:30:00Z","homeScore":99,"awayScore":91},
+      {"id":2454,"league":"NBA","sport":"篮球","status":"finished","replayId":0,
+       "home":{"name":"公牛"},"away":{"name":"掘金"},
+       "startsAt":"2026-11-23T00:00:00Z","homeScore":145,"awayScore":151},
+      {"id":9999,"league":"英超","sport":"足球","status":"finished","replayId":9954,
+       "home":{"name":"阿森纳"},"away":{"name":"曼城"},
+       "startsAt":"2026-11-23T00:00:00Z","homeScore":1,"awayScore":1},
+      {"id":2469,"league":"NBA","sport":"篮球","status":"live","replayId":1234,
+       "home":{"name":"奇才"},"away":{"name":"凯尔特人"},
+       "startsAt":"2026-11-25T01:00:00Z"}
+    ]}
+    """.trimIndent()
+
+    /** 回放详情：三条清晰度，故意乱序 sort 以验证排序。 */
+    private fun replayBody() = """
+    {"items":[
+      {"id":8492,"matchId":2451,"title":"英文高清回放","sort":2,"published":true,
+       "url":"https://www.rtmpcdn.com/vodplay/32210/en.m3u8"},
+      {"id":8490,"matchId":2451,"title":"标清回放","sort":0,"published":true,
+       "url":"https://www.rtmpcdn.com/vodplay/32210/sd.m3u8"},
+      {"id":8491,"matchId":2451,"title":"中文高清回放","sort":1,"published":true,
+       "url":"https://www.rtmpcdn.com/vodplay/32210/cn.m3u8"}
+    ]}
+    """.trimIndent()
+
+    private fun replayBodyWithUnpublishedAndBadUrl() = """
+    {"items":[
+      {"id":8490,"matchId":2451,"title":"标清回放","sort":0,"published":true,
+       "url":"https://www.rtmpcdn.com/vodplay/32210/sd.m3u8"},
+      {"id":8491,"matchId":2451,"title":"未发布回放","sort":1,"published":false,
+       "url":"https://www.rtmpcdn.com/vodplay/32210/hidden.m3u8"},
+      {"id":8492,"matchId":2451,"title":"坏地址","sort":2,"published":true,
+       "url":"https://www.xixizb.com/page/not-m3u8"},
+      {"id":8493,"matchId":2451,"title":"协议相对地址","sort":3,"published":true,
+       "url":"//www.rtmpcdn.com/vodplay/32210/rel.m3u8"}
     ]}
     """.trimIndent()
 }
