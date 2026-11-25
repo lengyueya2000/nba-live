@@ -38,8 +38,8 @@ android {
         applicationId = "com.nbalive.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 32
-        versionName = "1.2.28"
+        versionCode = 33
+        versionName = "1.2.29"
         vectorDrawables { useSupportLibrary = true }
     }
 
