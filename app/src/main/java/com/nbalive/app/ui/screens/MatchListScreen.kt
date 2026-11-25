@@ -140,6 +140,9 @@ fun MatchListScreen(
                 // ⚠️ H9：空态分支也要能显示刷新反馈 —— 这是"点了没反应"的那一屏
                 matches.isEmpty() -> EmptyState(
                     refreshing = feedback == RefreshingFeedback.EmptyPlaceholder,
+                    // 筛到 0 场也走这里：单源挂掉时若只显示「今日暂无赛事」，
+                    // 用户分不清是源挂了还是真没比赛（本轮 P3-6）。
+                    partialError = partialError,
                 )
                 else -> {
                     // 刷新中：保留旧列表，只在顶部挂一条细进度条。
@@ -752,7 +755,7 @@ private fun PartialBanner(message: String) {
 }
 
 @Composable
-private fun EmptyState(refreshing: Boolean) {
+private fun EmptyState(refreshing: Boolean, partialError: String? = null) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
@@ -773,6 +776,12 @@ private fun EmptyState(refreshing: Boolean) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // 0 场也可能是「少了一个源」：和列表非空的 else 分支用同一个横幅，
+            // 规则仍由 ListNoticePolicy 决定（整次失败已被前面的分支接走）。
+            if (partialError != null) {
+                Spacer(Modifier.height(Space.md))
+                PartialBanner(message = partialError)
+            }
             // ⚠️ H9：筛到 0 场时这里就是用户看到的那一屏。
             // 旧实现直接 EmptyState()，刷新在跑也毫无反馈 → "点了没反应"。
             if (refreshing) {

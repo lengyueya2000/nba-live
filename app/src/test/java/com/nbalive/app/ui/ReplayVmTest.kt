@@ -99,6 +99,25 @@ class ReplayVmTest {
     }
 
     @Test
+    fun `换日失败后不得残留旧日期的场次`() = vmTest {
+        var fail = false
+        val vm = MainViewModel(
+            loadMatches = { Result.success(emptyList()) },
+            reloadReplays = {
+                if (fail) throw RuntimeException("boom") else listOf(replay())
+            },
+        )
+        vm.loadReplays(force = true)
+        settle()
+        assertEquals(1, vm.replayState.value.items.size)
+        fail = true
+        vm.selectReplayDate(java.time.LocalDate.of(2026, 11, 11))
+        settle()
+        assertTrue("换日失败不应再显示旧日期数据", vm.replayState.value.items.isEmpty())
+        assertTrue(vm.replayState.value.error != null)
+    }
+
+    @Test
     fun `播放录像必须标记为VOD供播放器显示进度条`() = vmTest {
         val vm = MainViewModel(
             loadMatches = { Result.success(emptyList()) },

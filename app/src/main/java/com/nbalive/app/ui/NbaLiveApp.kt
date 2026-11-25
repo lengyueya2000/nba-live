@@ -421,6 +421,9 @@ private fun PlayerBranch(
         // 录像回放才画可拖拽进度条；直播恒 false（见 PlayerControls.shouldShowSeekBar）
         isVod = playerState.isVod,
         initialSeekMs = playerState.initialSeekMs,
-        onReplayProgress = viewModel::recordReplayPosition,
+        // 直播（isVod=false）不上报历史位置 —— 播放器侧门控，与 VM 侧 isVod 守卫双保险。
+        onReplayProgress = { pos, dur ->
+            viewModel.recordReplayPosition(pos, dur, isVod = playerState.isVod)
+        },
     )
 }

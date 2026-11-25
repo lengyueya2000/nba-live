@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,6 +43,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -542,7 +546,10 @@ fun AspectModeSelector(
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            // 三档是一组互斥选项：成组后 TalkBack 才会读「共 3 项、已选中」。
+            .selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(Space.sm),
     ) {
         AspectMode.entries.forEach { mode ->
@@ -563,7 +570,20 @@ fun AspectModeSelector(
                         else MaterialTheme.colorScheme.outlineVariant,
                         RoundedCornerShape(Radius.btn),
                     )
-                    .clickable { onAspectChange(mode) },
+                    // selectable 让读屏读出「已选中/未选中 + 共 3 项」，
+                    // 裸 clickable 只能读出「双击以激活」（本轮 P3-5）。
+                    .selectable(
+                        selected = active,
+                        onClick = { onAspectChange(mode) },
+                    )
+                    // foundation 1.7.x 的 selectable 没有 onClickLabel 形参，
+                    // 用语义动作把动作词补上（TalkBack 读「选择自适应，已选中」）。
+                    .semantics {
+                        onClick(
+                            label = "选择${mode.label}",
+                            action = { onAspectChange(mode); true },
+                        )
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(

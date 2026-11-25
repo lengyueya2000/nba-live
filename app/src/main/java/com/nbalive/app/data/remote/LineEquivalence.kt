@@ -125,12 +125,16 @@ object LineEquivalence {
     /** query → 参数表（重复键取第一个；空值参数保留键）。 */
     private fun queryParams(query: String): Map<String, String> {
         if (query.isBlank()) return emptyMap()
-        return query.split('&')
-            .mapNotNull { pair ->
-                val name = pair.substringBefore('=').trim()
-                if (name.isEmpty()) null else name to pair.substringAfter('=', "").trim()
+        val out = linkedMapOf<String, String>()
+        query.split('&').forEach { pair ->
+            val name = pair.substringBefore('=').trim()
+            if (name.isNotEmpty()) {
+                // ⚠️ first-wins：旧实现的 `toMap()` 实际是 last-wins，与这条注释相反。
+                // 源站重复 id 时取第一个才与 distinctByLine"保留第一条"的优先级一致。
+                out.getOrPut(name) { pair.substringAfter('=', "").trim() }
             }
-            .toMap()
+        }
+        return out
     }
 
     /**
@@ -145,7 +149,9 @@ object LineEquivalence {
         val host = (parsed.host ?: "").lowercase()
         val port = if (parsed.port > 0) ":${parsed.port}" else ""
         val path = parsed.path.orEmpty().trimEnd('/')
-        val kept = queryParams(parsed.query.orEmpty())
+        // ⚠️ 与 key() 一样按 rawQuery 归一：URI.getQuery() 已解码，
+        // `%26` 会变成真 `&` 被劈成两个参数（LineEquivalenceTest 钉住）。
+        val kept = queryParams(parsed.rawQuery.orEmpty())
             .filterValues { it.isNotEmpty() }
             .toSortedMap()
             .entries

@@ -319,6 +319,37 @@ class JrkanParserTest {
     }
 
     /**
+     * P2：源站把时间文案直接写成「直播中」时没有 MM-dd HH:mm，旧 `parseDateTime` 返回 null
+     * → `startAtMillis = null` → `MatchStatusClock.aged` 第一行就跳过 → 状态永久卡在 LIVE。
+     * 这里要求它拿到"当天 00:00"占位时间戳，让整日过完后的老化判据能生效。
+     */
+    @Test
+    fun `直播中文案要落到当天零点占位 隔天能老化为已结束`() {
+        val m = parser.parseList(statusBlock("直播中")).first()
+        assertEquals(MatchStatus.LIVE, m.status)
+        assertTrue("直播中文案必须拿到占位时间戳（否则老化永远跳过）", m.startAtMillis != null)
+
+        val start = java.time.Instant.ofEpochMilli(m.startAtMillis!!)
+            .atZone(MatchStatusClock.SOURCE_ZONE)
+        assertEquals(
+            "无 HH:mm 时按当天 00:00 占位（北京时间）",
+            java.time.LocalTime.MIDNIGHT,
+            start.toLocalTime(),
+        )
+        val today = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
+        assertTrue(
+            "占位日期必须接近今天：$start / $today",
+            kotlin.math.abs(java.time.temporal.ChronoUnit.DAYS.between(today, start.toLocalDate())) <= 1,
+        )
+
+        val aged = MatchStatusClock.aged(
+            listOf(m),
+            now = start.toLocalDate().plusDays(1).atTime(1, 0).atZone(MatchStatusClock.SOURCE_ZONE),
+        )
+        assertEquals("整天过完后必须老化成 FINISHED，不能永久卡 LIVE", MatchStatus.FINISHED, aged.single().status)
+    }
+
+    /**
      * 上游给 li 多加属性 / 换行时也要能解析出来。
      *
      * 回归：早先 home/away 用的是写死字面量 `lab_team_home"><strong class="name">`，

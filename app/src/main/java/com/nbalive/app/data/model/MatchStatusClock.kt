@@ -88,6 +88,10 @@ object MatchStatusClock {
      *     每次都 `copy()` 会让整表引用变化，白白触发全列表重组。
      */
     fun aged(match: Match, now: ZonedDateTime): Match {
+        // ⚠️ P3：延期/推迟/待定（含取消）的场次原定日期早就算数不了，
+        // 时钟不能把它老化成 FINISHED —— 否则界面出现「延期」+「已结束」的矛盾。
+        // 保留源站给的事实与对象引用（VM 靠 equals 决定是否更新）。
+        if (match.isPostponed) return match
         if (match.status == MatchStatus.FINISHED) return match
         val start = match.startAtMillis ?: return match
         val next = if (isDayPlaceholder(match)) {

@@ -36,6 +36,7 @@ import com.nbalive.app.data.model.StreamSource
 import com.nbalive.app.data.model.isPostponed
 import com.nbalive.app.ui.components.InfoRow
 import com.nbalive.app.ui.components.LeagueChip
+import com.nbalive.app.ui.components.RetryErrorBanner
 import com.nbalive.app.ui.components.StatusChip
 import com.nbalive.app.ui.components.TeamLogo
 import com.nbalive.app.ui.displayTime
@@ -182,6 +183,10 @@ fun MatchDetailScreen(
                 }
             }
         } else {
+            // 有旧信号但刷新失败：旧列表保留，但错误与重试入口不能被吞掉。
+            // 失败时 VM 只写 error、保留旧 signals，只判 signals.isEmpty() 会落到
+            // 这个分支而什么都不提示 —— 内联横幅让 error/onRetry 在这里也可见。
+            if (error != null) RetryErrorBanner(message = error, onRetry = onRetry)
             // ⚠️ 这里用 forEachIndexed 一次性全量组合，**不是** LazyColumn ——
             // 这是有意取舍，不是漏了（review/03-ui.md P2-14）：
             //   - 本 App 的线路数假设 < 20（只列双源的可用线路，个位数是常态）；

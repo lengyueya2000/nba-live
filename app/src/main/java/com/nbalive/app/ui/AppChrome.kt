@@ -513,8 +513,9 @@ internal fun ListBranch(
             NavTab.REPLAY -> ReplayScreen(
                 state = replayState,
                 onMatchClick = { item ->
-                    onSetFullscreen(true)
-                    viewModel.playReplay(item)
+                    // P1-3：先让 VM 起播成功（有线路）再切全屏；空线路时 VM 返回 false，
+                    // 不切全屏 —— 否则列表页被强制横屏、系统栏消失且无任何提示。
+                    if (viewModel.playReplay(item)) onSetFullscreen(true)
                 },
                 onRefresh = { viewModel.loadReplays(force = true) },
                 onSelectDate = viewModel::selectReplayDate,

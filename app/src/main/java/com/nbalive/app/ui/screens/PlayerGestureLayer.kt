@@ -113,7 +113,17 @@ fun PlayerMediaGestures(
      * 用 rememberUpdatedState 读取，避免闭包拿旧值。
      */
     durationMs: Long = 0L,
-    onSeek: ((Long) -> Unit)? = null,
+    /**
+     * 手势开始时取一次播放位置的锚点（毫秒）。绝对落点 = anchor + 本地累计位移换算，
+     * 不依赖 ExoPlayer 异步回写的 currentPosition（那个值在 seekTo 后连续帧可能仍是旧的）。
+     * 只在 [onSeek] 非 null 时有意义。
+     */
+    seekAnchorMs: () -> Long = { 0L },
+    /**
+     * 回调参数：(**绝对落点**毫秒, 是否抬手最后一帧)。上层据此节流后 seekTo，
+     * final=true 时绕过节流补发最终落点（否则节流窗口内的最后一次拖动会丢失）。
+     */
+    onSeek: ((Long, Boolean) -> Unit)? = null,
 ) {
     if (!enabled) return
 
@@ -173,6 +183,7 @@ fun PlayerMediaGestures(
     val currentOnTap by rememberUpdatedState(onTap)
     val currentOnSeek by rememberUpdatedState(onSeek)
     val currentDurationMs by rememberUpdatedState(durationMs)
+    val currentSeekAnchor by rememberUpdatedState(seekAnchorMs)
 
     Box(
         modifier = modifier
@@ -190,6 +201,10 @@ fun PlayerMediaGestures(
                     var moved = 0f
                     var movedX = 0f
                     var movedY = 0f
+                    // 手势开始时的播放位置锚点（只取一次）。seek 落点由它 + 本地累计位移算出，
+                    // 不用 ExoPlayer 的异步 currentPosition —— 后者在 seekTo 后连续帧仍是旧值，
+                    // 基于它累加会吞掉增量。
+                    val seekAnchor = if (currentOnSeek != null) currentSeekAnchor() else 0L
                     // 上层按钮（画中画/全屏/底部控制栏）消费掉这次手势后，
                     // 我们绝不能再把抬手当成"单击画面"——否则点按钮会顺手把浮层关掉
                     var takenByOthers = false
@@ -257,15 +272,20 @@ fun PlayerMediaGestures(
                             }
                         }
                         if (seeking) {
-                            // 录像快进/快退：把水平像素位移按屏宽换算成毫秒增量。
+                            // 录像快进/快退：用**手势开始时的锚点 + 从按下到当前的累计水平位移**
+                            // 算绝对落点。两个关键修复：
+                            //  ① 用 movedX（含 touchSlop 之前的帧）而非当帧 delta.x，不丢起手位移；
+                            //  ② 用锚点算绝对值，不依赖 ExoPlayer 异步的 currentPosition 逐帧累加。
+                            // 上层 onSeek 收到的也是绝对落点，节流后 seekTo 一次（HLS 不会分片风暴）。
                             change.consume()
                             if (currentOnSeek != null) {
-                                val deltaMs = SeekGesturePolicy.deltaMsFromDrag(
-                                    px = delta.x,
+                                val target = SeekGesturePolicy.seekTargetFromAnchor(
+                                    anchorMs = seekAnchor,
+                                    cumulativePx = movedX,
                                     widthPx = size.width.toFloat(),
                                     durationMs = currentDurationMs,
                                 )
-                                if (deltaMs != 0L) currentOnSeek?.invoke(deltaMs)
+                                currentOnSeek?.invoke(target, false)
                             }
                             scheduleHideOsd()
                         } else if (dragging) {
@@ -294,7 +314,20 @@ fun PlayerMediaGestures(
                         }
                     }
 
-                    if (dragging || seeking) {
+                    if (seeking) {
+                        // 抬手补发最终落点（final=true）：节流窗口内最后一次 move 的落点
+                        // 不会因为"没有后续帧"而丢失。用最后已知的累计位移重算绝对值。
+                        if (currentOnSeek != null) {
+                            val finalTarget = SeekGesturePolicy.seekTargetFromAnchor(
+                                anchorMs = seekAnchor,
+                                cumulativePx = movedX,
+                                widthPx = size.width.toFloat(),
+                                durationMs = currentDurationMs,
+                            )
+                            currentOnSeek?.invoke(finalTarget, true)
+                        }
+                        scheduleHideOsd()
+                    } else if (dragging) {
                         // 抬手：重置计时，让指示器再留 800ms
                         scheduleHideOsd()
                     } else if (!takenByOthers) {

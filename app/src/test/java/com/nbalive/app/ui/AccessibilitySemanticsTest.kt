@@ -57,9 +57,11 @@ class AccessibilitySemanticsTest {
 
     @Test
     fun `底栏标签必须成组`() {
-        // ⚠️ 跨文件定位：底栏外壳已从 NbaLiveApp.kt 拆到 ui/AppChrome.kt（03-P2-18 拆分），
-        // 写死文件名的锚点会随重构失效。按**内容**唯一命中，找不到/多个都 error()。
-        val code = GuardSourceScan.stripNonCode(sourceContaining("selectableGroup()"))
+        // 底栏外壳在 ui/AppChrome.kt（03-P2-18 拆分）。直接按文件定位，
+        // 不用 sourceContaining 精确字符串——那样一旦别处（如画面模式选择器）
+        // 也用标准写法 `.selectableGroup()` 就会因"多个命中"报错，逼生产代码写
+        // `.selectableGroup( )` 这种带空格的怪形态来绕守卫（本轮踩到）。
+        val code = GuardSourceScan.stripNonCode(source("ui/AppChrome.kt"))
 
         // ⚠️ 必须匹配**调用** `.selectableGroup()`，不能只 contains("selectableGroup")：
         // import 行也含这个字符串，删掉调用、留下 import 时守卫会照样绿

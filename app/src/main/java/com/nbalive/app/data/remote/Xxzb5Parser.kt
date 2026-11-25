@@ -122,8 +122,10 @@ class Xxzb5Parser {
                 leagueRawName = leagueRaw,
                 homeTeam = homeName,
                 awayTeam = awayName,
-                homeLogo = home?.string("logoPath")?.takeIf { it.startsWith("http") },
-                awayLogo = away?.string("logoPath")?.takeIf { it.startsWith("http") },
+                // ⚠️ 与 JRS / JRKAN 统一走 HttpClient.absUrl：协议相对地址（//cdn/...）
+                // 与站点相对路径都要补齐，不能因为只看 startsWith("http") 就丢掉队徽。
+                homeLogo = home?.string("logoPath")?.let { HttpClient.absUrl(it, SITE_ORIGIN) },
+                awayLogo = away?.string("logoPath")?.let { HttpClient.absUrl(it, SITE_ORIGIN) },
                 timeLabel = timeLabel,
                 startAtMillis = startAtMillis,
                 status = status,
@@ -210,9 +212,10 @@ class Xxzb5Parser {
             val home = homeObj?.string("name").orEmpty().trim()
             val away = awayObj?.string("name").orEmpty().trim()
             if (home.isEmpty() || away.isEmpty()) continue
-            // 队徽：源站 logoPath 可能是相对路径，只收 http(s) 绝对地址（与直播解析同款口径）
-            val homeLogo = homeObj?.string("logoPath")?.takeIf { it.startsWith("http") }
-            val awayLogo = awayObj?.string("logoPath")?.takeIf { it.startsWith("http") }
+            // 队徽：与直播解析同款口径 —— HttpClient.absUrl 统一处理
+            // http(s) 绝对地址、协议相对地址（//cdn/...）与站点相对路径。
+            val homeLogo = homeObj?.string("logoPath")?.let { HttpClient.absUrl(it, SITE_ORIGIN) }
+            val awayLogo = awayObj?.string("logoPath")?.let { HttpClient.absUrl(it, SITE_ORIGIN) }
             val startsAt = item.string("startsAt")
             val startAtMillis = startsAt?.let {
                 runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull()

@@ -183,6 +183,26 @@ class MatchStatusClockTest {
         )
     }
 
+    /**
+     * P3：延期/推迟/待定的场次原定日期过去后仍应保留「延期 + 未开赛」。
+     * 旧实现按 00:00 占位走 `isPastDayEnd`，把它改成 FINISHED，
+     * 界面于是出现「延期」+「已结束」的矛盾文案。
+     */
+    @Test
+    fun `延期场次过了原定日期也不老化成已结束`() {
+        val start = at(24, 19, 35)
+        listOf("延期", "推迟", "待定").forEach { label ->
+            val postponed = match(
+                startAtMillis = millis(start),
+                timeLabel = label,
+                status = MatchStatus.UPCOMING,
+            )
+            val aged = MatchStatusClock.aged(listOf(postponed), now = at(28, 12, 0)).single()
+            assertSame("「$label」场次不该被时钟改写：必须原样返回", postponed, aged)
+            assertEquals("「$label」场次状态必须仍是 UPCOMING", MatchStatus.UPCOMING, aged.status)
+        }
+    }
+
     // ---------- JRS"直播中"占位行：不能按 00:00 套窗口 ----------
 
     /**

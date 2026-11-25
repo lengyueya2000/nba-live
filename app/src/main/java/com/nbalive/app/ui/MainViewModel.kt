@@ -849,7 +849,10 @@ class MainViewModel(
     /** 切换录像日期：更新选中日期并按新日期重新拉（换日必然重新请求）。 */
     fun selectReplayDate(date: LocalDate) {
         if (_replayState.value.selectedDate == date) return
-        _replayState.update { it.copy(selectedDate = date) }
+        // 换日即清空旧日期的场次：否则"新日期 + 旧 items"同时成立，
+        // 失败时 UI 会挂着新日期标题显示上一日期的录像（用户可能点进错误场次）。
+        // 清空后 firstLoad=true，走 loading 态，加载失败也不会残留旧数据。
+        _replayState.update { it.copy(selectedDate = date, items = emptyList(), error = null) }
         loadReplays(force = true)
     }
 
@@ -884,8 +887,12 @@ class MainViewModel(
      * 不再经过 `loadSignals`（线路已在手），也不经过状态校正（比赛已结束）。
      * 合成一个 `Match` 只为播放器顶栏/元信息展示；它不进列表、不参与任何源开关。
      */
-    fun playReplay(item: ReplayItem, resumeMs: Long = 0L) {
-        if (item.lines.isEmpty()) return
+    fun playReplay(item: ReplayItem, resumeMs: Long = 0L): Boolean {
+        // 没有线路的录像不能起播：返回 false 让 UI 不要切全屏（P1-3），并给可见提示。
+        if (item.lines.isEmpty()) {
+            _playerState.value = _playerState.value.withError("这场录像暂无可用线路，请换一场或稍后重试")
+            return false
+        }
         playJob?.cancel()
         cancelSniffRecovery()
         loadJob?.cancel()
@@ -929,6 +936,7 @@ class MainViewModel(
             initialSeekMs = initialPos,
         )
         play(0)
+        return true
     }
 
     /** 从历史条目续播：还原线路快照并带上上次位置。 */
@@ -954,7 +962,10 @@ class MainViewModel(
      * 播放中周期性上报录像位置（由播放器 5 秒节流后调用）。
      * 只有当前正在播录像才写；位置必须落在合法区间才算数。
      */
-    fun recordReplayPosition(positionMs: Long, durationMs: Long) {
+    fun recordReplayPosition(positionMs: Long, durationMs: Long, isVod: Boolean = true) {
+        // 双保险①：直播（isVod=false）上报一律忽略 —— 播放器侧也会门控，
+        // 但这里再守一次，避免"看完录像再播直播"时直播位置污染上一场录像历史。
+        if (!isVod) return
         val replay = currentReplay ?: return
         if (!ReplayHistoryPolicy.shouldResume(positionMs, durationMs)) return
         writeReplayHistory(replay, positionMs)
@@ -1185,6 +1196,8 @@ class MainViewModel(
     fun openPlayer(index: Int) {
         val detail = _detailState.value
         val match = detail.match ?: return
+        // 进入直播播放：清掉"正在看的录像"暂存，避免直播位置被写进旧录像历史。
+        currentReplay = null
         failedSources.clearAll()
         // 从详情页的线路列表进来：返回键该回详情页（来源由 NavState 记住）
         setNav(_nav.value.openPlayer(match.id))
@@ -1271,6 +1284,8 @@ class MainViewModel(
      * 这样用户从播放页返回看到的是刚切过来的这场，而不是上一场。
      */
     fun playMatch(match: Match) {
+        // 播非录像比赛：清掉录像暂存（双保险②，与 recordReplayPosition 的 isVod 门控互补）。
+        currentReplay = null
         playJob?.cancel()
         // 换场后，上一场“直连失败退回网页”的宽限计时不再有意义
         cancelSniffRecovery()
@@ -1821,6 +1836,8 @@ class MainViewModel(
             Route.PLAYER -> {
                 playJob?.cancel()
                 loadJob?.cancel()
+                // 离开播放页：清掉"正在看的录像"暂存，防止残留引用被后续上报误用。
+                currentReplay = null
                 // ⚠️ detailJob 也要取消（review/02-data.md P2-5）：
                 // 用户点「刷新线路」后立刻进播放页再返回，这个 job 可能在返回后
                 // 才落地并写 _detailState —— 界面已经离开详情页了，

@@ -300,6 +300,9 @@ fun PlayerScreen(
     // 用计数式 token 重置收起计时（与 controlsTouchSeq 同款取舍，避免布尔被合并吞掉）。
     var seekHintMs by remember { mutableLongStateOf(-1L) }
     var seekHintSeq by remember { mutableIntStateOf(0) }
+    // seekTo / OSD 的节流时间戳（单调钟）。手势层每个 move 帧都会回调，
+    // 但真正下发 seekTo 与写 OSD state 都按间隔节流 —— 避免 HLS 分片风暴与整页重组。
+    val seekEmitState = remember { SeekEmitThrottle() }
     LaunchedEffect(seekHintSeq) {
         if (seekHintSeq == 0 || seekHintMs < 0L) return@LaunchedEffect
         delay(1_200L)
@@ -589,17 +592,23 @@ fun PlayerScreen(
                     // 录像快进/快退（2026-11-25）：仅录像全屏未锁非 PIP 时接管水平拖动。
                     // 直播不传 onSeek（永不快进）；Slider 拖动 consume 事件时手势层自动让位。
                     durationMs = videoHandle.durationMs,
+                    seekAnchorMs = { videoHandle.positionSnapshot() },
                     onSeek = if (streamUrl != null && SeekGesturePolicy.canSeek(
                             isVod = isVod,
                             dragEnabled = gesture.dragEnabled,
                             layerEnabled = gesture.layerEnabled,
                         )
-                    ) { deltaMs ->
-                        val landed = videoHandle.seekBy(deltaMs)
-                        if (landed > 0L) {
-                            seekHintMs = landed
+                    ) { targetMs, final ->
+                        val now = clock.nowMs()
+                        if (seekEmitState.shouldSeek(now, final)) {
+                            videoHandle.seekToAbsolute(targetMs)
+                        }
+                        if (seekEmitState.shouldUpdateOsd(now, targetMs, final)) {
+                            seekHintMs = targetMs
                             seekHintSeq++
                         }
+                        // 拖动中续期"10 秒无操作自动收起"计时，避免长手势里进度条/底栏消失。
+                        touchControls()
                     } else null,
                     modifier = Modifier.fillMaxSize(),
                     onTap = when (gesture.tapAction) {
@@ -1875,6 +1884,51 @@ private fun VideoControlButton(
  * 播放器句柄：把 ExoPlayer 的播放状态暴露给外层自定义控制栏。
  * 用 Compose 快照状态，播放器回调改值后控制栏自动重组。
  */
+/**
+ * 快进手势的 seekTo / OSD 下发节流器（2026-11-25 修复 P1：每帧 seekTo 导致 HLS 分片风暴）。
+ * 手势层每帧回调绝对落点，但真正 seekTo 只在间隔到期时下发，抬手（final）强制补发最后一次。
+ * OSD 写入也按同一节奏节流（且只在落点变化足够大时），避免每帧写 Compose state 整页重组。
+ */
+private class SeekEmitThrottle {
+    private var lastSeekAt = 0L
+    private var lastOsdAt = 0L
+    private var lastOsdMs = -1L
+
+    fun shouldSeek(now: Long, final: Boolean): Boolean {
+        if (final || SeekGesturePolicy.shouldEmitSeek(now, lastSeekAt, SEEK_INTERVAL_MS)) {
+            lastSeekAt = now
+            return true
+        }
+        return false
+    }
+
+    fun shouldUpdateOsd(now: Long, targetMs: Long, final: Boolean): Boolean {
+        // 抬手必更新最终落点；否则按间隔节流，且落点变化不足 1 秒不刷字。
+        if (final) {
+            lastOsdAt = now
+            lastOsdMs = targetMs
+            return true
+        }
+        if (!SeekGesturePolicy.shouldEmitSeek(now, lastOsdAt, SEEK_INTERVAL_MS)) return false
+        if (lastOsdMs >= 0L && !SeekGesturePolicy.shouldShowOsd(kotlin.math.abs(targetMs - lastOsdMs))) {
+            return false
+        }
+        lastOsdAt = now
+        lastOsdMs = targetMs
+        return true
+    }
+
+    fun reset() {
+        lastSeekAt = 0L
+        lastOsdAt = 0L
+        lastOsdMs = -1L
+    }
+
+    private companion object {
+        const val SEEK_INTERVAL_MS = 120L
+    }
+}
+
 private class VideoPlayerHandle {
     var player: Player? by mutableStateOf(null)
     var isPlaying: Boolean by mutableStateOf(false)
@@ -1884,22 +1938,36 @@ private class VideoPlayerHandle {
     var positionMs: Long by mutableLongStateOf(0L)
     var durationMs: Long by mutableLongStateOf(0L)
 
-    /** 拖动进度条后跳转；直播路径永远不调用它。 */
+    /**
+     * 已消费的续播意图值（-1 = 未消费）。存在 handle 上而非 effect 局部变量，
+     * 这样换清晰度/重连改变 streamUrl、effect 重启时也不会把续播点重复 seek 一遍（进度倒退）。
+     */
+    var resumeConsumedMs: Long = -1L
+
+    /** 拖动进度条后跳转；直播路径永远不调用它。同步写 positionMs，避免松手后回跳旧位置（P2-4）。 */
     fun seekTo(ms: Long) {
-        player?.seekTo(ms.coerceAtLeast(0L))
+        val target = ms.coerceAtLeast(0L)
+        player?.seekTo(target)
+        // 与 seekBy 对齐：立刻更新本地镜像，进度条松手清 dragMs 后不会退回轮询的旧值。
+        // 轮询每 400ms 会用真实位置覆盖，这里只是消除那 400ms 的视觉回跳。
+        positionMs = target
     }
 
     /**
-     * 快进/快退：把有符号增量叠加到当前位置，夹到 [0, durationMs]（2026-11-25 用户需求）。
-     * 时长未知（<=0）时不 seek，避免直播/未就绪跳变。返回实际落点，供 OSD 显示。
+     * 播放位置的**本地快照**（毫秒），供快进手势在按下时取锚点。
+     * 不直接用 ExoPlayer 的 currentPosition —— 那是内部线程异步回写的，
+     * seekTo 后连续帧可能读到旧值；这里读轮询同步过的镜像更稳，且纯读取无副作用。
      */
-    fun seekBy(deltaMs: Long): Long {
-        val p = player ?: return 0L
-        val duration = p.duration.takeIf { it > 0L } ?: return 0L
-        val target = SeekGesturePolicy.applySeek(p.currentPosition, deltaMs, duration)
-        p.seekTo(target)
-        positionMs = target
-        return target
+    fun positionSnapshot(): Long = positionMs.takeIf { it > 0L } ?: (player?.currentPosition ?: 0L)
+
+    /**
+     * 快进/快退：seek 到**绝对落点**（已由手势层用锚点+累计位移算好并 clamp）。
+     * 时长未知（<=0）时不 seek，避免直播/未就绪跳变。
+     */
+    fun seekToAbsolute(targetMs: Long) {
+        val p = player ?: return
+        if ((p.duration.takeIf { it > 0L } ?: 0L) <= 0L) return
+        seekTo(targetMs)
     }
 
     /**
@@ -2207,7 +2275,6 @@ private fun VideoSurface(
     // 同一循环还负责：① 续播 seek（媒体就绪后一次性）；② 位置上报节流（每 5 秒一次）。
     val currentProgress by rememberUpdatedState(onReplayProgress)
     LaunchedEffect(handle, streamUrl, initialSeekMs) {
-        var seekApplied = false
         var lastReportAt = 0L
         while (isActive) {
             handle.player?.let { p ->
@@ -2216,16 +2283,29 @@ private fun VideoSurface(
                 handle.positionMs = position
                 handle.durationMs = duration
 
-                // 续播：等媒体时长已知（READY）再 seekTo，避免准备阶段 seek 被忽略。
-                if (!seekApplied && initialSeekMs > 0L && duration > 0L &&
-                    ReplayHistoryPolicy.shouldResume(initialSeekMs, duration)
-                ) {
-                    p.seekTo(initialSeekMs)
-                    seekApplied = true
-                    handle.positionMs = initialSeekMs
+                // 续播状态机：消费标记存在 handle 上（跨 streamUrl 重启不丢）。
+                // SEEK=合法续播点，seek 一次并标记已消费；DONE=无需/已消费，正常上报；
+                // PENDING=时长未知，等 READY（既不 seek 也不上报）。
+                when (ReplayHistoryPolicy.resumeState(initialSeekMs, duration, handle.resumeConsumedMs)) {
+                    ReplayHistoryPolicy.ResumeState.SEEK -> {
+                        p.seekTo(initialSeekMs)
+                        handle.positionMs = initialSeekMs
+                        handle.resumeConsumedMs = initialSeekMs
+                    }
+                    ReplayHistoryPolicy.ResumeState.DONE -> {
+                        // 首次进入 DONE（含越界/无意图）时记账，避免后续每次都重判；
+                        // 越界时从头播，但不再卡住上报 —— 新进度会覆盖历史里的旧死位置。
+                        if (initialSeekMs > 0L && handle.resumeConsumedMs != initialSeekMs) {
+                            handle.resumeConsumedMs = initialSeekMs
+                        }
+                    }
+                    ReplayHistoryPolicy.ResumeState.PENDING -> Unit
                 }
-                // 位置上报历史：节流，且只在 seek 已落地(或无需 seek)后开始记。
-                if (duration > 0L && (initialSeekMs <= 0L || seekApplied)) {
+                // 位置上报历史：时长已知且续播已决策（无需/已 seek）就开始记。
+                if (duration > 0L &&
+                    ReplayHistoryPolicy.resumeState(initialSeekMs, duration, handle.resumeConsumedMs) !=
+                        ReplayHistoryPolicy.ResumeState.PENDING
+                ) {
                     val now = clock.nowMs()
                     if (now - lastReportAt >= PlayerControls.REPLAY_PROGRESS_REPORT_INTERVAL_MS) {
                         lastReportAt = now
@@ -2575,8 +2655,12 @@ private fun VideoSurface(
 
             player.addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
-                    // 每条地址只上报一次，避免重试风暴
-                    if (reportedRef.add(streamUrl)) {
+                    // 每条地址只上报一次，避免重试风暴。
+                    // ⚠️ 必须读当前地址：监听器只在工厂里注册一次，直接捕获 streamUrl
+                    // 会一直拿第一条线路的地址去重；换线后新线路的错误要么被旧键吞掉、
+                    // 要么用旧键重复上报（看门狗已用当前 streamUrl 写过新键）。
+                    val url = currentStreamUrl.value
+                    if (url != null && reportedRef.add(url)) {
                         onErrorState.value()
                     }
                 }

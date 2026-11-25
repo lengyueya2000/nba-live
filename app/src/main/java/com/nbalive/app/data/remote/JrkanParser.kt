@@ -405,7 +405,19 @@ class JrkanParser {
      * 同一场比赛在两个源下就合不起来，信号数也被腰斩。
      */
     private fun parseDateTime(raw: String): Long? {
-        val m = DATE_TIME.find(raw) ?: return null
+        val m = DATE_TIME.find(raw)
+        if (m == null) {
+            // ⚠️ P2：源站会直接把时间文案写成「直播中」，没有 MM-dd HH:mm。
+            // 旧实现返回 null -> startAtMillis=null -> MatchStatusClock.aged 第一行就跳过，
+            // 状态永久卡在 LIVE。这里给一个"今天 00:00"占位（北京时间），
+            // 让 isDayPlaceholder + isPastDayEnd 的整日判据能生效。
+            if (MatchStatus.fromSource(raw) != MatchStatus.LIVE) return null
+            return runCatching {
+                java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
+                    .atStartOfDay(MatchStatusClock.SOURCE_ZONE)
+                    .toInstant().toEpochMilli()
+            }.getOrNull()
+        }
         val month = m.groupValues[1].toIntOrNull() ?: return null
         val day = m.groupValues[2].toIntOrNull() ?: return null
         val hour = m.groupValues[3].toIntOrNull() ?: return null

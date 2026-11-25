@@ -50,7 +50,6 @@ import com.nbalive.app.ui.displayTime
 import java.time.LocalDate
 import com.nbalive.app.ui.components.FullScreenErrorState
 import com.nbalive.app.ui.components.LoadingState
-import com.nbalive.app.ui.components.RetryErrorBanner
 import com.nbalive.app.ui.components.TeamLogo
 import com.nbalive.app.ui.icons.AppIcons
 import com.nbalive.app.ui.theme.AccentContrast
@@ -75,6 +74,10 @@ fun ReplayScreen(
     onSelectDate: (LocalDate) -> Unit = {},
 ) {
     val items = state.items
+    // 失败时 VM 只写 error、保留旧 items（见 MainViewModel.loadReplays 的 catch）。
+    // 若继续把 items 画出来，顶部日期已是新日期、卡片与「N 场」却还是旧日期的数据，
+    // 用户会点进不属于该日期的录像 —— UI 侧一律按失败态处理，不渲染旧卡片。
+    val staleHidden = state.error != null && items.isNotEmpty()
     val feedback = refreshingFeedbackFor(state.refreshing, state.loading, items.size)
     var showDatePicker by remember { mutableStateOf(false) }
 
@@ -118,6 +121,8 @@ fun ReplayScreen(
                 Text(
                     text = when {
                         state.loading -> "加载中…"
+                        // 失败时不能报旧列表的场次数（日期已变，这个数字是上一个日期的）
+                        state.error != null -> "加载失败"
                         state.refreshing -> "刷新中…"
                         else -> "${items.size} 场"
                     },
@@ -129,9 +134,14 @@ fun ReplayScreen(
 
             when {
                 state.loading -> LoadingState(text = "正在加载录像…")
-                state.error != null && items.isEmpty() -> FullScreenErrorState(
+                // 门槛不再看 items.isEmpty()：换日失败后旧 items 还在，不能继续露出旧卡片。
+                state.error != null -> FullScreenErrorState(
                     title = "加载失败",
-                    message = state.error!!,
+                    message = if (staleHidden) {
+                        "仍为旧日期数据，已隐藏旧场次，请重试获取所选日期的录像：${state.error}"
+                    } else {
+                        state.error!!
+                    },
                     onRetry = onRefresh,
                     icon = AppIcons.filled_CloudOff,
                     primaryAction = true,
@@ -145,7 +155,6 @@ fun ReplayScreen(
                     )
                 }
                 else -> Column(Modifier.fillMaxSize()) {
-                    if (state.error != null) RetryErrorBanner(message = state.error!!, onRetry = onRefresh)
                     LazyColumn(
                         contentPadding = PaddingValues(
                             start = Space.lg,

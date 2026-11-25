@@ -60,6 +60,11 @@ class CleartextPolicyTest {
         // 网页播放链路第一步就断（线上黑屏事故，见类 KDoc）。
         val mustRejectCleartext = listOf(
             "jrszbt.com",
+            // App 自己发起、代码里只写 https、WebView 从不加载的主机（review/04-security.md P1-5）
+            "site.api.espn.com", // 比分板 ESPN
+            "api.github.com", // 更新检查
+            "m.jrkan.com", // JRKAN 入口页
+            "www.xixizb.com", // xxzb5 跳转后的 API 主机
         )
         val missing = mustRejectCleartext.filterNot { host ->
             hasDomainConfig(xml!!, host, cleartextPermitted = false)
@@ -92,6 +97,10 @@ class CleartextPolicyTest {
                 "永不创建 → 其它线路全黑（v1.2.13 起的线上事故，实测探针日志见类 KDoc）。\n" +
                 "注意：这**不是**放松纪律 —— App 自己发起的 https-only 主机仍由上面那条判据钉住。",
             hasDomainConfig(xml!!, host, cleartextPermitted = true),
+        )
+        assertFalse(
+            "同一台 OSS 主机绝不能同时出现在禁明文清单里（黑屏事故的根因）：双向钉住，允许=true 与禁止=false 互斥",
+            hasDomainConfig(xml!!, host, cleartextPermitted = false),
         )
     }
 

@@ -50,6 +50,38 @@ class SeekGesturePolicyTest {
     }
 
     @Test
+    fun `从锚点加累计位移算绝对落点不依赖异步currentPosition`() {
+        // 半屏 = 半段时长；anchor=100s, 右滑半屏 → 200s（总时长 200s，clamp 到上限）
+        assertEquals(
+            200_000L,
+            SeekGesturePolicy.seekTargetFromAnchor(100_000L, 1000f, 1000f, 200_000L),
+        )
+        // 左滑半屏 → 回到 0
+        assertEquals(
+            0L,
+            SeekGesturePolicy.seekTargetFromAnchor(100_000L, -1000f, 1000f, 200_000L),
+        )
+        // anchor 50s，右滑 1/4 屏 → +50s = 100s
+        assertEquals(
+            100_000L,
+            SeekGesturePolicy.seekTargetFromAnchor(50_000L, 250f, 1000f, 200_000L),
+        )
+    }
+
+    @Test
+    fun `锚点落点时长未知返回0不可seek`() {
+        assertEquals(0L, SeekGesturePolicy.seekTargetFromAnchor(100L, 500f, 1000f, 0L))
+        assertEquals(0L, SeekGesturePolicy.seekTargetFromAnchor(100L, 500f, 0f, 10_000L))
+    }
+
+    @Test
+    fun `seek事件按间隔节流首次必发`() {
+        assertTrue(SeekGesturePolicy.shouldEmitSeek(1_000L, 0L, 120L))
+        assertTrue(SeekGesturePolicy.shouldEmitSeek(1_200L, 1_000L, 120L))
+        org.junit.Assert.assertFalse(SeekGesturePolicy.shouldEmitSeek(1_100L, 1_000L, 120L))
+    }
+
+    @Test
     fun `手势主轴判定水平优先给seek垂直给亮度音量`() {
         assertEquals(SeekGesturePolicy.Axis.HORIZONTAL, SeekGesturePolicy.gestureAxis(30f, 5f))
         assertEquals(SeekGesturePolicy.Axis.VERTICAL, SeekGesturePolicy.gestureAxis(5f, 30f))

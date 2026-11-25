@@ -207,6 +207,36 @@ class Xxzb5ParserTest {
         assertTrue(parser.parseReplays("""{"items":[]}""").isEmpty())
     }
 
+    // ---------- 队徽地址：与 JRS / JRKAN 统一走 HttpClient.absUrl ----------
+
+    @Test
+    fun `直播解析里协议相对队徽补成 https`() {
+        val body = """
+        {"items":[
+          {"id":1,"league":"NBA","sport":"篮球","status":"live",
+           "home":{"name":"湖人","logoPath":"//cdn.example.com/a.png"},
+           "away":{"name":"勇士","logoPath":"/uploads/b.png"}}
+        ]}
+        """.trimIndent()
+        val m = parser.parseList(body).single()
+        assertEquals("https://cdn.example.com/a.png", m.homeLogo)
+        assertEquals("https://www.xixizb.com/uploads/b.png", m.awayLogo)
+    }
+
+    @Test
+    fun `录像候选里协议相对队徽补成 https`() {
+        val body = """
+        {"items":[
+          {"id":2,"league":"NBA","sport":"篮球","status":"finished","replayId":9,
+           "home":{"name":"湖人","logoPath":"//cdn.example.com/a.png"},
+           "away":{"name":"勇士","logoPath":"https://cdn.example.com/b.png"}}
+        ]}
+        """.trimIndent()
+        val candidate = parser.parseReplayCandidates(body).single()
+        assertEquals("https://cdn.example.com/a.png", candidate.homeLogo)
+        assertEquals("https://cdn.example.com/b.png", candidate.awayLogo)
+    }
+
     // ---------- 夹具 ----------
 
     private fun xxzb5Match() = Match(

@@ -48,6 +48,30 @@ class ReplayHistoryVmTest {
     }
 
     @Test
+    fun `播放非录像时上报位置不得污染录像历史`() = vmTest {
+        val prefs = InMemoryPrefsStore()
+        val vm = MainViewModel(
+            loadMatches = { Result.success(emptyList()) },
+            prefs = prefs,
+            reloadReplays = { listOf(replay()) },
+            resolveStream = { s -> StreamUrlResolver.Resolved(m3u8Url = s.pageUrl, referer = null) },
+        )
+        vm.playReplay(replay())
+        settle()
+        vm.recordReplayPosition(positionMs = 120_000L, durationMs = 1_000_000L, isVod = true)
+        settle()
+        assertEquals(120_000L, vm.replayHistory.value.first().lastPositionMs)
+        // 看过录像后播直播：直播侧（isVod=false）上报的位置必须被忽略
+        vm.recordReplayPosition(positionMs = 999_000L, durationMs = 1_000_000L, isVod = false)
+        settle()
+        assertEquals(
+            "直播位置不得写进上一场录像历史",
+            120_000L,
+            vm.replayHistory.value.first().lastPositionMs,
+        )
+    }
+
+    @Test
     fun `清空历史后状态与存储都为空`() = vmTest {
         val prefs = InMemoryPrefsStore()
         val vm = MainViewModel(

@@ -126,6 +126,25 @@ class LineEquivalenceTest {
         )
     }
 
+    /** `normalize()` 必须和 `key()` 一样按 rawQuery 归一，否则编码过的 `&` 会被劈成两个参数。 */
+    @Test
+    fun `编码过的 & 不能被当成参数分隔符归一`() {
+        assertNotEquals(
+            "a=x%26b=y 是一个参数值，不能和 a=x&b=y 两个参数归一成同一 key",
+            LineEquivalence.key("https://a.example.com/some/path?a=x%26b=y"),
+            LineEquivalence.key("https://a.example.com/some/path?a=x&b=y"),
+        )
+    }
+
+    /** queryParams 的注释承诺"重复键取第一个"，实现（toMap 取最后）必须兑现这个承诺。 */
+    @Test
+    fun `重复 id 取第一个 不被后面的值覆盖`() {
+        assertEquals(
+            "sm:439",
+            LineEquivalence.key("http://h/play/sm.html?id=439&id=440"),
+        )
+    }
+
     /** 语义锚点：判据是**跨 Provider 的线路去重键**，与"哪个源报的"无关。 */
     @Test
     fun `同一线路来自不同源也同键`() {

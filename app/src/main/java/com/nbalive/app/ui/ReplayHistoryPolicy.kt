@@ -75,6 +75,29 @@ object ReplayHistoryPolicy {
     fun shouldResume(positionMs: Long, durationMs: Long): Boolean =
         positionMs > 0L && durationMs > 0L && positionMs < durationMs
 
+    /**
+     * 续播状态机：把"是否 seek"与"是否允许进度上报"解耦（2026-11-25 修复）。
+     *
+     * 三个 bug 都在这一个判据里被堵住：
+     *  ① 换线/重连时 effect 以 streamUrl 重启，续播意图会被重复消费 → [consumedMs] 记住
+     *     已消费的 initialSeekMs（存在 handle 上，跨 streamUrl 不丢），相等即 [DONE] 不再 seek；
+     *  ② 续播点 >= 时长（换短线路）时 shouldResume=false，若用它门控上报，进度永远不写
+     *     → 越界直接 [DONE]，从头播但**允许上报**，旧位置会被新进度覆盖；
+     *  ③ 时长未就绪（0）时不能 seek；此时 [PENDING]，也不上报（避免把 0 写成历史）。
+     *
+     * @param initialSeekMs 续播意图（0 = 无续播，从头播）
+     * @param durationMs 当前媒体时长（0 = 未就绪）
+     * @param consumedMs 已消费过的续播意图值（-1 = 尚未消费任何值）
+     */
+    fun resumeState(initialSeekMs: Long, durationMs: Long, consumedMs: Long): ResumeState {
+        if (durationMs <= 0L) return ResumeState.PENDING // 时长未知：等 READY
+        if (initialSeekMs <= 0L) return ResumeState.DONE // 无续播意图：正常上报
+        if (consumedMs == initialSeekMs) return ResumeState.DONE // 已消费：换线不倒退
+        return if (shouldResume(initialSeekMs, durationMs)) ResumeState.SEEK else ResumeState.DONE
+    }
+
+    enum class ResumeState { PENDING, SEEK, DONE }
+
     /** 历史条目显示的「上次看到 mm:ss」（复用播放器时间格式，避免两套）。 */
     fun formatWatchedPosition(positionMs: Long): String = PlayerControls.formatPlaybackTime(positionMs)
 

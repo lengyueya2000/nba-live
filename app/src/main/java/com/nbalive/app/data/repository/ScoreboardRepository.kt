@@ -121,7 +121,11 @@ class ScoreboardRepository(
             return last
         }
         cached = snap
-        cachedAt = now
+        // ⚠️ TTL 起点必须在**拿到正文之后**重新采样（review/02-data.md P2）：
+        // 上面进入时的 `now` 只用于命中判断；若把它直接写进 cachedAt，
+        // 一次慢请求的耗时会先被算进缓存年龄，20 秒 TTL 一落地就少了几百毫秒，
+        // 越慢的请求缓存越短（ScoreboardCacheTtlTest 钉住）。
+        cachedAt = System.nanoTime() / 1_000_000L
         return snap
     }
 

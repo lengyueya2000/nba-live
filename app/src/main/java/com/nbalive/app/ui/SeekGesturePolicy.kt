@@ -34,6 +34,39 @@ object SeekGesturePolicy {
         return (currentMs + deltaMs).coerceIn(0L, durationMs)
     }
 
+    /**
+     * 从手势开始时的**锚点位置** + 累计像素位移算出绝对落点（clamp 到 [0, durationMs]）。
+     *
+     * 为什么不用 ExoPlayer 的 currentPosition 每帧累加：
+     * ExoPlayer 的 currentPosition 由内部线程异步回写，seekTo 后的连续帧读到的可能仍是旧值，
+     * 基于它累加会吞掉增量、且每帧都下 seekTo 指令（HLS 分片风暴）。
+     * 正确做法是手势开始时取一次锚点，之后每帧用**本地累计位移**算绝对落点，
+     * 节流后 seekTo 一次到该绝对位置。纯函数，JVM 单测可跑。
+     *
+     * @param anchorMs 手势开始时的播放位置（毫秒）
+     * @param cumulativePx 从按下到当前的累计水平位移（右正左负，像素）
+     * @param widthPx 视频区宽度（像素）
+     * @param durationMs 总时长；<=0 或宽度<=0 时返回 0（不可 seek）
+     * @return 绝对落点，夹在 [0, durationMs]
+     */
+    fun seekTargetFromAnchor(
+        anchorMs: Long,
+        cumulativePx: Float,
+        widthPx: Float,
+        durationMs: Long,
+    ): Long {
+        if (durationMs <= 0L || widthPx <= 0f) return 0L
+        val delta = deltaMsFromDrag(cumulativePx, widthPx, durationMs)
+        return (anchorMs + delta).coerceIn(0L, durationMs)
+    }
+
+    /**
+     * seek 事件节流：距上次真正下发 seekTo 至少 [intervalMs] 才允许再发一次（首次 last=0 必发）。
+     * 避免每个 pointer move 帧都把 seek 指令压给 ExoPlayer（尤其 HLS 会触发多次分片请求）。
+     */
+    fun shouldEmitSeek(nowMs: Long, lastEmitMs: Long, intervalMs: Long): Boolean =
+        lastEmitMs <= 0L || nowMs - lastEmitMs >= intervalMs
+
     /** 供 OSD 显示：这次 seek 增量是否值得提示（至少 1 秒，避免每帧刷字）。 */
     fun shouldShowOsd(absDeltaMs: Long): Boolean = abs(absDeltaMs) >= 1_000L
 

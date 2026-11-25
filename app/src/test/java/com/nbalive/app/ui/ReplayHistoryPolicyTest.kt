@@ -16,6 +16,35 @@ import org.junit.Test
  */
 class ReplayHistoryPolicyTest {
 
+    @Test
+    fun `续播状态机时长未知等待合法seek越界直接完成`() {
+        // 时长未知（0）→ PENDING：不能 seek，也不能上报（等 READY）
+        assertEquals(
+            ReplayHistoryPolicy.ResumeState.PENDING,
+            ReplayHistoryPolicy.resumeState(initialSeekMs = 5_000L, durationMs = 0L, consumedMs = -1L),
+        )
+        // 无续播意图（0）→ DONE：立即允许正常上报
+        assertEquals(
+            ReplayHistoryPolicy.ResumeState.DONE,
+            ReplayHistoryPolicy.resumeState(initialSeekMs = 0L, durationMs = 100_000L, consumedMs = -1L),
+        )
+        // 合法续播点 → SEEK
+        assertEquals(
+            ReplayHistoryPolicy.ResumeState.SEEK,
+            ReplayHistoryPolicy.resumeState(initialSeekMs = 5_000L, durationMs = 100_000L, consumedMs = -1L),
+        )
+        // 越界（>=时长）→ DONE：从头播，但必须允许上报（否则历史永久卡在旧位置）
+        assertEquals(
+            ReplayHistoryPolicy.ResumeState.DONE,
+            ReplayHistoryPolicy.resumeState(initialSeekMs = 150_000L, durationMs = 100_000L, consumedMs = -1L),
+        )
+        // 已消费（换线/重连后 initialSeekMs 未变但已消费过）→ DONE：不再 seek，不倒退
+        assertEquals(
+            ReplayHistoryPolicy.ResumeState.DONE,
+            ReplayHistoryPolicy.resumeState(initialSeekMs = 5_000L, durationMs = 100_000L, consumedMs = 5_000L),
+        )
+    }
+
     private fun item(id: String, watchedAt: Long, positionMs: Long) = ReplayHistoryItem(
         matchId = id,
         league = League.NBA,
