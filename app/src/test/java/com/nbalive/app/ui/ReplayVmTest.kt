@@ -5,6 +5,7 @@ import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.ReplayItem
 import com.nbalive.app.data.model.ReplayLine
 import com.nbalive.app.data.remote.StreamUrlResolver
+import com.nbalive.app.ui.NavTab
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -84,6 +85,28 @@ class ReplayVmTest {
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `首次切到录像标签必须自动加载 别被初始 loading 标志挡住`() = vmTest {
+        var calls = 0
+        val vm = MainViewModel(
+            loadMatches = { Result.success(emptyList()) },
+            reloadReplays = { calls++; listOf(replay()) },
+        )
+        // 初态 loading=true 表示"还没拉过"，不是"正在拉"——不能据此拒绝首次加载。
+        vm.ensureReplaysLoaded(NavTab.REPLAY)
+        settle()
+        assertEquals("进入录像标签应真的发起一次加载", 1, calls)
+        assertFalse(vm.replayState.value.loading)
+
+        vm.ensureReplaysLoaded(NavTab.REPLAY)
+        settle()
+        assertEquals("重复触发不该再打源站", 1, calls)
+
+        vm.ensureReplaysLoaded(NavTab.MATCHES)
+        settle()
+        assertEquals("其它标签不该触发录像加载", 1, calls)
+    }
+
     private suspend fun TestScope.settle() {
         advanceTimeBy(1)
         runCurrent()

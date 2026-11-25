@@ -196,10 +196,10 @@ private fun RouteHost(
     }
 
     // 首次切到「录像」标签时拉一次；之后靠下拉刷新，不重复打源站。
+    // ⚠️ "是否已自动拉过"由 VM 的独立标志记着；不能用 replayState.loading 当守卫
+    // （它初值是 true = 还没拉过，用它会把首次进入挡掉，页面永远转圈）。
     LaunchedEffect(tab) {
-        if (tab == NavTab.REPLAY && replayState.items.isEmpty() && !replayState.loading) {
-            viewModel.loadReplays()
-        }
+        viewModel.ensureReplaysLoaded(tab)
     }
 
     // 锁定（防误触）：只认解锁键解锁，所以返回键在锁定时不该退出播放页。

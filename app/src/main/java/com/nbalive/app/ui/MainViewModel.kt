@@ -805,6 +805,21 @@ class MainViewModel(
 
     // ---------- 录像（2026-11-25 新增） ----------
 
+    /**
+     * 切到「录像」标签时调用：首次进入自动拉一次，之后不再重复。
+     *
+     * ⚠️ 判据必须是**独立的"是否已请求过"标志**，不能用 `replayState.loading`：
+     * 它的初值是 `true`（表示"还没拉过、首载要显示 spinner"），拿它当"正在拉"的守卫
+     * 会让首次进入被挡掉 —— 用户看到"一直在加载"，但请求从未发出。
+     */
+    private var replayAutoLoadRequested = false
+
+    fun ensureReplaysLoaded(tab: NavTab) {
+        if (tab != NavTab.REPLAY || replayAutoLoadRequested) return
+        replayAutoLoadRequested = true
+        loadReplays()
+    }
+
     /** 加载录像列表；`force` 时连点也不会并发打源站（取消上一次）。 */
     fun loadReplays(force: Boolean = false) {
         if (!force && _replayState.value.items.isNotEmpty()) return
