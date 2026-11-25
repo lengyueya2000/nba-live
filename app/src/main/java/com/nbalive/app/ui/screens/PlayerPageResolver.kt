@@ -67,7 +67,7 @@ object PlayerPageResolver {
     /**
      * Base64 解码——**委托给 [Base64Decode.decode]**（进程内唯一实现）。
      *
-     * 原来这里是本文件自己的一份私有实现；接入 88看球时 `K88Parser` 也要解 base64，
+     * 原来这里是本文件自己的一份私有实现；第三源接入时解析器也要解 base64，
      * 于是变成两份（review/optimization-review.md D15 给 JSON 取值器立的同一条纪律：
      * 同一份规则写两遍，改一处漏一处）。
      *

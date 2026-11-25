@@ -209,7 +209,8 @@ data class StreamSource(
 enum class Provider(val displayName: String) {
     JRS("JRS"),
     JRKAN("JRKAN"),
-    K88("88看球");
+    /** xxzb5.com（跳转至 xixizb.com 西西直播），2026-11-25 替换 88看球。 */
+    XXZB5("xxzb5");
 }
 
 /**
@@ -231,18 +232,25 @@ enum class Provider(val displayName: String) {
  * 加密串，`vxt` 就没有）交给页内 JS 拼成 `paps.html` 播放页，
  * 还原地址必须执行页面里的解密脚本 —— 只能交给 WebView 承载，不在"静态可解析"范围内。
  *
- * ## 88看球的 m3u8 代理壳（第三源接入时新增，2026-11-15）
+ * ## m3u8 代理壳 / 裸清单（第三源接入，2026-11-25）
  *
- * `play.88player.top/m3u8.html?url=<encodeURI(真实清单)>` —— 清单地址**就写在 query 里**，
- * 一次 URL 解码即得，不需要执行任何脚本，所以同属"静态可解析"。
- * 判据放在这一个函数里（而不是 K88 源自己另写一份）：[isDirectHls]、
- * `ChannelAdmission.isDirectPath`、`StreamUrlResolver` 的入口分派、
- * 以及排序规则全都从这里取值 —— 分成两份迟早出现
+ * - `play.88player.top/m3u8.html?url=<encodeURI(真实清单)>` —— 清单地址写在 query 里，
+ *   一次 URL 解码即得；
+ * - xxzb5（西西直播）线路接口给的是**裸 m3u8 直连**：
+ *   `https://www.rtmpcdn.com/live/qq2.m3u8`（可带 `?auth_key=`）。地址本就是清单，
+ *   连解码都不需要。
+ *
+ * 两者都不需要执行任何脚本，所以同属"静态可解析"。判据放在这一个函数里
+ * （而不是各自源自己另写一份）：[isDirectHls]、`ChannelAdmission.isDirectPath`、
+ * `StreamUrlResolver` 的入口分派、以及排序规则全都从这里取值 —— 分成两份迟早出现
  * "准入以为能播、解析器以为不能播"的自相矛盾。
  */
 private val SM_PLAY_PATH = "/play/sm.html"
 
 private val STEAM_PLAY_PATH = Regex("""/play/steam\d+\.html""")
+
+/** 裸 m3u8（可带 query，如 `?auth_key=`）；`.m3u8` 后必须是 query/片段边界或结尾。 */
+private val BARE_M3U8 = Regex("""\.m3u8(?:[?#][^\s"'<>]*)?$""", RegexOption.IGNORE_CASE)
 
 /**
  * 播放页地址能否被 `StreamUrlResolver` 静态解析成可直连的 m3u8。
@@ -254,7 +262,8 @@ private val STEAM_PLAY_PATH = Regex("""/play/steam\d+\.html""")
 fun isStaticallyResolvablePlayPage(pageUrl: String): Boolean =
     pageUrl.contains(SM_PLAY_PATH) ||
         STEAM_PLAY_PATH.containsMatchIn(pageUrl) ||
-        wrappedM3u8Url(pageUrl) != null
+        wrappedM3u8Url(pageUrl) != null ||
+        BARE_M3U8.containsMatchIn(pageUrl)
 
 /** 代理壳的页面名（`play.88player.top/m3u8.html?url=…`）。 */
 private const val M3U8_WRAPPER_PAGE = "m3u8.html"

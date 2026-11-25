@@ -1,7 +1,7 @@
 package com.nbalive.app.data.repository
 
 import com.nbalive.app.data.remote.JrkanParser
-import com.nbalive.app.data.remote.K88Parser
+import com.nbalive.app.data.remote.Xxzb5Parser
 
 /**
  * 源站端点**候选列表**（review/02-data.md P1-9）。
@@ -68,36 +68,23 @@ object SourceEndpoints {
     )
 
     /**
-     * 88看球列表页候选（第三源，2026-11-15）。
+     * xxzb5 的窗口赛程接口候选（第三源，2026-11-25 替换 88看球）。
      *
-     * 首位是 App 实测在用的域名；镜像域名取自**源站页脚自己给出的链接**
-     * （`88kanqiu.tw` / `88zhibo.me` —— 与 JRS 那两个镜像域名同一种"自家点名"证据，
-     * 不是猜的）。同一家族的页面结构与线路接口一致，所以只需换 host。
-     *
-     * ⚠️ 只列 `.cx`：`88zhibo.tv` 那份是**足球**列表入口（`/match/8/live`），
-     * 路径口径不同，不能当篮球镜像用。
+     * `xxzb5.com` 只做跳转到 `xixizb.com`（西西直播），API 由后者承载：
+     * `xxzb5.com` 自己请求 `/api/v1/...` 返回 404（实测）。所以候选首位就是跳转终点。
+     * 留成列表是为了域名轮换时只改这里：日期窗口由调用方（[MatchRepository]）给出。
      */
-    val K88_LIST: List<String> = listOf(
-        K88Parser.SITE_ORIGIN,
-        "https://www.88kanqiu.tw",
-        "https://www.88zhibo.me",
-    ).map { it + K88Parser.LIST_PATH }
+    val XXZB5_LIST: List<String> = listOf(Xxzb5Parser.SITE_ORIGIN)
 
     /**
-     * 88看球线路接口 URL 候选（`https://<host>/live/<id>/source`）。
+     * xxzb5 线路接口 URL 候选（`/api/v1/matches/{id}/progress`）。
      *
-     * 两层纪律叠在这里：
-     *  - **由列表候选派生**而不是另写一份域名模板（与 [jrsDetailUrls] 同一条）：
-     *    实测教训（review/02-data.md P2-6）是"两处副本改一处漏一处"时，
-     *    "刷新线路"会清 A 的缓存、读 B 的缓存，按钮变摆设且不报错；
-     *  - **路径模板只有 [com.nbalive.app.data.remote.K88Parser.sourceUrl] 一份**：
-     *    本对象原先也写了一遍 `/live/$id/source`，与解析器里那份就是同源副本 ——
-     *    源站把接口改成 `/live/{id}/links` 时改一处漏一处，
-     *    列表给出的入口能解、候选列表给的不能，换域名逻辑静默失效。
-     *    所以这里**调用解析器的那个函数**，方向也对（repository -> remote）。
+     * 与 [jrsDetailUrls] 同一条纪律：**由列表候选派生**而不是另写一份域名模板，
+     * 路径模板只由 [Xxzb5Parser.signalsUrl] 一份产生 —— 两处副本改一处漏一处，
+     * 换域名时列表给的入口与新拼的线路地址就会指向不同 host，静默失效。
      */
-    fun k88SourceUrls(detailId: String): List<String> =
-        K88_LIST.map { origin -> K88Parser.sourceUrl(detailId, originOf(origin)) }
+    fun xxzb5SignalsUrls(detailId: String): List<String> =
+        XXZB5_LIST.map { origin -> Xxzb5Parser.signalsUrl(detailId, originOf(origin)) }
 
     /**
      * JRKAN 播放主机候选。

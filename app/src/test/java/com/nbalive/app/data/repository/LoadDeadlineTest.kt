@@ -92,13 +92,13 @@ class LoadDeadlineTest {
         // 源站立刻返回 -> 结果照常
         //
         // ⚠️ 按 URL 路由到**每个源自己的正文**（第三源接入时修的）：
-        // 旧的 `if (jrszbt) jrs else jrkan` 会把 JRKAN 的 JS 正文喂给 88看球，
+        // 旧的 `if (jrszbt) jrs else jrkan` 会把 JRKAN 的 JS 正文喂给 xxzb5，
         // 88 解析归零 -> failedProviders 非空 -> 这条"正常路径不该报失败"
         // 测的就不是正常路径了。夹具喂错内容时断言再对也说明不了任何事。
         val outcome = MatchRepository(loadDeadlineMs = 60_000L).loadMatchesWithOutcome { url, _ ->
             when {
                 url.contains("jrszbt") -> FetchResult.Ok(jrsHtml())
-                url.contains("/match/") -> FetchResult.Ok(k88Html())
+                url.contains("/api/v1/matches/window") -> FetchResult.Ok(xxzb5Window())
                 else -> FetchResult.Ok(jrkanJs())
             }
         }
@@ -126,26 +126,18 @@ class LoadDeadlineTest {
     """.trimIndent()
 
     /**
-     * 88看球列表正文（第三源）。
+     * xxzb5 窗口赛程正文（第三源）。
      *
      * ⚠️ 对阵与日期与 [jrkanJs] **逐字相同**（勇士 vs 太阳 / 10-23）：
      * 合并键是"日期|队名对"，同对阵并成一张卡，
      * 于是本类的场次数量断言不必因为多一个源而改写 —— 它测的是 deadline，
      * 不是合并规则（合并与线路去重另有测试文件）。
      */
-    private fun k88Html() = """
-        <ul class="list-group">
-          <li class="list-group-item live-list-group-time">2026-10-23</li>
-          <li class="list-group-item group-game-item">
-            <div class="row">
-              <div class="col-md-1 category-game-time">08:00</div>
-              <div class="col-md-3"><div><span class="game-type">NBA</span></div></div>
-              <div class="col-md-4"><span class="team-name" title="勇士">勇士</span></div>
-              <div class="col-md-1">VS</div>
-              <div class="col-md-3"><span class="team-name" title="太阳">太阳</span></div>
-              <div><a href='/live/3931527/play'>直播中</a></div>
-            </div>
-          </li>
-        </ul>
+    private fun xxzb5Window() = """
+        {"items":[
+          {"id":3931527,"league":"NBA","sport":"篮球",
+           "home":{"name":"勇士","logoPath":null},"away":{"name":"太阳","logoPath":null},
+           "startsAt":"2026-10-23T00:00:00Z","status":"live"}
+        ]}
     """.trimIndent()
 }

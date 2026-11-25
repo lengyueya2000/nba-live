@@ -13,7 +13,7 @@ import com.nbalive.app.data.remote.redactUrl
 import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.data.remote.JrsParser
 import com.nbalive.app.data.remote.JrkanParser
-import com.nbalive.app.data.remote.K88Parser
+import com.nbalive.app.data.remote.Xxzb5Parser
 import com.nbalive.app.data.remote.LineEquivalence
 import com.nbalive.app.data.remote.StreamUrlResolver
 import android.util.Log
@@ -35,17 +35,17 @@ import java.io.IOException
  * 赛事仓库：多源聚合 + 去重 + 故障切换。
  *
  * 主源 JRS（jrszbt.com），备源 JRKAN（m.jrkan.com），
- * 第三源 88看球（88kanqiu.cx，2026-11-15 接入）。
+ * 第三源 xxzb5（xxzb5.com → xixizb.com，2026-11-25 替换 88看球）。
  * 同一场比赛在各源都可能出现，按"队名对 + 日期"归一化后合并；
  * **线路**按 [com.nbalive.app.data.remote.LineEquivalence] 的等价键去重 ——
- * 88 的「国内线路⑤–⑨」与 JRS/JRKAN 是同一批云直播线路（356/368 互为镜像），
- * 只按整串 URL 判重会让同一路线路以两三个名字进换线列表。
+ * xxzb5 的裸 m3u8 与 JRS/JRKAN 的云直播线路（356/368 互为镜像）里，
+ * 同一份清单会以不同拼法出现，只按整串 URL 判重会让同一路以两三个名字进换线列表。
  */
 class MatchRepository(
     private val http: HttpClient = HttpClient.shared,
     private val jrsParser: JrsParser = JrsParser(),
     private val jrkanParser: JrkanParser = JrkanParser(),
-    private val k88Parser: K88Parser = K88Parser(),
+    private val xxzb5Parser: Xxzb5Parser = Xxzb5Parser(),
     private val resolver: StreamUrlResolver = StreamUrlResolver(),
     /**
      * **每个源**各自的 deadline（review/02-data.md P2-3，修正见
@@ -449,8 +449,8 @@ class MatchRepository(
         /** 列表页单源拉取的最大尝试次数（含首次）。 */
         private const val LIST_FETCH_ATTEMPTS = 3
 
-        /** 88看球线路接口地址里的比赛 id（用于回推候选 URL）。 */
-        private val K88_DETAIL_ID = Regex("""/live/(\d+)/source""")
+        /** xxzb5 线路接口地址里的比赛 id（用于回推候选 URL）。 */
+        private val XXZB5_DETAIL_ID = Xxzb5Parser.DETAIL_ID
 
         /** 重试退避基数：第 n 次失败后等 n * LIST_RETRY_BACKOFF_MS。 */
         private const val LIST_RETRY_BACKOFF_MS = 400L
@@ -743,18 +743,18 @@ class MatchRepository(
                 SourceOutcome.Disabled
             }
         }
-        val k88Deferred = async {
-            if (Provider.K88 in active) {
-                sourceWithDeadline { fetchK88Outcome(fetch) }
+        val xxzb5Deferred = async {
+            if (Provider.XXZB5 in active) {
+                sourceWithDeadline { fetchXxzb5Outcome(fetch) }
             } else {
                 SourceOutcome.Disabled
             }
         }
         val jrs = jrsDeferred.await()
         val jrkan = jrkanDeferred.await()
-        val k88 = k88Deferred.await()
+        val xxzb5 = xxzb5Deferred.await()
 
-        val failures = listOf(Provider.JRS to jrs, Provider.JRKAN to jrkan, Provider.K88 to k88)
+        val failures = listOf(Provider.JRS to jrs, Provider.JRKAN to jrkan, Provider.XXZB5 to xxzb5)
             .filter { it.second.failed }
         val reasons = failures.associate { (provider, outcome) ->
             provider to when (outcome) {
@@ -776,7 +776,7 @@ class MatchRepository(
             Log.w("MatchRepo", "${it.first.displayName} 列表在 ${loadDeadlineMs}ms 内未返回，按超时处理")
         }
 
-        val merged = merge(jrs.orEmpty(), jrkan.orEmpty(), k88.orEmpty())
+        val merged = merge(jrs.orEmpty(), jrkan.orEmpty(), xxzb5.orEmpty())
         // 校正与排序只在有数据时有意义；空列表直接返回，省掉一整轮详情页请求
         val corrected = if (merged.matches.isEmpty()) {
             merged.matches
@@ -819,17 +819,29 @@ class MatchRepository(
     ): SourceOutcome = runSource(SourceEndpoints.JRKAN_LIST_JS, fetch) { body, _ -> jrkanParser.parseList(body) }
 
     /**
-     * 88看球列表。
+     * xxzb5（西西直播）窗口赛程列表。
      *
-     * ⚠️ 解析时必须把**真正取到正文的那个 host** 交给解析器：它要按同一个 host
-     * 拼线路接口地址（`/live/{id}/source`）。用写死首位拼出来的话，正文来自镜像、
-     * 展开线路却去敲主域名 —— 换域名这一步等于没做（`expandJrkanPlayPage`
-     * 里"线路地址指向取到正文那个 host"是同一条纪律，P1-9）。
+     * 接口按日期窗口取：`/api/v1/matches/window?from=...&to=...`。
+     * 用北京时间当天前后各推一天（3 天窗口），覆盖跨零点场次 —— 实测窗口接口
+     * 一次返回两三天共约 235 场，本地按联赛/时间排序后展示，足够首屏。
+     *
+     * ⚠️ 解析时把**真正取到正文的那个 host** 交给解析器，按它拼线路入口
+     * （`/api/v1/matches/{id}/progress`），避免换域名只换一半（P1-9 同一条纪律）。
      */
-    private suspend fun fetchK88Outcome(
+    private suspend fun fetchXxzb5Outcome(
         fetch: suspend (String, String?) -> FetchResult,
-    ): SourceOutcome = runSource(SourceEndpoints.K88_LIST, fetch) { body, url ->
-        k88Parser.parseList(body, SourceEndpoints.originOf(url))
+    ): SourceOutcome {
+        val today = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
+        val urls = SourceEndpoints.XXZB5_LIST.map { origin ->
+            Xxzb5Parser.listUrl(
+                from = today.minusDays(1).toString(),
+                to = today.plusDays(1).toString(),
+                origin = origin,
+            )
+        }
+        return runSource(urls, fetch) { body, url ->
+            xxzb5Parser.parseList(body, SourceEndpoints.originOf(url))
+        }
     }
 
     /**
@@ -1012,13 +1024,13 @@ class MatchRepository(
      * ⚠️ 签名保持不变（review/optimization-review.md D10）：既有测试在用。
      * 实现已抽到 [MatchMerger]（纯函数，可单独测、不再和 IO/协程样板混在一个类里）。
      *
-     * @param k88 第三源场次；缺省空，让旧的 2 参调用点与测试一行都不用改。
+     * @param xxzb5 第三源场次；缺省空，让旧的 2 参调用点与测试一行都不用改。
      */
     internal fun mergeForTest(
         jrs: List<Match>,
         jrkan: List<Match>,
-        k88: List<Match> = emptyList(),
-    ): List<Match> = MatchMerger.merge(jrs, jrkan, k88).matches
+        xxzb5: List<Match> = emptyList(),
+    ): List<Match> = MatchMerger.merge(jrs, jrkan, xxzb5).matches
 
     /**
      * 合并两个源（委托给 [MatchMerger]）。
@@ -1027,18 +1039,18 @@ class MatchRepository(
      * 和抓取/重试/缓存/协程样板混在同一个千行文件中 —— 改一处要在一堆 IO 里定位。
      * 抽出去之后 [MatchMerger] 可以脱离仓库单独测（D10）。
      *
-     * ## 合并顺序：jrkan → jrs → k88（末位**故意**）
+     * ## 合并顺序：jrkan → jrs → xxzb5（末位**故意**）
      *
      * `mergeOne` 是"先到先得 + 后来者只补缺"，而三个源里只有 **JRKAN 自带
      * `MM-dd HH:mm`** 且列表更新最及时；JRS 的 `timeLabel` 常被"直播中"顶掉；
-     * 88 的 `timeLabel` 是本页自己拼出来的 `"11-15 08:00"`，
-     * 形状与 JRKAN 一致、但**日期来自分组标题**（跨零点的场次会被归到前一天）。
-     * 所以 88 必须排在最后：它的 timeLabel / startAtMillis 只用来**补缺**
+     * xxzb5 的 `timeLabel` 由 `startsAt`（UTC）按北京时间算出，
+     * 形状与 JRKAN 一致，但时间解析失败时会退化。
+     * 所以 xxzb5 必须排在最后：它的 timeLabel / startAtMillis 只用来**补缺**
      * （`existing.x ?: m.x`），绝不覆盖已有源的值 —— 顺序写反会让跨零点场次
      * 的合并键漂移，同一场拆成两张卡（review/02-data.md P2-12 的同款事故）。
      */
-    private fun merge(jrs: List<Match>, jrkan: List<Match>, k88: List<Match>): MatchMerger.Merged =
-        MatchMerger.merge(jrs, jrkan, k88)
+    private fun merge(jrs: List<Match>, jrkan: List<Match>, xxzb5: List<Match>): MatchMerger.Merged =
+        MatchMerger.merge(jrs, jrkan, xxzb5)
 
     /**
      * 拉取某场赛事的全部信号，并用详情页时间校正"直播中"（源站列表缓存会滞后）。
@@ -1121,13 +1133,13 @@ class MatchRepository(
             jrkanSignals
         }
 
-        // 88看球：列表页只给一个线路接口入口，线路要现取（结构与 JRKAN 同构）。
+        // xxzb5：列表页只给一个线路接口入口（/progress），线路要现取（结构与 JRKAN 同构）。
         // ⚠️ 每个入口给不同的 id 前缀序号（与 jrkanExpansions 同一纪律）：
-        // parseSourcePage 的编号只在单次调用内唯一，两个入口都成功时
+        // parseSignals 的编号只在单次调用内唯一，两个入口都成功时
         // 共用前缀就会产出重复 id，播放器当 LazyColumn key 用直接崩。
-        val k88Sources = match.sources.filter { it.provider == Provider.K88 }
-        val k88Signals = k88Sources.mapIndexed { index, source ->
-            expandK88SourceEndpoint(source, match, index, fetch)
+        val xxzb5Sources = match.sources.filter { it.provider == Provider.XXZB5 }
+        val xxzb5Signals = xxzb5Sources.mapIndexed { index, source ->
+            expandXxzb5SourceEndpoint(source, match, index, fetch)
         }.flatten()
 
         // ⚠️ 最后一道防线：保证信号 id 全局唯一。
@@ -1138,36 +1150,36 @@ class MatchRepository(
         // 以后任何一处改了 id 规则都不会把 App 弄崩。
         //
         // 线路去重同样按**等价键**（`LineEquivalence`）而不是整串 URL：
-        // 88 与 JRS/JRKAN 报的是同一批云直播线路，host 不同、id 也不同，
-        // 不在这里收敛的话，播放页会列出三条名字不同、点开是同一个上游的线路。
-        val deduped = LineEquivalence.distinctByLine(jrsSignals + jrkanFinal + k88Signals)
+        // xxzb5 的裸 m3u8 与 JRS/JRKAN 的云直播线路里，同一份清单会以不同拼法出现，
+        // 不在这里收敛的话，播放页会列出几条名字不同、点开是同一个上游的线路。
+        val deduped = LineEquivalence.distinctByLine(jrsSignals + jrkanFinal + xxzb5Signals)
             .mapIndexed { index, s -> s.copy(id = "${s.id}#$index") }
 
         Detail(deduped, correction)
     }
 
     /**
-     * 展开 88看球的线路接口（`/live/{id}/source`）。
+     * 展开 xxzb5 的线路接口（`/api/v1/matches/{id}/progress`）。
      *
      * ## 为什么要走候选 host
      *
      * 与 [expandJrkanPlayPage] 同一条纪律（P1-9）：线路接口挂在**取到列表正文的那个
-     * host** 下（`K88Parser.parseList` 的 origin 参数），主域名死了而列表是从镜像
+     * host** 下（`Xxzb5Parser.parseList` 的 origin 参数），主域名死了而列表是从镜像
      * 拿到的时候，这里必须改试镜像 —— 否则换域名只换了一半。
      *
-     * 每个候选**只试一次**：域名失效是故障，重试三次只是让用户多等三个超时；
-     * 瞬时抖动由列表页那一层兜（那边预算更值）。
+     * 拿到正文但 0 条线路（`available=false` / 全被准入过滤）是事实不是故障，
+     * 换镜像也解不出同样的东西，直接返回空。
      */
-    private suspend fun expandK88SourceEndpoint(
+    private suspend fun expandXxzb5SourceEndpoint(
         source: StreamSource,
         match: Match,
         index: Int,
         fetch: suspend (String, String?) -> FetchResult,
     ): List<StreamSource> {
-        val detailId = K88_DETAIL_ID.find(source.pageUrl)?.groupValues?.get(1)
+        val detailId = XXZB5_DETAIL_ID.find(source.pageUrl)?.groupValues?.get(1)
         val candidates = if (detailId != null) {
             SourceEndpoints.attemptOrder(
-                SourceEndpoints.k88SourceUrls(detailId),
+                SourceEndpoints.xxzb5SignalsUrls(detailId),
                 synchronized(listFailedHosts) { listFailedHosts.toSet() },
             )
         } else {
@@ -1175,20 +1187,20 @@ class MatchRepository(
             listOf(source.pageUrl)
         }
         coolingCodeFor(candidates)?.let { code ->
-            debugLog("MatchRepo", "88 线路接口处于限流冷却中(HTTP $code)，本轮不发请求")
+            debugLog("MatchRepo", "xxzb5 线路接口处于限流冷却中(HTTP $code)，本轮不发请求")
             return emptyList()
         }
         for (url in candidates) {
             val body = when (val r = fetch(url, http.refererOf(url))) {
                 is FetchResult.Ok -> r.body
                 is FetchResult.Rejected -> {
-                    Log.w("MatchRepo", "88 线路接口被拒绝(HTTP ${r.code})，放弃重试: ${redactUrl(url)}")
+                    Log.w("MatchRepo", "xxzb5 线路接口被拒绝(HTTP ${r.code})，放弃重试: ${redactUrl(url)}")
                     synchronized(listFailedHosts) { listFailedHosts += hostOf(url) }
                     startCooldown(url, r.code)
                     return emptyList()
                 }
                 is FetchResult.NotFound -> {
-                    debugLog("MatchRepo", "88 线路接口不存在(HTTP ${r.code})，不重试")
+                    debugLog("MatchRepo", "xxzb5 线路接口不存在(HTTP ${r.code})，不重试")
                     continue
                 }
                 is FetchResult.Unreachable -> {
@@ -1197,11 +1209,9 @@ class MatchRepository(
                 }
             }
             synchronized(listFailedHosts) { listFailedHosts -= hostOf(url) }
-            val channels = k88Parser.parseSourcePage(body, match, index)
+            val channels = xxzb5Parser.parseSignals(body, match, index)
             if (channels.isNotEmpty()) return channels
-            // 拿到正文但 0 条线路：这一场的线路全被剔除（敏感/海外），是事实不是故障，
-            // 换下一个镜像也解不出同样的东西，直接返回空、不许兜回别的地址。
-            debugLog("MatchRepo", "88 线路接口无可用线路：${redactUrl(url)}")
+            debugLog("MatchRepo", "xxzb5 线路接口无可用线路：${redactUrl(url)}")
             return emptyList()
         }
         return emptyList()

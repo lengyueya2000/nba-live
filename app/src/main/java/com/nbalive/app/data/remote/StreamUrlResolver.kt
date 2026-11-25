@@ -1,6 +1,7 @@
 package com.nbalive.app.data.remote
 
 import android.util.Log
+import com.nbalive.app.data.model.isStaticallyResolvablePlayPage
 import com.nbalive.app.data.model.wrappedM3u8Url
 import java.net.URLDecoder
 
@@ -52,7 +53,7 @@ class StreamUrlResolver {
      * @return 解析成功返回候选地址；失败返回 null
      */
     suspend fun resolve(pageUrl: String, fetch: suspend (String) -> String?): Resolved? {
-        // 第三种形态：88看球的 m3u8 代理壳（`…/m3u8.html?url=<真实清单>`）。
+        // 第三种形态：m3u8 代理壳（`…/m3u8.html?url=<真实清单>`）。
         // 清单地址**就写在 query 里**，纯解码即得 —— 连一次请求都不必发。
         // ⚠️ 判据走 isStaticallyResolvablePlayPage 那一份（Match.kt），不在这里另写正则：
         // "准入说可直连、解析器说不认识"是同一个判据分叉的两面（见其 KDoc）。
@@ -61,6 +62,21 @@ class StreamUrlResolver {
                 m3u8Url = real,
                 referer = refererFor(pageUrl),
                 m3u8Candidates = listOf(real),
+            )
+        }
+
+        // 第四种形态：xxzb5（西西直播）的**裸 m3u8 直连**。地址本身就是清单，
+        // 不需要执行脚本也不需要抓播放页 —— 原样返回，连一次请求都不发。
+        // ⚠️ 判据同样走 isStaticallyResolvablePlayPage（Match.kt 唯一来源）：
+        // 这里只认"代理壳之外的裸清单"，代理壳已在上一步处理。
+        if (wrappedM3u8Url(pageUrl) == null &&
+            isStaticallyResolvablePlayPage(pageUrl) &&
+            pageUrl.contains(".m3u8", ignoreCase = true)
+        ) {
+            return Resolved(
+                m3u8Url = pageUrl,
+                referer = refererFor(pageUrl),
+                m3u8Candidates = listOf(pageUrl),
             )
         }
 

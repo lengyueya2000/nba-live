@@ -26,7 +26,7 @@ object SourcePrefs {
      * 「新增源迁移做过没有」的标记（2026-11-15 第三源接入）。
      *
      * ⚠️ 必须是**独立**的布尔键，不能从 `enabled_providers` 里推断：
-     * "用户自己关掉 K88"之后磁盘上剩的 `{JRS, JRKAN}` 与老用户的旧数据**逐字相同**，
+     * "用户自己关掉第三源"之后磁盘上剩的 `{JRS, JRKAN}` 与老用户的旧数据**逐字相同**，
      * 没有标记就只能靠猜，而猜错的代价是每次启动替用户打开一个他刚关掉的源。
      */
     private const val KEY_NEW_SOURCE_MIGRATED = "new_source_migrated"
@@ -71,7 +71,7 @@ object SourcePrefs {
         _enabled.value = resolved
         // ⚠️ 迁移那一次必须**同时**落两样东西：标记 + 迁移后的集合。
         // 只落标记是错的：磁盘上仍是 {JRS, JRKAN}，用户没碰过开关的话，
-        // **第二次**启动就走到 migrated=true 的"原样读回"分支，K88 又关了 ——
+        // **第二次**启动就走到 migrated=true 的"原样读回"分支，第三源又关了 ——
         // 现象变成"升级后第一天能看新源、之后又没了"，比一直不迁移更难排查。
         // 写回是幂等的：中途被杀进程，下次启动补开的是同一个源。
         if (!migrated) {

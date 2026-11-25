@@ -82,7 +82,12 @@ object SourceTogglePolicy {
      *   被重新打开一次他关掉的源。
      */
     fun fromStorage(names: Set<String>?, migrated: Boolean = true): Set<Provider> {
-        val raw = names.orEmpty()
+        // 第三源换源（K88 → XXZB5，2026-11-25）：老用户磁盘上存的是已删除的枚举名
+        // `K88`，若只按当前枚举解析就会把它丢掉 —— 第三源开关显示"已关闭"且永不解析。
+        // 这里先把旧名字归一到新名字，**保留用户对"第三源槽位"的开/关选择**：
+        // 存了 K88 = 当时开着 → 变 XXZB5 开着；没存 = 当时关着 → 仍然关着。
+        // 必须在 migrated 判断之前做：这些用户的 `new_source_migrated` 早已是 true。
+        val raw = names.orEmpty().map { LEGACY_SOURCE_ALIASES[it] ?: it }.toSet()
         val parsed = raw
             .mapNotNull { name -> Provider.entries.firstOrNull { it.name == name } }
             .toSet()
@@ -90,7 +95,7 @@ object SourceTogglePolicy {
         if (migrated) return parsed
         // 两道闸叠加，缺一不可：
         //  - [isLegacyShapedNames] 保证只动"旧时代形态"的数据。标记位与数据是两次写入，
-        //    标记丢了而数据其实已是升级后写的（含 K88）时，没有这道闸就会替他补开 JRKAN；
+        //    标记丢了而数据其实已是升级后写的（含第三源）时，没有这道闸就会替他补开 JRKAN；
         //  - [newSourcesAfterLegacy] 只补"旧时代之后新增、且数据里没有"的源，
         //    用户自己关掉的旧源不在其列。
         // 已知余量：标记写失败时，用户下次启动会被再补开一次新增源（他重新关一次就好）——
@@ -114,8 +119,8 @@ object SourceTogglePolicy {
      * 旧时代之后新增、且这份数据里没出现的源（迁移要补开的那些）。
      *
      * ⚠️ 判定只看**名字属于哪一代**，不看"有没有脏名字"：
-     * `{JRS, BOGUS}` 解析后剩 `{JRS}`，仍属旧时代数据 → 该补开 K88；
-     * 而 `{JRS, K88}` 里已有新源时代的痕迹 → 说明这份数据是升级之后写的，
+     * `{JRS, BOGUS}` 解析后剩 `{JRS}`，仍属旧时代数据 → 该补开第三源；
+     * 而 `{JRS, XXZB5}` 里已有新源时代的痕迹 → 说明这份数据是升级之后写的，
      * 用户没开 JRKAN 是他的选择，一次都不该替他改（上面那道闸也会拦住它）。
      */
     private fun newSourcesAfterLegacy(enabled: Set<Provider>): Set<Provider> =
@@ -124,11 +129,22 @@ object SourceTogglePolicy {
     /**
      * 接入第三源**之前**存在磁盘上的那批源。
      *
-     * ⚠️ 写死这份**历史**名单，而不是 `Provider.entries - K88`：
+     * ⚠️ 写死这份**历史**名单，而不是 `Provider.entries - XXZB5`：
      * 用减法的话，将来加第四源时这批人又会被判成"旧时代"、再被补开一次，
      * 把用户后来手动关掉的源悄悄打开 —— 那已经是篡改设置了。
      */
     private val LEGACY_NAMES: Set<String> = setOf(Provider.JRS.name, Provider.JRKAN.name)
+
+    /**
+     * 已删除的源枚举名 → 当前等价源（换源时保留用户在"第三源槽位"上的选择）。
+     *
+     * ⚠️ 只映射**同一个槽位的重命名**，不映射"新增源"：新增源的默认开由
+     * [fromStorage] 的迁移分支负责，不能混在这里 —— 否则用户当年关掉的旧源
+     * 会被当成新源重新打开（那是篡改设置）。
+     */
+    private val LEGACY_SOURCE_ALIASES: Map<String, String> = mapOf(
+        "K88" to Provider.XXZB5.name,
+    )
 
     /**
      * 「我的」页开关下面那行摘要：一眼看出现在在解析哪些源。

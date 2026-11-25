@@ -12,7 +12,7 @@ import org.junit.Test
  * 背景（实测）：`play.sportsteam356.com` 与 `play.sportsteam368.com` 是同一套
  * 播放后端的镜像（同 path+id 的页面 `playerUrlBase64` 解出同一个
  * `demo.songzenet.com/paps.html?id=` 入口，仅每次下发的 `encodedStr` 时效签名不同），
- * 而 88看球的「国内线路⑤–⑨」正是 JRS（368）/ JRKAN（356）同一批线路的第三种拼法。
+ * 而 xxzb5的「国内线路⑤–⑨」正是 JRS（368）/ JRKAN（356）同一批线路的第三种拼法。
  * 只按整串 URL 去重（旧 [distinctBy pageUrl] 语义）时，host 或参数顺序一变
  * 就漏进来一批语义重复的线路；而按"播放器 + id"归一化后：
  *  - `kbs` 与 `vxt` 即便同 id 也**必须**算两条（不同上游，实测 88 同场都给）；
@@ -131,8 +131,8 @@ class LineEquivalenceTest {
     fun `同一线路来自不同源也同键`() {
         val url = "http://play.sportsteam368.com/play/kbs/?id=10022600231&id2="
         val fromJrs = StreamSource("jrs-1", "信号3", Provider.JRS, url)
-        val fromK88 = StreamSource("k88-1", "国内线路 Q ⑤", Provider.K88, url)
-        assertEquals(LineEquivalence.key(fromJrs.pageUrl), LineEquivalence.key(fromK88.pageUrl))
+        val fromThird = StreamSource("third-1", "国内线路 Q ⑤", Provider.XXZB5, url)
+        assertEquals(LineEquivalence.key(fromJrs.pageUrl), LineEquivalence.key(fromThird.pageUrl))
     }
 
     /** Provider 扩到三源后，旧断言里「JRS+JRKAN 双源」的地方都要显式声明范围。 */
@@ -140,7 +140,7 @@ class LineEquivalenceTest {
     fun `三源枚举齐全且名字唯一`() {
         assertEquals(3, Provider.entries.size)
         assertEquals(
-            listOf("JRS", "JRKAN", "K88"),
+            listOf("JRS", "JRKAN", "XXZB5"),
             Provider.entries.map { it.name },
         )
     }

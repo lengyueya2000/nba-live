@@ -31,11 +31,11 @@ class LoadOutcomeTest {
      * 本文件的夹具是**两源**的（JRS 给 HTML、其余给 JRKAN 的 JS）。
      *
      * ⚠️ 第三源接入（2026-11-15）后这里显式只开两个源，而不是把断言放宽成
-     * `[JRS, K88]`：88 的解析器拿到 JRKAN 那份 JS 正文必然归零，于是
-     * "K88 失败"是**夹具造出来的**，不是生产行为 —— 把它写进期望值等于
+     * `[JRS, XXZB5]`：88 的解析器拿到 JRKAN 那份 JS 正文必然归零，于是
+     * "XXZB5 失败"是**夹具造出来的**，不是生产行为 —— 把它写进期望值等于
      * 用断言承认一个假故障，真正该测的"JRS 403 要报出来"反而被稀释。
      *
-     * 三源一起跑的行为判据在 `K88SourceIntegrationTest`（夹具含真 88 正文）。
+     * 三源一起跑的行为判据在 `Xxzb5ParserTest`（夹具含真 88 正文）。
      */
     private val twoSources = setOf(Provider.JRS, Provider.JRKAN)
 
@@ -99,7 +99,7 @@ class LoadOutcomeTest {
         val outcome = repo.loadMatchesWithOutcome { _, _ -> FetchResult.Unreachable("timeout") }
         assertEquals(
             "所有源都挂时每一个都要记，用户才知道是网络问题而不是「今天没比赛」",
-            listOf(Provider.JRS, Provider.JRKAN, Provider.K88),
+            listOf(Provider.JRS, Provider.JRKAN, Provider.XXZB5),
             outcome.failedProviders.toList().sortedBy { it.ordinal },
         )
         assertTrue("两源都失败时列表为空", outcome.matches.isEmpty())
@@ -167,7 +167,7 @@ class LoadOutcomeTest {
             listOf(
                 com.nbalive.app.data.model.Provider.JRS,
                 com.nbalive.app.data.model.Provider.JRKAN,
-                com.nbalive.app.data.model.Provider.K88,
+                com.nbalive.app.data.model.Provider.XXZB5,
             ),
             outcome.failedProviders,
         )

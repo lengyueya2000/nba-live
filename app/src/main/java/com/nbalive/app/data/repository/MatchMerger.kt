@@ -36,18 +36,17 @@ internal object MatchMerger {
      * 日期必须参与 key：同一对球队背靠背/系列赛会重复出现，
      * 只按队名归并会把真实存在的第二场直接吞掉。
      *
-     * ## 合并方向：`jrkan` 先、`jrs` 次、`k88` 末
+     * ## 合并方向：`jrkan` 先、`jrs` 次、`xxzb5` 末
      *
      * 后合并的只用来**补缺**（见 [mergeOne] 的 `copy(...)`），所以顺序有意义：
      *  - JRKAN 自带 `MM-dd HH:mm` 且更新及时 —— 首位，它的日期参与合并键最稳；
-     *  - 88看球排末位（2026-11-15 接入时定的）：它的 `timeLabel` 虽与 JRKAN 同形
-     *    （`"11-15 08:00"`），但日期取自**页面自己的分组标题**，
-     *    跨零点场次会被归到前一天。写在前头会让合并键漂移，
-     *    同一场拆成两张卡（review/02-data.md P2-12 的同款事故）。
+     *  - xxzb5（西西直播）排末位：它的 `timeLabel` 从 `startsAt` 的 UTC 时间按
+     *    北京时间算出，形状与 JRKAN 同形（`"11-25 09:00"`）。写在前头时若时间
+     *    解析失败（缺字段/改版），合并键会退化，所以只让它补缺、不覆盖已有源。
      *
-     * @param k88 88看球的场次；缺省为空，让既有两源调用点与测试一行都不用改。
+     * @param xxzb5 xxzb5 的场次；缺省为空，让既有两源调用点与测试一行都不用改。
      */
-    fun merge(jrs: List<Match>, jrkan: List<Match>, k88: List<Match> = emptyList()): Merged {
+    fun merge(jrs: List<Match>, jrkan: List<Match>, xxzb5: List<Match> = emptyList()): Merged {
         val merged = LinkedHashMap<String, Match>()
         // 已用过的 id：避免每次都 O(n) 扫 merged.values（几十场还行，上百场会退化）
         val usedIds = HashSet<String>()
@@ -71,12 +70,13 @@ internal object MatchMerger {
                 if (sources.size == m.sources.size) m.copy(id = unique)
                 else m.copy(id = unique, sources = sources, signalCount = sources.size)
             } else {
-                // ⚠️ 线路去重走**等价键**，不是整串 URL（2026-11-15 第三源接入）：
+                // ⚠️ 线路去重走**等价键**，不是整串 URL（第三源接入时确立）：
                 // `play.sportsteam368.com` 与 `play.sportsteam356.com` 是同一套后端的
-                // 镜像（已验证：同 path+id 解出同一个 paps.html 入口），
-                // 88 的「国内线路⑤–⑨」正是 JRS/JRKAN 同一批线路的第三种拼法。
-                // 按整串比较会让同一路线路以"信号1 / 国内线路 M⑥ / 中文高清 M⑥"
-                // 三个名字进换线列表，故障切换还会在它们之间反复撞同一个死上游。
+                // 镜像（已验证：同 path+id 解出同一个 paps.html 入口）。
+                // xxzb5 给的是裸 m3u8，LineEquivalence 会把它与 88player 代理壳里
+                // 的同一份清单归一成同一个 hls: 键（见其 KDoc）。
+                // 按整串比较会让同一路线路以多个名字进换线列表，
+                // 故障切换还会在它们之间反复撞同一个死上游。
                 val sources = LineEquivalence.distinctByLine(existing.sources + m.sources)
                 // ⚠️ 联赛必须走 betterLeague（review/optimization-review.md H4 / data.md D2）：
                 // 旧实现的 copy(...) 里**没有** `league`，于是沿用先合并的 JRKAN。
@@ -109,8 +109,8 @@ internal object MatchMerger {
 
         jrkan.forEach(::mergeOne)
         jrs.forEach(::mergeOne)
-        // 88看球必须最后合并（理由见 merge 的 KDoc"合并方向"）
-        k88.forEach(::mergeOne)
+        // xxzb5 必须最后合并（理由见 merge 的 KDoc"合并方向"）
+        xxzb5.forEach(::mergeOne)
 
         val all = merged.values.toList()
         // 产品只做 NBA + CBA：源站混入的足球/外联赛在这里统一丢弃。

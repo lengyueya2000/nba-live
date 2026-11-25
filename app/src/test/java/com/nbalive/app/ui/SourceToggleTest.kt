@@ -50,7 +50,7 @@ class SourceTogglePolicyTest {
         assertEquals(SourceTogglePolicy.ALL - Provider.JRS, after)
         assertFalse(SourceTogglePolicy.isEnabled(after, Provider.JRS))
         assertTrue(SourceTogglePolicy.isEnabled(after, Provider.JRKAN))
-        assertTrue(SourceTogglePolicy.isEnabled(after, Provider.K88))
+        assertTrue(SourceTogglePolicy.isEnabled(after, Provider.XXZB5))
     }
 
     @Test
@@ -88,7 +88,7 @@ class SourceTogglePolicyTest {
         assertFalse("它已经是关的，不需要再关", SourceTogglePolicy.canDisable(onlyJrs, Provider.JRKAN))
         assertEquals(
             "关着的源必须能重新打开（结果 = 原集合 + 它自己，而不是'回到全开'——" +
-                "第三源接入后 ALL 含 K88，写成 ALL 会把这条判据偷换成'点一个开全部'）",
+                "第三源接入后 ALL 含 XXZB5，写成 ALL 会把这条判据偷换成'点一个开全部'）",
             setOf(Provider.JRS, Provider.JRKAN),
             SourceTogglePolicy.toggle(onlyJrs, Provider.JRKAN, on = true),
         )
@@ -104,7 +104,33 @@ class SourceTogglePolicyTest {
         // 加源时旧数据不受影响，但新名字读不回来的话用户开关就白点了。
         val three = SourceTogglePolicy.toStorage(SourceTogglePolicy.ALL)
         assertEquals(SourceTogglePolicy.ALL, SourceTogglePolicy.fromStorage(three))
-        assertTrue("K88 的名字必须能落盘并读回：$three", three.contains("K88"))
+        assertTrue("XXZB5 的名字必须能落盘并读回：$three", three.contains("XXZB5"))
+    }
+
+    /**
+     * 第三源换源升级：老用户磁盘上存的是 `K88`（枚举已删），原样读回会把它丢掉，
+     * xxzb5 开关显示"已关闭"且永不解析（真机 2026-11-25 命中的缺陷）。
+     *
+     * 第三源槽位的开/关选择要保留：存了 K88 = 用户开着第三源 → 映射为 XXZB5；
+     * 只存 `{JRS, JRKAN}`（用户当时关掉了第三源）→ 仍旧关着，不许替他打开。
+     */
+    @Test
+    fun `旧第三源名字映射到新源并保留用户的开关选择`() {
+        assertEquals(
+            "存着已删除的 K88 时必须映射成 XXZB5，不能让第三源静默消失",
+            setOf(Provider.JRS, Provider.XXZB5),
+            SourceTogglePolicy.fromStorage(setOf("JRS", "K88")),
+        )
+        assertEquals(
+            "第三源当时是关着的（没有 K88）就不许被顺带打开",
+            setOf(Provider.JRS, Provider.JRKAN),
+            SourceTogglePolicy.fromStorage(setOf("JRS", "JRKAN")),
+        )
+        assertEquals(
+            "只开着旧第三源时也要完整映射",
+            setOf(Provider.XXZB5),
+            SourceTogglePolicy.fromStorage(setOf("K88")),
+        )
     }
 
     @Test
@@ -137,7 +163,7 @@ class SourceTogglePolicyTest {
      * ## 这不是可选的润色，是"功能上线但用户看不见"的缺陷
      *
      * 存储的是**开着的集合**。老用户存的是 `{JRS, JRKAN}`，升级后按 [fromStorage]
-     * 原样读回 → K88 = 关 → 第三源**静默不解析**，界面上开关显示"已关闭"，
+     * 原样读回 → XXZB5 = 关 → 第三源**静默不解析**，界面上开关显示"已关闭"，
      * 用户不会知道是自己关的还是没升级。
      * [SourceTogglePolicy] 的类 KDoc 早就写了取舍："前者（默认开）符合功能默认可用"，
      * 但那份推理只覆盖了"空集/未知值"两种坏数据，**没覆盖"合法的旧集合"**这一种。
@@ -157,7 +183,7 @@ class SourceTogglePolicyTest {
         )
         assertEquals(
             "用户明确关掉的 JRS 不许被升级顺带打开",
-            setOf(Provider.JRKAN, Provider.K88),
+            setOf(Provider.JRKAN, Provider.XXZB5),
             SourceTogglePolicy.fromStorage(setOf("JRKAN"), migrated = false),
         )
         assertEquals(
@@ -181,8 +207,8 @@ class SourceTogglePolicyTest {
         // 判据是"存进磁盘的名字 ⊆ 旧时代已知源"，不是 size==2 ——
         // 否则将来再加第四个源时，"两源都开"与"三源里开两个"两种数据会撞车。
         assertTrue(SourceTogglePolicy.isLegacyShapedNames(setOf("JRS", "JRKAN")))
-        assertFalse(SourceTogglePolicy.isLegacyShapedNames(setOf("JRS", "K88")))
-        assertFalse(SourceTogglePolicy.isLegacyShapedNames(setOf("JRS", "JRKAN", "K88")))
+        assertFalse(SourceTogglePolicy.isLegacyShapedNames(setOf("JRS", "XXZB5")))
+        assertFalse(SourceTogglePolicy.isLegacyShapedNames(setOf("JRS", "JRKAN", "XXZB5")))
     }
 
     @Test
@@ -196,7 +222,7 @@ class SourceTogglePolicyTest {
         )
         assertEquals("仅 JRKAN", SourceTogglePolicy.summary(setOf(Provider.JRKAN)))
         assertEquals("仅 JRS", SourceTogglePolicy.summary(setOf(Provider.JRS)))
-        assertEquals("仅 88看球", SourceTogglePolicy.summary(setOf(Provider.K88)))
+        assertEquals("仅 xxzb5", SourceTogglePolicy.summary(setOf(Provider.XXZB5)))
     }
 }
 
@@ -331,8 +357,8 @@ class SourceToggleWiringTest {
         vm.setProviderEnabled(Provider.JRS, enabled = false)
         settle()
         // ⚠️ 期望 = "全开减去 JRS"，不是写死的 {JRKAN}：
-        // 第三源接入后默认全开含 K88，写死两个会让这条判据把
-        // "K88 也被顺手关了"这种真故障读成"正常"。
+        // 第三源接入后默认全开含 XXZB5，写死两个会让这条判据把
+        // "XXZB5 也被顺手关了"这种真故障读成"正常"。
         val expected = SourceTogglePolicy.ALL - Provider.JRS
         assertEquals(expected, prefs.enabledProviders.value)
         assertEquals(expected, vm.enabledProviders.value)
@@ -428,7 +454,7 @@ class SourceToggleWiringTest {
             "旧时代名单不许写成 Provider.entries 的减法（加第四源时会把用户关掉的源再打开一次）",
             GuardSourceScan.stripNonCode(policyFile.readText()).contains("LEGACY_NAMES"),
         )
-        // ⚠️ 上一句只钉住"名字还在"，钉不住值被改成 `entries - K88` 的减法派生
+        // ⚠️ 上一句只钉住"名字还在"，钉不住值被改成 `entries - XXZB5` 的减法派生
         //（回退实验第 4 轮实测：改成减法后守卫全绿）。这里钉**声明形状**：
         // 写死的名单 = 赋值右侧出现两个旧源的标识符；减法派生 = 出现 entries/filter。
         val declaration = Regex("""LEGACY_NAMES\s*:\s*Set<String>\s*=\s*(.+)""")

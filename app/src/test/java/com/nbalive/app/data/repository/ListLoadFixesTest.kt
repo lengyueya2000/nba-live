@@ -100,7 +100,7 @@ class ListLoadFixesTest {
         assertTrue("所有源都没回来时列表必须为空", outcome.matches.isEmpty())
         assertEquals(
             "所有源都超时必须都被报出来",
-            listOf(Provider.JRS, Provider.JRKAN, Provider.K88),
+            listOf(Provider.JRS, Provider.JRKAN, Provider.XXZB5),
             outcome.failedProviders.sortedBy { it.ordinal },
         )
         assertTrue(
@@ -360,7 +360,7 @@ class ListLoadFixesTest {
         )
         // ⚠️ 期望值 = 夹具的算术，不是"JRKAN 那 3 场"：
         // B 的三个源都成功 —— JRS 列表给 1 场（湖人/凯尔特人）+ JRKAN 给 3 场
-        // + 88看球给**同样那 3 个对阵**（见 k88ThreeMatches 的注释）= 合并后仍是 **4** 场。
+        // + xxzb5给**同样那 3 个对阵**（见 xxzb5ThreeMatches 的注释）= 合并后仍是 **4** 场。
         // 第一版写成 3（只算了 JRKAN），首轮实测红：`expected:<3> but was:<4>`。
         // 同时用 `rc` 与 `rb` 的 id 列表相等兜住"C 拿到的是同一批结果"。
         assertEquals(
@@ -460,15 +460,15 @@ class ListLoadFixesTest {
     private fun isListUrl(url: String): Boolean =
         (url.contains("jrszb") && !url.contains("/live/")) ||
             url.contains("oss-accelerate") ||
-            // 88看球（第三源）：**只认列表路径**（`/match/1/live`）。
-            // 它的线路接口是 `/live/{id}/source`，若一并算进"列表 URL"，
+            // xxzb5（第三源）：**只认列表路径**（`/api/v1/matches/window`）。
+            // 它的线路接口是 `/api/v1/matches/{id}/progress`，若一并算进"列表 URL"，
             // single-flight 那两条判据的计数就会把详情级请求混进来，
             // 断言的"每个源各一次"不再对应它要测的东西。
-            url.contains("/match/")
+            url.contains("/api/v1/matches/window")
 
     /** 三个源的列表正文按 URL 路由（避免每个用例各写一份三分支）。 */
     private fun listBody(url: String): String = when {
-        url.contains("88kanqiu") -> k88ThreeMatches()
+        url.contains("/api/v1/matches/window") -> xxzb5ThreeMatches()
         url.contains("jrszb") -> jrsListHtml()
         else -> jrkanThreeMatches()
     }
@@ -496,7 +496,7 @@ class ListLoadFixesTest {
     }
 
     /**
-     * 三场 88看球场次（第三源，2026-11-15）。
+     * 三场 xxzb5 场次（第三源，2026-11-25）。
      *
      * ⚠️ 对阵与 [jrkanThreeMatches] **逐场相同**（日期同锚 2026-10-23）：
      * 合并键是"日期|队名对(排序)"，同对阵必然并成同一张卡 ——
@@ -504,25 +504,17 @@ class ListLoadFixesTest {
      * 测的还是它本来要测的东西（按源超时不丢数据、single-flight 复用），
      * 而不是被迫跟着源数量改数字。
      * 跨源**线路去重**的判据不在这里测（那些场次没有 sources），
-     * 在 K88SourceIntegrationTest / LineEquivalenceTest。
+     * 在 LineEquivalenceTest。
      */
-    private fun k88ThreeMatches(): String {
+    private fun xxzb5ThreeMatches(): String {
         val pairs = listOf("勇士" to "火箭", "太阳" to "掘金", "热火" to "雄鹿")
         return """
-            <ul class="list-group">
-              <li class="list-group-item live-list-group-time">2026-10-23</li>
+            {"items":[
         """.trimIndent() + "\n" + pairs.mapIndexed { i, (home, away) -> """
-              <li class="list-group-item group-game-item">
-                <div class="row">
-                  <div class="col-md-1 category-game-time">10:0$i</div>
-                  <div class="col-md-3"><div><span class="game-type">NBA</span></div></div>
-                  <div class="col-md-4"><span class="team-name" title="$home">$home</span></div>
-                  <div class="col-md-1">VS</div>
-                  <div class="col-md-3"><span class="team-name" title="$away">$away</span></div>
-                  <div><a href='/live/${700 + i}/play'>直播中</a></div>
-                </div>
-              </li>
-        """.trimIndent() }.joinToString("\n") + "\n</ul>"
+              {"id":${700 + i},"league":"NBA","sport":"篮球",
+               "home":{"name":"$home","logoPath":null},"away":{"name":"$away","logoPath":null},
+               "startsAt":"2026-10-23T0$i:00:00Z","status":"live"}
+        """.trimIndent() }.joinToString(",\n") + "\n]}"
     }
 
     private fun match(

@@ -8,7 +8,7 @@ package com.nbalive.app.data.remote
  * 合并层旧语义是 `distinctBy { it.pageUrl }` —— 整串相等才算重复。
  * 而这三家源站给同一批云直播线路时**拼法不同**：
  *
- *  | 线路 | JRS | JRKAN | 88看球 |
+ *  | 线路 | JRS | JRKAN | 88看球（已移除） |
  *  |---|---|---|---|
  *  | mgxl | `sportsteam368.com/play/mgxl/?id=00588403` | `sportsteam356.com/play/mgxl/?id=00588403` | `sportsteam368.com/play/mgxl/?id=00588403` |
  *  | kbs  | `…368/play/kbs/?id=10022600231` | `…356/play/kbs/?id=10022600231` | `…368/play/kbs/?id=10022600231` |
