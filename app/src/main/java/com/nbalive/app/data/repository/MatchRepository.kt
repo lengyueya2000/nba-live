@@ -642,18 +642,21 @@ class MatchRepository(
      * 先用窗口赛程挑出「篮球 + 已完赛 + 有 replayId」的场次（保留真实比分），
      * 再按 matchId 并发拉 `/api/v1/replays?matchId=` 的清晰度线路。
      *
+     * @param date 要查看的日期（录像页日期筛选）；默认今天，窗口只取这一天。
+     *   [fetch] 必须留在参数表最后一位，尾随 lambda `loadReplays { ... }` 才仍绑定到它。
+     *
      * ⚠️ 单场详情失败（超时/404）只让那场没有线路，**不影响其它场次** ——
      * 卡片仍保留比分，点进去提示暂无线路，而不是整页失败。
      * 并发封顶 [MAX_REPLAY_CONCURRENCY]，避免对源站一次打几十个请求。
      */
     suspend fun loadReplays(
+        date: java.time.LocalDate = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE),
         fetch: suspend (String, String?) -> FetchResult = { url, referer -> http.fetch(url, referer) },
     ): List<ReplayItem> = withContext(Dispatchers.IO) {
-        val today = java.time.LocalDate.now(MatchStatusClock.SOURCE_ZONE)
         val origin = SourceEndpoints.XXZB5_LIST.firstOrNull() ?: Xxzb5Parser.SITE_ORIGIN
         val windowUrl = Xxzb5Parser.listUrl(
-            from = today.minusDays(1).toString(),
-            to = today.plusDays(1).toString(),
+            from = date.toString(),
+            to = date.toString(),
             origin = origin,
         )
         val windowBody = when (val r = fetch(windowUrl, null)) {

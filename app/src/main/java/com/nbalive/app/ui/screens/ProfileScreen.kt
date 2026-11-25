@@ -34,10 +34,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.ui.AspectMode
+import com.nbalive.app.ui.PlayerControls
+import com.nbalive.app.ui.ReplayHistoryItem
+import com.nbalive.app.ui.ReplayHistoryPolicy
 import com.nbalive.app.ui.SourceTogglePolicy
 import com.nbalive.app.ui.UpdateCheckPolicy
 import com.nbalive.app.ui.components.AspectModeSelector
 import com.nbalive.app.ui.components.InfoRow
+import com.nbalive.app.ui.components.TeamLogo
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
 import com.nbalive.app.ui.icons.AppIcons
@@ -77,6 +81,12 @@ fun ProfileScreen(
     onOpenUrl: (String) -> Unit = {},
     onAspectChange: (AspectMode) -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
+    /** 录像播放历史（2026-11-25 用户需求），最近观看在前 */
+    replayHistory: List<ReplayHistoryItem> = emptyList(),
+    /** 点某条历史 → 从上次位置续播 */
+    onReplayHistoryClick: (ReplayHistoryItem) -> Unit = {},
+    /** 清空录像历史 */
+    onClearReplayHistory: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -181,6 +191,61 @@ fun ProfileScreen(
                 leadingIcon = true,
                 darkMode = darkMode,
             )
+        }
+
+        // 录像播放历史（2026-11-25 用户需求）：最近观看在前，可点续播、可清空
+        SectionTitle("录像历史")
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Space.lg)
+                .clip(RoundedCornerShape(Radius.card))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(Space.md),
+        ) {
+            if (replayHistory.isEmpty()) {
+                Text(
+                    text = "还没有观看记录",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                replayHistory.forEach { entry ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onReplayHistoryClick(entry) }
+                            .padding(vertical = Space.sm),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TeamLogo(url = entry.awayLogo, teamName = entry.awayTeam, size = 28.dp)
+                            Spacer(Modifier.width(Space.xs))
+                            TeamLogo(url = entry.homeLogo, teamName = entry.homeTeam, size = 28.dp)
+                        }
+                        Spacer(Modifier.width(Space.sm))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "${entry.awayTeam} ${entry.awayScore ?: "-"} : ${entry.homeScore ?: "-"} ${entry.homeTeam}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "${ReplayHistoryPolicy.displayTime(entry)} · 上次看到 ${ReplayHistoryPolicy.formatWatchedPosition(entry.lastPositionMs)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(Space.xs))
+                Text(
+                    text = "清空历史",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { onClearReplayHistory() },
+                )
+            }
         }
 
         // 关于

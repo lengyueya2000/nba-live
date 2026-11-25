@@ -19,6 +19,9 @@ data class ReplayItem(
     val awayTeam: String,
     val homeScore: Int?,
     val awayScore: Int?,
+    /** 队徽 URL（xxzb5 window 接口的 home/away.logoPath）；null 时 UI 回退队名首字 */
+    val homeLogo: String? = null,
+    val awayLogo: String? = null,
     /** 展示用时间（北京时间 MM-dd HH:mm） */
     val timeLabel: String,
     val startAtMillis: Long?,

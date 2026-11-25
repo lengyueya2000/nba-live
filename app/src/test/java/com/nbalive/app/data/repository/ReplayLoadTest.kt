@@ -62,6 +62,25 @@ class ReplayLoadTest {
         assertTrue(items.isEmpty())
     }
 
+    @Test
+    fun `按指定日期抓窗口赛程而不是今天`() = runBlocking {
+        val urls = mutableListOf<String>()
+        repo.loadReplays(
+            date = java.time.LocalDate.of(2026, 11, 11),
+            fetch = { url, _ ->
+                urls += url
+                when {
+                    url.contains("/matches/window") -> FetchResult.Ok(windowBody())
+                    url.contains("/replays?matchId=") -> FetchResult.Ok(replayBody("2451"))
+                    else -> FetchResult.NotFound(404)
+                }
+            },
+        )
+        val windowUrl = urls.first { it.contains("/matches/window") }
+        assertTrue("窗口 URL 必须用选中日期 from/to，而不是今天",
+            windowUrl.contains("from=2026-11-11") && windowUrl.contains("to=2026-11-11"))
+    }
+
     // ---------- 夹具 ----------
 
     private fun windowBody() = """

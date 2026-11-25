@@ -19,13 +19,22 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,12 +42,16 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nbalive.app.data.model.MatchStatusClock
 import com.nbalive.app.data.model.ReplayItem
+import com.nbalive.app.ui.ReplayDatePolicy
 import com.nbalive.app.ui.ReplayUiState
 import com.nbalive.app.ui.displayTime
+import java.time.LocalDate
 import com.nbalive.app.ui.components.FullScreenErrorState
 import com.nbalive.app.ui.components.LoadingState
 import com.nbalive.app.ui.components.RetryErrorBanner
+import com.nbalive.app.ui.components.TeamLogo
 import com.nbalive.app.ui.icons.AppIcons
 import com.nbalive.app.ui.theme.AccentContrast
 import com.nbalive.app.ui.theme.Radius
@@ -58,9 +71,12 @@ fun ReplayScreen(
     onMatchClick: (ReplayItem) -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 日期筛选：选中后由 VM 按新日期重新拉窗口赛程。默认空实现以兼容既有调用。 */
+    onSelectDate: (LocalDate) -> Unit = {},
 ) {
     val items = state.items
     val feedback = refreshingFeedbackFor(state.refreshing, state.loading, items.size)
+    var showDatePicker by remember { mutableStateOf(false) }
 
     PullToRefreshBox(
         isRefreshing = shouldShowRefreshing(state.refreshing, state.loading, items.size),
@@ -89,6 +105,16 @@ fun ReplayScreen(
                     maxLines = 1,
                 )
                 Spacer(Modifier.width(Space.sm))
+                // 日期筛选（2026-11-25）：点开日历选最近 30 天内任一天
+                TextButton(onClick = { showDatePicker = true }) {
+                    Text(
+                        text = "${ReplayDatePolicy.label(state.selectedDate)} ▾",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
                 Text(
                     text = when {
                         state.loading -> "加载中…"
@@ -137,6 +163,41 @@ fun ReplayScreen(
             }
         }
     }
+
+    // 日期弹窗：selectableDates 用纯判据 ReplayDatePolicy 限制最近 30 天。
+    if (showDatePicker) {
+        val today = LocalDate.now(MatchStatusClock.SOURCE_ZONE)
+        val selectable = object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long): Boolean {
+                val date = ReplayDatePolicy.fromPickerMillis(utcTimeMillis)
+                return ReplayDatePolicy.isSelectable(date, today)
+            }
+
+            override fun isSelectableYear(year: Int): Boolean =
+                year >= today.minusDays(ReplayDatePolicy.MAX_DAYS - 1).year && year <= today.year
+        }
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = ReplayDatePolicy.toPickerMillis(state.selectedDate),
+            selectableDates = selectable,
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let { millis ->
+                        val picked = ReplayDatePolicy.fromPickerMillis(millis)
+                        if (picked != state.selectedDate) onSelectDate(picked)
+                    }
+                    showDatePicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("取消") }
+            },
+        ) {
+            DatePicker(state = pickerState)
+        }
+    }
 }
 
 @Composable
@@ -155,7 +216,7 @@ private fun ReplayCard(item: ReplayItem, onClick: () -> Unit) {
                 .padding(Space.md),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 左侧：比分 + 队伍
+            // 左侧：队徽 + 比分 + 队伍（2026-11-25 用户需求：战队头像）
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = item.leagueRawName.ifBlank { item.league.displayName },
@@ -164,13 +225,20 @@ private fun ReplayCard(item: ReplayItem, onClick: () -> Unit) {
                     maxLines = 1,
                 )
                 Spacer(Modifier.height(Space.xs))
-                Text(
-                    text = "${item.homeTeam}  ${item.homeScore ?: "-"} : ${item.awayScore ?: "-"}  ${item.awayTeam}",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TeamLogo(url = item.homeLogo, teamName = item.homeTeam, size = 28.dp)
+                    Spacer(Modifier.width(Space.xs))
+                    Text(
+                        text = "${item.homeTeam}  ${item.homeScore ?: "-"} : ${item.awayScore ?: "-"}  ${item.awayTeam}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(Space.xs))
+                    TeamLogo(url = item.awayLogo, teamName = item.awayTeam, size = 28.dp)
+                }
                 Spacer(Modifier.height(Space.xs))
                 Text(
                     text = "${item.displayTime()}  ·  ${item.lines.size} 条清晰度",

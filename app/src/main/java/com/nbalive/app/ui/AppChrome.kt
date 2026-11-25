@@ -447,6 +447,8 @@ internal fun ListBranch(
     scores: Map<String, EspnScoreboard.GameScore>,
     /** 录像页状态（2026-11-25 新增） */
     replayState: ReplayUiState,
+    /** 录像播放历史（2026-11-25 用户需求） */
+    replayHistory: List<ReplayHistoryItem>,
     /** 检查更新状态（2026-10-31 用户需求）；null = 还没查过 */
     updateState: UpdateCheckPolicy.Decision?,
     /** 是否正在检查更新 */
@@ -515,6 +517,7 @@ internal fun ListBranch(
                     viewModel.playReplay(item)
                 },
                 onRefresh = { viewModel.loadReplays(force = true) },
+                onSelectDate = viewModel::selectReplayDate,
             )
 
             // 我的：真实生效的播放/外观设置
@@ -538,6 +541,9 @@ internal fun ListBranch(
                 // UI → VM 写入口 → PrefsStore（注入）→ 平台层实现。这里不碰 AppPrefs/PlayerPrefs。
                 onAspectChange = { mode -> viewModel.setAspectMode(mode) },
                 onDarkModeChange = { dark -> viewModel.setDarkMode(dark) },
+                replayHistory = replayHistory,
+                onReplayHistoryClick = viewModel::playReplayFromHistory,
+                onClearReplayHistory = viewModel::clearReplayHistory,
             )
         }
     }

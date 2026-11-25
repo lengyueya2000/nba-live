@@ -80,6 +80,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
@@ -118,6 +119,8 @@ import com.nbalive.app.ui.PipState
 import com.nbalive.app.ui.PlayerClock
 import com.nbalive.app.ui.WebSniffState
 import com.nbalive.app.ui.PlayerControls
+import com.nbalive.app.ui.ReplayHistoryPolicy
+import com.nbalive.app.ui.SeekGesturePolicy
 import com.nbalive.app.ui.PlaybackHealth
 import com.nbalive.app.ui.PlayerLoadingHintPolicy
 import com.nbalive.app.ui.StalledPlayback
@@ -251,6 +254,15 @@ fun PlayerScreen(
      */
     locked: Boolean = false,
     onToggleLock: () -> Unit = {},
+    /**
+     * 是否录像回放（VOD）。只有它为真时才画可拖拽进度条；直播恒 false。
+     * 判据收敛在 [PlayerControls.shouldShowSeekBar]，本文件不再另写一套。
+     */
+    isVod: Boolean = false,
+    /** 录像续播起始位置（毫秒）；0 = 从头播。仅 VOD 消费。 */
+    initialSeekMs: Long = 0L,
+    /** 录像播放位置上报（节流后由 VideoSurface 调用，VM 写历史）。 */
+    onReplayProgress: (Long, Long) -> Unit = { _, _ -> },
 ) {
     val videoOnly = fullscreen || inPip
 
@@ -283,6 +295,17 @@ fun PlayerScreen(
     // 用来重置"10 秒无操作自动收起"的计时。
     // 否则用户在全屏里慢慢挑线路，挑到一半控制栏自己消失了。
     var controlsTouchSeq by remember { mutableIntStateOf(0) }
+
+    // 录像快进/快退的 OSD（2026-11-25）：显示本次手势累计 seek 到的位置，
+    // 用计数式 token 重置收起计时（与 controlsTouchSeq 同款取舍，避免布尔被合并吞掉）。
+    var seekHintMs by remember { mutableLongStateOf(-1L) }
+    var seekHintSeq by remember { mutableIntStateOf(0) }
+    LaunchedEffect(seekHintSeq) {
+        if (seekHintSeq == 0 || seekHintMs < 0L) return@LaunchedEffect
+        delay(1_200L)
+        seekHintMs = -1L
+    }
+
     // 包装一层：所有"用户操作浮层"的点击都走这里，自动续期
     fun touchControls() {
         controlsVisible = true
@@ -418,6 +441,8 @@ fun PlayerScreen(
                     handle = videoHandle,
                     onError = onPlaybackError,
                     reconnectNonce = reconnectNonce,
+                    initialSeekMs = if (isVod) initialSeekMs else 0L,
+                    onReplayProgress = onReplayProgress,
                 )
                 webFallbackUrl != null -> {
                     // ⚠️ 网页兜底全屏时，WebView **不能铺满整个容器**。
@@ -561,6 +586,21 @@ fun PlayerScreen(
                     // 锁定态消费单击（P1-6）：否则误触照旧透传给
                     // WebView 里的源站播放器，"防误触锁"只锁住了我们这层
                     consumeTap = gesture.consumeTap,
+                    // 录像快进/快退（2026-11-25）：仅录像全屏未锁非 PIP 时接管水平拖动。
+                    // 直播不传 onSeek（永不快进）；Slider 拖动 consume 事件时手势层自动让位。
+                    durationMs = videoHandle.durationMs,
+                    onSeek = if (streamUrl != null && SeekGesturePolicy.canSeek(
+                            isVod = isVod,
+                            dragEnabled = gesture.dragEnabled,
+                            layerEnabled = gesture.layerEnabled,
+                        )
+                    ) { deltaMs ->
+                        val landed = videoHandle.seekBy(deltaMs)
+                        if (landed > 0L) {
+                            seekHintMs = landed
+                            seekHintSeq++
+                        }
+                    } else null,
                     modifier = Modifier.fillMaxSize(),
                     onTap = when (gesture.tapAction) {
                         PlayerLock.TapAction.TOGGLE_UNLOCK_UI ->
@@ -571,6 +611,24 @@ fun PlayerScreen(
                         PlayerLock.TapAction.PASS_THROUGH -> null
                     },
                 )
+            }
+
+            // 录像快进/快退 OSD（2026-11-25）：居中显示 seek 后落点，1.2 秒自动收起。
+            // 声明在手势层之后（同死胡同恢复条的理由），不拦截触摸。
+            if (seekHintMs >= 0L) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .clip(RoundedCornerShape(Radius.card))
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .padding(horizontal = Space.lg, vertical = Space.sm),
+                ) {
+                    Text(
+                        text = PlayerControls.formatPlaybackTime(seekHintMs),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                    )
+                }
             }
 
             // ---------- 死胡同恢复条（P1 真机回归修复） ----------
@@ -771,6 +829,28 @@ fun PlayerScreen(
             //     v1.2.8 起两条路径都支持「单击显隐 + 10 秒无操作自动收起」。
             // 而排除它的代价是实的：用户在网页线路里**完全无法操作**
             // （换源/换线路/重连/退出全屏全都没有入口）。
+            // 录像全屏进度条：放在底部栏**之上**的独立浮层，不改动底部栏结构。
+            // 直播 isVod=false → 判据恒 false，连组合都不进入（用户明确要求直播无进度条）。
+            if (PlayerControls.shouldShowSeekBar(
+                    isVod = isVod,
+                    streamUrl = streamUrl,
+                    fullscreen = fullscreen,
+                    inPip = inPip,
+                ) && controlsVisible && !locked
+            ) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.lg)
+                        .padding(bottom = 76.dp)
+                        .clip(RoundedCornerShape(Radius.btn))
+                        .background(Color.Black.copy(alpha = 0.5f))
+                        .padding(horizontal = Space.md, vertical = Space.xs),
+                ) {
+                    VodSeekBar(handle = videoHandle, onInteract = { touchControls() })
+                }
+            }
             // 规则收敛到 [PlayerControls.shouldShowBottomBar]（可单测）。
             if (PlayerControls.shouldShowBottomBar(
                     fullscreen = fullscreen,
@@ -1800,6 +1880,28 @@ private class VideoPlayerHandle {
     var isPlaying: Boolean by mutableStateOf(false)
     var isBuffering: Boolean by mutableStateOf(false)
 
+    /** VOD 进度：由 VideoSurface 的轮询循环喂值，仅供录像进度条读取。 */
+    var positionMs: Long by mutableLongStateOf(0L)
+    var durationMs: Long by mutableLongStateOf(0L)
+
+    /** 拖动进度条后跳转；直播路径永远不调用它。 */
+    fun seekTo(ms: Long) {
+        player?.seekTo(ms.coerceAtLeast(0L))
+    }
+
+    /**
+     * 快进/快退：把有符号增量叠加到当前位置，夹到 [0, durationMs]（2026-11-25 用户需求）。
+     * 时长未知（<=0）时不 seek，避免直播/未就绪跳变。返回实际落点，供 OSD 显示。
+     */
+    fun seekBy(deltaMs: Long): Long {
+        val p = player ?: return 0L
+        val duration = p.duration.takeIf { it > 0L } ?: return 0L
+        val target = SeekGesturePolicy.applySeek(p.currentPosition, deltaMs, duration)
+        p.seekTo(target)
+        positionMs = target
+        return target
+    }
+
     /**
      * 当前画质标签（如 "1080P"）。
      *
@@ -1819,6 +1921,8 @@ private class VideoPlayerHandle {
         isPlaying = false
         isBuffering = false
         qualityLabel = null
+        positionMs = 0L
+        durationMs = 0L
     }
 
     /** 播放器上报真实视频尺寸 -> 画质档位 */
@@ -1840,6 +1944,49 @@ private class VideoPlayerHandle {
     fun togglePlay() {
         val p = player ?: return
         if (p.isPlaying) p.pause() else p.play()
+    }
+}
+
+/**
+ * 录像全屏进度条：当前时间 + 可拖拽 Slider + 总时长。
+ *
+ * 拖动期间用本地 [dragMs] 显示手指位置，松手时才真正 `seekTo` 一次 ——
+ * 避免每帧都把 seek 指令压给 ExoPlayer（尤其 HLS 会触发多次分片请求）。
+ */
+@Composable
+private fun VodSeekBar(handle: VideoPlayerHandle, onInteract: () -> Unit) {
+    val duration = handle.durationMs.coerceAtLeast(0L)
+    val upper = duration.coerceAtLeast(1L).toFloat()
+    var dragMs by remember { mutableLongStateOf(-1L) }
+    val shownMs = if (dragMs >= 0L) dragMs else handle.positionMs.coerceIn(0L, duration)
+    val textStyle = MaterialTheme.typography.labelSmall.copy(color = Color.White)
+
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = PlayerControls.formatPlaybackTime(shownMs),
+            style = textStyle,
+            maxLines = 1,
+        )
+        Slider(
+            value = shownMs.toFloat().coerceIn(0f, upper),
+            valueRange = 0f..upper,
+            onValueChange = { value ->
+                dragMs = value.toLong()
+                onInteract()
+            },
+            onValueChangeFinished = {
+                if (dragMs >= 0L) handle.seekTo(dragMs)
+                dragMs = -1L
+            },
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = Space.sm),
+        )
+        Text(
+            text = PlayerControls.formatPlaybackTime(duration),
+            style = textStyle,
+            maxLines = 1,
+        )
     }
 }
 
@@ -2022,6 +2169,10 @@ private fun VideoSurface(
     onError: () -> Unit,
     /** 「用户要求重连」的意图序号；根因见 [com.nbalive.app.ui.PlayerUiState.reconnectNonce] */
     reconnectNonce: Long = 0L,
+    /** 录像续播起始位置（毫秒）；0 = 从头播。 */
+    initialSeekMs: Long = 0L,
+    /** 录像位置上报（节流后调用；VM 写历史）。 */
+    onReplayProgress: (Long, Long) -> Unit = { _, _ -> },
 ) {
     // 每条地址只上报一次错误 —— 但**必须按"轮"记**：重连时地址常常逐字不变
     // （嗅探缓存命中），若集合不随重连清零，重连后的第二次失败会被静默吞掉，
@@ -2051,6 +2202,40 @@ private fun VideoSurface(
     var reachedReady by remember(streamUrl, reconnectNonce) { mutableStateOf(false) }
     // 单调时钟（P14）：卡死看门狗的采样时刻全部走它。
     val clock = remember { PlayerClock.System }
+    // VOD 进度条喂值（2026-11-25）：ExoPlayer 没有"位置持续变化"回调，只能低频轮询。
+    // 直播路径 handle 上同样挂着的字段不会被渲染 —— 进度条判据 isVod 恒 false。
+    // 同一循环还负责：① 续播 seek（媒体就绪后一次性）；② 位置上报节流（每 5 秒一次）。
+    val currentProgress by rememberUpdatedState(onReplayProgress)
+    LaunchedEffect(handle, streamUrl, initialSeekMs) {
+        var seekApplied = false
+        var lastReportAt = 0L
+        while (isActive) {
+            handle.player?.let { p ->
+                val position = p.currentPosition.coerceAtLeast(0L)
+                val duration = p.duration.takeIf { it > 0L } ?: 0L
+                handle.positionMs = position
+                handle.durationMs = duration
+
+                // 续播：等媒体时长已知（READY）再 seekTo，避免准备阶段 seek 被忽略。
+                if (!seekApplied && initialSeekMs > 0L && duration > 0L &&
+                    ReplayHistoryPolicy.shouldResume(initialSeekMs, duration)
+                ) {
+                    p.seekTo(initialSeekMs)
+                    seekApplied = true
+                    handle.positionMs = initialSeekMs
+                }
+                // 位置上报历史：节流，且只在 seek 已落地(或无需 seek)后开始记。
+                if (duration > 0L && (initialSeekMs <= 0L || seekApplied)) {
+                    val now = clock.nowMs()
+                    if (now - lastReportAt >= PlayerControls.REPLAY_PROGRESS_REPORT_INTERVAL_MS) {
+                        lastReportAt = now
+                        currentProgress(handle.positionMs, duration)
+                    }
+                }
+            }
+            delay(400L)
+        }
+    }
     // P3：音频模式轮询链的重投开关。
     // "暂停态不重投"（与 AudioFocusPolicy 的注释一致）会带来一个新问题 ——
     // 用户手动点播放之后没人把这条链接回来，于是这道"来电盖住通话"的

@@ -52,6 +52,12 @@ interface PrefsStore {
     /** 写入数据源开关。⚠️ 同上，不带 `Context` */
     fun setProviderEnabled(enabled: Set<Provider>)
 
+    /** 录像播放历史（2026-11-25 用户需求），最近观看在前，最多 10 条。 */
+    val replayHistory: StateFlow<List<ReplayHistoryItem>>
+
+    /** 写入录像历史。⚠️ 无 `Context`，由平台层落盘。 */
+    fun setReplayHistory(items: List<ReplayHistoryItem>)
+
     /**
      * 从持久化里读一次。
      *
@@ -71,6 +77,7 @@ class InMemoryPrefsStore(
     initialDarkMode: Boolean? = null,
     initialAspect: AspectMode = AspectMode.FIT,
     initialProviders: Set<Provider> = SourceTogglePolicy.ALL,
+    initialReplayHistory: List<ReplayHistoryItem> = emptyList(),
 ) : PrefsStore {
     private val _darkMode = MutableStateFlow(initialDarkMode)
     override val darkMode: StateFlow<Boolean?> = _darkMode.asStateFlow()
@@ -80,6 +87,9 @@ class InMemoryPrefsStore(
 
     private val _providers = MutableStateFlow(initialProviders.ifEmpty { SourceTogglePolicy.ALL })
     override val enabledProviders: StateFlow<Set<Provider>> = _providers.asStateFlow()
+
+    private val _replayHistory = MutableStateFlow(initialReplayHistory)
+    override val replayHistory: StateFlow<List<ReplayHistoryItem>> = _replayHistory.asStateFlow()
 
     override fun setDarkMode(dark: Boolean) {
         _darkMode.value = dark
@@ -92,6 +102,10 @@ class InMemoryPrefsStore(
     override fun setProviderEnabled(enabled: Set<Provider>) {
         // 与生产实现同一份兜底：空集按全开处理（见 SourceTogglePolicy.fromStorage 的说明）
         _providers.value = enabled.ifEmpty { SourceTogglePolicy.ALL }
+    }
+
+    override fun setReplayHistory(items: List<ReplayHistoryItem>) {
+        _replayHistory.value = items
     }
 
     /** 内存实现没有持久化，init 是空操作（保留幂等语义） */
@@ -115,11 +129,15 @@ internal class AndroidPrefsStore(context: Context) : PrefsStore {
 
     override val enabledProviders: StateFlow<Set<Provider>> get() = SourcePrefs.enabled
 
+    override val replayHistory: StateFlow<List<ReplayHistoryItem>> get() = ReplayHistoryPrefs.history
+
     override fun setDarkMode(dark: Boolean) = AppPrefs.setDarkMode(dark)
 
     override fun setAspect(mode: AspectMode) = PlayerPrefs.setAspect(mode)
 
     override fun setProviderEnabled(enabled: Set<Provider>) = SourcePrefs.setEnabled(enabled)
+
+    override fun setReplayHistory(items: List<ReplayHistoryItem>) = ReplayHistoryPrefs.setHistory(items)
 
     /**
      * 平台层初始化（U8）。
@@ -143,6 +161,7 @@ internal class AndroidPrefsStore(context: Context) : PrefsStore {
         AppPrefs.attachStore(appContext)
         PlayerPrefs.attachStore(appContext)
         SourcePrefs.attachStore(appContext)
+        ReplayHistoryPrefs.attachStore(appContext)
         if (PrefsPreload.isFinished) return
         PrefsPreload.readAll()
     }
@@ -193,6 +212,7 @@ internal object PrefsPreload {
         AppPrefs.attachStore(appContext)
         PlayerPrefs.attachStore(appContext)
         SourcePrefs.attachStore(appContext)
+        ReplayHistoryPrefs.attachStore(appContext)
         executor.execute(::readAll)
     }
 
@@ -207,6 +227,7 @@ internal object PrefsPreload {
         AppPrefs.init()
         PlayerPrefs.init()
         SourcePrefs.init()
+        ReplayHistoryPrefs.init()
         finished = true
     }
 }

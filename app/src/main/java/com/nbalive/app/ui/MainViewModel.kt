@@ -8,6 +8,7 @@ import com.nbalive.app.BuildConfig
 import com.nbalive.app.data.model.League
 import com.nbalive.app.data.model.Match
 import com.nbalive.app.data.model.MatchStatus
+import com.nbalive.app.data.model.MatchStatusClock
 import com.nbalive.app.data.model.Provider
 import com.nbalive.app.data.model.ReplayItem
 import com.nbalive.app.data.model.StreamSource
@@ -22,6 +23,7 @@ import com.nbalive.app.data.repository.ScoreboardRepository
 import com.nbalive.app.data.remote.StreamUrlResolver
 import com.nbalive.app.data.remote.safeLogWarn
 import com.nbalive.app.data.remote.safeMessage
+import java.time.LocalDate
 import java.time.ZonedDateTime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -108,6 +110,8 @@ data class ReplayUiState(
     val refreshing: Boolean = false,
     val items: List<ReplayItem> = emptyList(),
     val error: String? = null,
+    /** 录像页选中的日期（最近 30 天）；切换后按此日期重新拉窗口赛程。 */
+    val selectedDate: LocalDate = LocalDate.now(MatchStatusClock.SOURCE_ZONE),
 )
 
 /** 详情页状态（U6：标 `@Immutable`，理由见 [MatchListUiState]）。 */
@@ -133,6 +137,16 @@ data class PlayerUiState(
     val streamReferer: String? = null,
     /** 无法静态解析时的网页播放地址（WebView 承载） */
     val webFallbackUrl: String? = null,
+    /**
+     * 是否录像回放（VOD）。只有 `playReplay()` 置 true；直播恒 false。
+     * 播放器据此**仅对录像**画可拖拽进度条，直播永远不画（避免误触跳离直播边缘）。
+     */
+    val isVod: Boolean = false,
+    /**
+     * 录像续播的起始位置（毫秒）。0 = 从头播；>0 时播放器在媒体就绪后 seekTo。
+     * 只有 VOD 会用到；直播恒 0。
+     */
+    val initialSeekMs: Long = 0L,
     /** streamUrl 是否来自 WebView 嗅探：失败时退回 WebView，而不是拉黑线路 */
     val sniffedStream: Boolean = false,
     /** 嗅探到但直连失败的地址：不再重试同一个，避免 嗅探→失败→退回→再嗅探 的死循环 */
@@ -246,7 +260,8 @@ class MainViewModel(
             repository.loadMatchesOutcome(enabled = enabled, forceRefresh = forceRefresh)
         },
     /** 录像加载入口（测试注入，覆盖空/失败时序；生产走 [MatchRepository.loadReplays]）。 */
-    private val reloadReplays: suspend () -> List<ReplayItem> = { repository.loadReplays() },
+    private val reloadReplays: suspend (LocalDate) -> List<ReplayItem> =
+        { date -> repository.loadReplays(date = date) },
     /**
      * 信号加载入口。测试注入它以驱动"进场期间返回/抛异常"等时序，
      * 也覆盖 loadSignals 的取消与失败路径（与 [loadMatches] 同一个理由）。
@@ -444,6 +459,17 @@ class MainViewModel(
 
     private val _replayState = MutableStateFlow(ReplayUiState())
     val replayState: StateFlow<ReplayUiState> = _replayState.asStateFlow()
+
+    // ---------- 录像播放历史（2026-11-25 用户需求） ----------
+
+    /** 录像历史（最近观看在前，最多 10 条）；真源在 [prefs]，UI 只读这里。 */
+    val replayHistory: StateFlow<List<ReplayHistoryItem>> get() = prefs.replayHistory
+
+    /**
+     * 当前正在播放的录像（供 [recordReplayPosition] 定位该写哪条历史）。
+     * 离开播放器不清空 —— 历史是持久的，这个只是"正在看哪场"的暂存。
+     */
+    private var currentReplay: ReplayItem? = null
 
     // ---------- 比赛比分（2026-10-31 用户需求） ----------
 
@@ -820,15 +846,23 @@ class MainViewModel(
         loadReplays()
     }
 
+    /** 切换录像日期：更新选中日期并按新日期重新拉（换日必然重新请求）。 */
+    fun selectReplayDate(date: LocalDate) {
+        if (_replayState.value.selectedDate == date) return
+        _replayState.update { it.copy(selectedDate = date) }
+        loadReplays(force = true)
+    }
+
     /** 加载录像列表；`force` 时连点也不会并发打源站（取消上一次）。 */
     fun loadReplays(force: Boolean = false) {
         if (!force && _replayState.value.items.isNotEmpty()) return
         replayJob?.cancel()
         val firstLoad = _replayState.value.items.isEmpty()
         _replayState.update { it.copy(loading = firstLoad, refreshing = !firstLoad, error = null) }
+        val date = _replayState.value.selectedDate
         replayJob = viewModelScope.launch {
             val items = try {
-                reloadReplays()
+                reloadReplays(date)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -850,7 +884,7 @@ class MainViewModel(
      * 不再经过 `loadSignals`（线路已在手），也不经过状态校正（比赛已结束）。
      * 合成一个 `Match` 只为播放器顶栏/元信息展示；它不进列表、不参与任何源开关。
      */
-    fun playReplay(item: ReplayItem) {
+    fun playReplay(item: ReplayItem, resumeMs: Long = 0L) {
         if (item.lines.isEmpty()) return
         playJob?.cancel()
         cancelSniffRecovery()
@@ -858,6 +892,11 @@ class MainViewModel(
         detailJob?.cancel()
         failedSources.clearAll()
         autoTriedIndices.clear()
+        currentReplay = item
+        // 起播就把这场记入历史（位置 0）；续播时保留原位置，不要被 0 覆盖
+        val existing = prefs.replayHistory.value.firstOrNull { it.matchId == item.matchId }
+        val initialPos = if (resumeMs > 0L) resumeMs else existing?.lastPositionMs ?: 0L
+        writeReplayHistory(item, initialPos)
         setNav(_nav.value.openPlayer(item.id))
         val synthetic = Match(
             id = item.id,
@@ -865,8 +904,8 @@ class MainViewModel(
             leagueRawName = item.leagueRawName,
             homeTeam = item.homeTeam,
             awayTeam = item.awayTeam,
-            homeLogo = null,
-            awayLogo = null,
+            homeLogo = item.homeLogo,
+            awayLogo = item.awayLogo,
             timeLabel = item.timeLabel,
             startAtMillis = item.startAtMillis,
             status = MatchStatus.FINISHED,
@@ -886,8 +925,53 @@ class MainViewModel(
             signals = signals,
             selectedIndex = 0,
             resolving = true,
+            isVod = true,
+            initialSeekMs = initialPos,
         )
         play(0)
+    }
+
+    /** 从历史条目续播：还原线路快照并带上上次位置。 */
+    fun playReplayFromHistory(entry: ReplayHistoryItem) {
+        val item = ReplayItem(
+            matchId = entry.matchId,
+            league = entry.league,
+            leagueRawName = entry.leagueRawName,
+            homeTeam = entry.homeTeam,
+            awayTeam = entry.awayTeam,
+            homeScore = entry.homeScore,
+            awayScore = entry.awayScore,
+            homeLogo = entry.homeLogo,
+            awayLogo = entry.awayLogo,
+            timeLabel = entry.timeLabel,
+            startAtMillis = null,
+            lines = entry.lines,
+        )
+        playReplay(item, resumeMs = entry.lastPositionMs)
+    }
+
+    /**
+     * 播放中周期性上报录像位置（由播放器 5 秒节流后调用）。
+     * 只有当前正在播录像才写；位置必须落在合法区间才算数。
+     */
+    fun recordReplayPosition(positionMs: Long, durationMs: Long) {
+        val replay = currentReplay ?: return
+        if (!ReplayHistoryPolicy.shouldResume(positionMs, durationMs)) return
+        writeReplayHistory(replay, positionMs)
+    }
+
+    private fun writeReplayHistory(replay: ReplayItem, positionMs: Long) {
+        val entry = ReplayHistoryPolicy.fromReplay(
+            replay,
+            positionMs = positionMs,
+            watchedAt = System.currentTimeMillis(),
+        )
+        prefs.setReplayHistory(ReplayHistoryPolicy.merge(prefs.replayHistory.value + entry))
+    }
+
+    /** 清空录像历史（「我的」页按钮）。 */
+    fun clearReplayHistory() {
+        prefs.setReplayHistory(emptyList())
     }
 
     /**

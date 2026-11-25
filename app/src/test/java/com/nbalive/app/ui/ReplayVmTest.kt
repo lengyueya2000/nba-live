@@ -84,6 +84,34 @@ class ReplayVmTest {
         assertEquals(null, vm.playerState.value.streamUrl)
     }
 
+    @Test
+    fun `切换录像日期必须用新日期重新拉而不是沿用旧日期`() = vmTest {
+        val dates = mutableListOf<java.time.LocalDate>()
+        val vm = MainViewModel(
+            loadMatches = { Result.success(emptyList()) },
+            reloadReplays = { d -> dates += d; listOf(replay()) },
+        )
+        val picked = java.time.LocalDate.of(2026, 11, 11)
+        vm.selectReplayDate(picked)
+        settle()
+        assertEquals(listOf(picked), dates)
+        assertEquals(picked, vm.replayState.value.selectedDate)
+    }
+
+    @Test
+    fun `播放录像必须标记为VOD供播放器显示进度条`() = vmTest {
+        val vm = MainViewModel(
+            loadMatches = { Result.success(emptyList()) },
+            reloadReplays = { listOf(replay()) },
+            resolveStream = { source ->
+                StreamUrlResolver.Resolved(m3u8Url = source.pageUrl, referer = null)
+            },
+        )
+        vm.playReplay(replay())
+        settle()
+        assertTrue("录像线路必须标 isVod，进度条判据依赖它；直播恒 false", vm.playerState.value.isVod)
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun `首次切到录像标签必须自动加载 别被初始 loading 标志挡住`() = vmTest {

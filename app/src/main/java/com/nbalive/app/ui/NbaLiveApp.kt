@@ -187,6 +187,8 @@ private fun RouteHost(
     // 同样不放进根节点（判据同 P2-15）。
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
+    // 录像历史（2026-11-25 用户需求）：同样在 RouteHost 收集，不推到根节点（P2-15）
+    val replayHistory by viewModel.replayHistory.collectAsStateWithLifecycle()
     // liveMatches 是真需要的：state 里没有预过滤过的 LIVE 列表
     // ⚠️ 过滤实现只有一处：[liveOnly]（review/audit-guards.md「未验证的怀疑 #5」）。
     // 原来这里是就地写的 `filter { it.status == MatchStatus.LIVE }`，
@@ -281,6 +283,7 @@ private fun RouteHost(
             enabledProviders = enabledProviders,
             scores = scores,
             replayState = replayState,
+            replayHistory = replayHistory,
             updateState = updateState,
             checkingUpdate = checkingUpdate,
             onSetFullscreen = onSetFullscreen,
@@ -415,5 +418,9 @@ private fun PlayerBranch(
             val id = playerState.match?.id
             onToggleLock(id)
         },
+        // 录像回放才画可拖拽进度条；直播恒 false（见 PlayerControls.shouldShowSeekBar）
+        isVod = playerState.isVod,
+        initialSeekMs = playerState.initialSeekMs,
+        onReplayProgress = viewModel::recordReplayPosition,
     )
 }

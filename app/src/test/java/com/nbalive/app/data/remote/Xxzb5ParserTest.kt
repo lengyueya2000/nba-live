@@ -152,11 +152,11 @@ class Xxzb5ParserTest {
     }
 
     @Test
-    fun `从窗口接口只挑篮球且已完赛且带 replayId 的场次`() {
+    fun `从窗口接口只挑NBA且已完赛且带 replayId 的场次`() {
         val candidates = parser.parseReplayCandidates(replayWindowBody())
-        // 3 篮球完赛（含 replayId），1 篮球完赛但 replayId=0（无录像，剔除），
-        // 1 足球完赛（剔除），1 篮球直播（剔除）
-        assertEquals(listOf("2451", "2452", "2453"), candidates.map { it.matchId })
+        // 2 NBA 完赛（含 replayId）；CBA/欧篮联非 NBA 剔除，
+        // 1 NBA 完赛但 replayId=0（无录像）、1 足球、1 篮球直播都剔除
+        assertEquals(listOf("2451", "2452"), candidates.map { it.matchId })
         val first = candidates.first()
         assertEquals("NBA", first.leagueRawName)
         assertEquals("老鹰", first.homeTeam)
@@ -164,6 +164,26 @@ class Xxzb5ParserTest {
         assertEquals(107, first.homeScore)
         assertEquals(97, first.awayScore)
         assertEquals("11-23 04:30", first.timeLabel) // 20:30Z → 北京 11-23 04:30
+        assertEquals("https://www.rtmpcdn.com/uploads/a.png", first.homeLogo)
+        assertEquals("https://www.rtmpcdn.com/uploads/b.png", first.awayLogo)
+    }
+
+    @Test
+    fun `录像候选只保留NBA剔除CBA与欧篮联`() {
+        val body = """
+        {"items":[
+          {"id":1,"league":"NBA","sport":"篮球","status":"finished","replayId":10,
+           "home":{"name":"湖人"},"away":{"name":"勇士"},
+           "startsAt":"2026-11-22T20:00:00Z","homeScore":100,"awayScore":99},
+          {"id":2,"league":"CBA","sport":"篮球","status":"finished","replayId":11,
+           "home":{"name":"辽宁"},"away":{"name":"广东"},
+           "startsAt":"2026-11-22T20:00:00Z","homeScore":90,"awayScore":80},
+          {"id":3,"league":"欧篮联","sport":"篮球","status":"finished","replayId":12,
+           "home":{"name":"贝西克塔斯"},"away":{"name":"巴黎"},
+           "startsAt":"2026-11-22T20:00:00Z","homeScore":76,"awayScore":88}
+        ]}
+        """.trimIndent()
+        assertEquals(listOf("1"), parser.parseReplayCandidates(body).map { it.matchId })
     }
 
     @Test
@@ -264,7 +284,8 @@ class Xxzb5ParserTest {
     private fun replayWindowBody() = """
     {"items":[
       {"id":2451,"league":"NBA","sport":"篮球","status":"finished","replayId":8490,
-       "home":{"name":"老鹰"},"away":{"name":"活塞"},
+       "home":{"name":"老鹰","logoPath":"https://www.rtmpcdn.com/uploads/a.png"},
+       "away":{"name":"活塞","logoPath":"https://www.rtmpcdn.com/uploads/b.png"},
        "startsAt":"2026-11-22T20:30:00Z","homeScore":107,"awayScore":97},
       {"id":2452,"league":"NBA","sport":"篮球","status":"finished","replayId":8498,
        "home":{"name":"热火"},"away":{"name":"雷霆"},

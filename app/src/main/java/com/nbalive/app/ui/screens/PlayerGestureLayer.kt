@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nbalive.app.ui.SeekGesturePolicy
 import com.nbalive.app.ui.theme.Radius
 import com.nbalive.app.ui.theme.Space
 import com.nbalive.app.ui.theme.accentBrush
@@ -103,6 +104,16 @@ fun PlayerMediaGestures(
      * 生产代码传 `PlayerLock.gestureConfig(...).consumeTap`。
      */
     consumeTap: Boolean = false,
+    /**
+     * 录像快进/快退（2026-11-25）：本次水平拖动换算出的**毫秒增量**（右正左负）。
+     * 手势层用自身宽度 + [durationMs] 按 [SeekGesturePolicy.deltaMsFromDrag] 换算；
+     * 仅录像全屏未锁定时由调用方传 [onSeek]；直播传 null（永不快进）。
+     *
+     * 手势层按主轴分流：水平拖动交给它、垂直拖动仍调亮度/音量。
+     * 用 rememberUpdatedState 读取，避免闭包拿旧值。
+     */
+    durationMs: Long = 0L,
+    onSeek: ((Long) -> Unit)? = null,
 ) {
     if (!enabled) return
 
@@ -160,11 +171,13 @@ fun PlayerMediaGestures(
     // rememberUpdatedState 让手势块每次都读到最新的回调，
     // 不必把 onTap 塞进 pointerInput 的 key（那会导致整个手势块重启、丢状态）。
     val currentOnTap by rememberUpdatedState(onTap)
+    val currentOnSeek by rememberUpdatedState(onSeek)
+    val currentDurationMs by rememberUpdatedState(durationMs)
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(enabled, activity, audio, tapOnly, consumeTap) {
+            .pointerInput(enabled, activity, audio, tapOnly, consumeTap, onSeek != null) {
                 // 滑动距离 = 屏高的 70% 走完全量程：太长滑不到底，太短容易误触
                 val fullSwipe = PlayerGestureMath.fullSwipe(size.height.toFloat())
                 awaitEachGesture {
@@ -172,8 +185,11 @@ fun PlayerMediaGestures(
                     val leftSide = PlayerGestureMath.sideOf(down.position.x, size.width.toFloat())
                     val side = if (leftSide) Side.BRIGHTNESS else Side.VOLUME
                     var dragging = false
+                    var seeking = false
                     var startValue = 0f
                     var moved = 0f
+                    var movedX = 0f
+                    var movedY = 0f
                     // 上层按钮（画中画/全屏/底部控制栏）消费掉这次手势后，
                     // 我们绝不能再把抬手当成"单击画面"——否则点按钮会顺手把浮层关掉
                     var takenByOthers = false
@@ -204,9 +220,13 @@ fun PlayerMediaGestures(
                             if (consumeTap) change.consume()
                             break
                         }
-                        moved += change.positionChange().y
-                        if (!dragging) {
-                            if (abs(moved) > viewConfiguration.touchSlop) {
+                        val delta = change.positionChange()
+                        movedX += delta.x
+                        movedY += delta.y
+                        if (!dragging && !seeking) {
+                            if (abs(movedX) > viewConfiguration.touchSlop ||
+                                abs(movedY) > viewConfiguration.touchSlop
+                            ) {
                                 // tapOnly（锁定 / 非全屏）：滑动不接管、
                                 // 不改亮度音量，也不算"单击"（用户确实滑了）。
                                 // 直接结束本次手势，什么都不做。
@@ -219,15 +239,43 @@ fun PlayerMediaGestures(
                                     takenByOthers = true
                                     break
                                 }
-                                dragging = true
-                                startValue = when (side) {
-                                    Side.BRIGHTNESS -> readBrightness(activity)
-                                    Side.VOLUME -> readVolume(audio)
+                                // 主轴判定：水平交给录像快进/快退，垂直保持亮度/音量。
+                                // 只有调用方给了回调（录像）才会进 seeking 分支。
+                                if (currentOnSeek != null &&
+                                    SeekGesturePolicy.gestureAxis(movedX, movedY) == SeekGesturePolicy.Axis.HORIZONTAL
+                                ) {
+                                    seeking = true
+                                } else {
+                                    dragging = true
+                                    startValue = when (side) {
+                                        Side.BRIGHTNESS -> readBrightness(activity)
+                                        Side.VOLUME -> readVolume(audio)
+                                    }
+                                    // 主轴是垂直：把之前累积的 Y 位移一次性喂给亮度/音量
+                                    moved = movedY
                                 }
                             }
                         }
-                        if (dragging) {
+                        if (seeking) {
+                            // 录像快进/快退：把水平像素位移按屏宽换算成毫秒增量。
                             change.consume()
+                            if (currentOnSeek != null) {
+                                val deltaMs = SeekGesturePolicy.deltaMsFromDrag(
+                                    px = delta.x,
+                                    widthPx = size.width.toFloat(),
+                                    durationMs = currentDurationMs,
+                                )
+                                if (deltaMs != 0L) currentOnSeek?.invoke(deltaMs)
+                            }
+                            scheduleHideOsd()
+                        } else if (dragging) {
+                            change.consume()
+                            if (abs(movedX) > abs(movedY)) {
+                                // 垂直为主但本帧有水平分量：不再累加，保持原值
+                                // （避免斜滑时亮度跳变）；下一帧继续按 Y 算。
+                            } else {
+                                moved += delta.y
+                            }
                             val target = PlayerGestureMath.valueFromDrag(
                                 startValue = startValue,
                                 movedPx = moved,
@@ -246,7 +294,7 @@ fun PlayerMediaGestures(
                         }
                     }
 
-                    if (dragging) {
+                    if (dragging || seeking) {
                         // 抬手：重置计时，让指示器再留 800ms
                         scheduleHideOsd()
                     } else if (!takenByOthers) {

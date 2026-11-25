@@ -134,4 +134,36 @@ object PlayerControls {
             BoxSize((containerHeight * aspectRatio).toInt(), containerHeight)
         }
     }
+
+    /**
+     * 可拖拽进度条是否显示（2026-11-25 录像 VOD 需求）。
+     *
+     * ⚠️ **直播恒 false** —— 用户明确要求直播播放器不出现进度条/拖拽：
+     * 直播流没有「总时长」，拖到所谓进度条中段只会把播放器跳到一个无意义的位置，
+     * 甚至跳离直播边缘。判据第一项必须是 [isVod]，任何直播路线都进不来。
+     *
+     * 录像也只在**全屏直连**时画：竖屏保持原样（用户选「仅全屏显示」），
+     * 网页兜底由源站播放器自己管，我们的 seek 只接了 ExoPlayer。
+     */
+    fun shouldShowSeekBar(
+        isVod: Boolean,
+        streamUrl: String?,
+        fullscreen: Boolean,
+        inPip: Boolean,
+    ): Boolean = isVod && streamUrl != null && fullscreen && !inPip
+
+    /** 录像位置上报历史的节流间隔（播放器轮询 400ms，写盘每 5 秒一次）。 */
+    const val REPLAY_PROGRESS_REPORT_INTERVAL_MS = 5_000L
+
+    /** 播放进度时间文案：`mm:ss`，超过一小时用 `h:mm:ss`。负数按 0 处理。 */
+    fun formatPlaybackTime(positionMs: Long): String {
+        if (positionMs <= 0L) return "00:00"
+        val totalSec = positionMs / 1000L
+        val hours = totalSec / 3600L
+        val minutes = (totalSec % 3600L) / 60L
+        val seconds = totalSec % 60L
+        val mm = minutes.toString().padStart(2, '0')
+        val ss = seconds.toString().padStart(2, '0')
+        return if (hours > 0L) "$hours:$mm:$ss" else "$mm:$ss"
+    }
 }

@@ -185,37 +185,48 @@ class Xxzb5Parser {
     }
 
     /**
-     * 从窗口赛程里挑出「篮球 + 已完赛 + 有 replayId」的场次，作为录像候选。
+     * 从窗口赛程里挑出「NBA + 已完赛 + 有 replayId」的场次，作为录像候选。
+     *
+     * 只保留 NBA（2026-11-25 用户需求）：CBA / 欧篮联 / WCBA 等篮球联赛不再进录像页，
+     * 在数据层就过滤掉 —— 连它们的 `/replays?matchId=` 详情请求也不会发出。
      *
      * lines 此刻为空，由 `MatchRepository.loadReplays` 再逐场拉 `/replays?matchId=` 填充。
-     * 联赛只做 NBA/CBA 的过滤交给上层（与直播列表一致，这里保留原始 league 名）。
      */
     fun parseReplayCandidates(body: String): List<ReplayItem> {
         if (body.isBlank()) return emptyList()
         val items = EspnScoreboard.JsonCursor(body).array("items") ?: return emptyList()
         val out = mutableListOf<ReplayItem>()
         for (item in items) {
+            val leagueRaw = item.string("league").orEmpty().trim()
+            if (!leagueRaw.equals("NBA", ignoreCase = true)) continue
             if (item.string("sport").orEmpty().trim() != "篮球") continue
             val status = item.string("status").orEmpty().trim().lowercase()
             if (status != "finished" && status != "ft") continue
             val replayId = item.int("replayId") ?: item.number("replayId")?.toIntOrNull() ?: 0
             if (replayId <= 0) continue // 没有录像
             val matchId = item.number("id") ?: item.string("id") ?: continue
-            val home = item.obj("home")?.string("name").orEmpty().trim()
-            val away = item.obj("away")?.string("name").orEmpty().trim()
+            val homeObj = item.obj("home")
+            val awayObj = item.obj("away")
+            val home = homeObj?.string("name").orEmpty().trim()
+            val away = awayObj?.string("name").orEmpty().trim()
             if (home.isEmpty() || away.isEmpty()) continue
+            // 队徽：源站 logoPath 可能是相对路径，只收 http(s) 绝对地址（与直播解析同款口径）
+            val homeLogo = homeObj?.string("logoPath")?.takeIf { it.startsWith("http") }
+            val awayLogo = awayObj?.string("logoPath")?.takeIf { it.startsWith("http") }
             val startsAt = item.string("startsAt")
             val startAtMillis = startsAt?.let {
                 runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull()
             }
             out += ReplayItem(
                 matchId = matchId,
-                league = League.resolve(item.string("league").orEmpty(), home, away),
-                leagueRawName = item.string("league").orEmpty().trim(),
+                league = League.resolve(leagueRaw, home, away),
+                leagueRawName = leagueRaw,
                 homeTeam = home,
                 awayTeam = away,
                 homeScore = item.int("homeScore"),
                 awayScore = item.int("awayScore"),
+                homeLogo = homeLogo,
+                awayLogo = awayLogo,
                 timeLabel = startAtMillis?.let { formatBeijing(it) } ?: "",
                 startAtMillis = startAtMillis,
                 lines = emptyList(),
