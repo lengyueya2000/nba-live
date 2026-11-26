@@ -113,6 +113,7 @@ import com.nbalive.app.data.remote.HttpClient
 import com.nbalive.app.data.remote.debugLog
 import com.nbalive.app.data.remote.redactUrl
 import com.nbalive.app.ui.AspectMode
+import com.nbalive.app.ui.AutoAspectPolicy
 import com.nbalive.app.ui.AudioFocusPolicy
 import com.nbalive.app.ui.CardSemantics
 import com.nbalive.app.ui.PipState
@@ -2248,6 +2249,15 @@ private fun VideoSurface(
     val reportedRef = remember(streamUrl, reconnectNonce) { mutableSetOf<String>() }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     val onErrorState = rememberUpdatedState(onError)
+    // 画面模式同样只在工厂里捕获一次，宽高到达时重设 resizeMode 要读当前值
+    // （用户可能在加载期间就点过画面胶囊）。
+    val currentAspectMode = rememberUpdatedState(aspectMode)
+    // 「自动」档要按视频宽高比 vs 容器（屏幕）宽高比决定铺满还是完整。
+    // 两个比例都随各自事件更新：视频宽高来自 onVideoSizeChanged，容器宽高来自
+    // AndroidView 的布局回调（屏幕旋转/折叠屏展开都会变）。初始 0 = 未知，
+    // 此时 AutoAspectPolicy 回退 FIT（安全默认）。
+    var videoAspect by remember(streamUrl) { mutableStateOf(0f) }
+    var containerAspect by remember(streamUrl) { mutableStateOf(0f) }
     // ⚠️ 监听器只在工厂里注册**一次**（播放器复用），所以它必须读**当前**的地址：
     // 直接捕获 streamUrl 的话，错误去重会一直拿第一条线路的地址去判重。
     val currentStreamUrl = rememberUpdatedState(streamUrl)
@@ -2680,6 +2690,15 @@ private fun VideoSurface(
                         PipState.setVideoSize(videoSize.width, videoSize.height)
                         // 同一份宽高也是画质档位的准确来源
                         handle.onVideoSize(videoSize.width, videoSize.height)
+                        // 宽高到达是 AspectRatioFrameLayout 真正按 videoAspectRatio
+                        // 计算布局的时机：更新视频比例，让「自动」档据此重算 resizeMode。
+                        videoAspect = videoSize.width.toFloat() / videoSize.height
+                        // 显式重设 + requestLayout：保证首帧生效（否则画面停在铺满裁切、
+                        // 比分条被裁），也保证「自动」档在新宽高下立即重新判定。
+                        playerView?.resizeMode = AutoAspectPolicy.resolve(
+                            currentAspectMode.value, videoAspect, containerAspect,
+                        ).resizeMode
+                        playerView?.requestLayout()
                     }
                 }
 
@@ -2695,7 +2714,17 @@ private fun VideoSurface(
             // 控制交给底部的自定义控制栏（暂停/重连/画面/换源/换线路/同时在播）。
             PlayerView(ctx).apply {
                 useController = false
-                resizeMode = aspectMode.resizeMode
+                // 自动档在宽高未知时回退 FIT；比例就绪后由 update / onVideoSizeChanged 重算。
+                resizeMode = AutoAspectPolicy.resolve(aspectMode, videoAspect, containerAspect).resizeMode
+                // ⚠️ 首帧画面自适应（FIT）必须显式请求布局：
+                // Media3 1.9.2 的 AspectRatioFrameLayout 默认 resizeMode=0 就是 FIT，
+                // 而 setResizeMode 只在"值变化"时才 requestLayout（javap 验证：
+                // `if_icmpeq` 相同则跳过）。首次设 FIT 时值与默认相同 → 不会重布局，
+                // 若此刻已按"铺满"完成一次测量，画面就停在铺满裁切态、视频底部
+                // 比分条被裁掉 —— 用户点三档（FIT→ZOOM→FILL→FIT）每次值都变、
+                // 触发 requestLayout，FIT 才真正生效（"刚进来自适应不如点三次后"）。
+                // 这里显式 requestLayout，把"值没变也要重算布局"写死。
+                requestLayout()
                 this.player = player
                 // 屏幕常亮加在 View 上而不是 Activity 的 window 上：
                 // View.keepScreenOn 随这个 View 的可见性自动生效/失效，
@@ -2703,6 +2732,15 @@ private fun VideoSurface(
                 // window flag 要靠外部状态手动 add/clear，漏一次就一直亮着。
                 keepScreenOn = true
                 playerView = this
+                // 容器宽高比随布局变化更新（屏幕旋转/折叠屏展开/分屏）：
+                // 触发重组后由 update 块按「自动」档重新判定 resizeMode。
+                // 只在宽高真正变化时赋值，避免 requestLayout 循环。
+                addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+                    if (v.width > 0 && v.height > 0) {
+                        val ratio = v.width.toFloat() / v.height
+                        if (ratio != containerAspect) containerAspect = ratio
+                    }
+                }
                 handle.attach(player)
             }
         },
@@ -2713,7 +2751,7 @@ private fun VideoSurface(
             // （百分号编码/转义），它会在**每次重组**（缓冲状态每秒翻转数次）都
             // `setMediaItem + prepare`，表现为画面不断重缓冲。
             // 死代码却带一个"每次重组都 prepare"的失效模式 —— 删掉比留着安全。
-            view.resizeMode = aspectMode.resizeMode
+            view.resizeMode = AutoAspectPolicy.resolve(aspectMode, videoAspect, containerAspect).resizeMode
         },
         onRelease = { view ->
             handle.detach()

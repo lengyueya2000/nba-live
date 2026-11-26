@@ -601,7 +601,94 @@ class PlayerFixTest {
             "换线应用点必须落在 Apply 分支里（Ignore 分支什么都不做）",
             body.contains("is LineSwitchPolicy.Action.Apply ->"),
         )
-        assertTrue("update 仍必须同步 resizeMode（这是它唯一的职责）", body.contains("view.resizeMode = aspectMode.resizeMode"))
+        assertTrue(
+            "update 仍必须同步 resizeMode（这是它唯一的职责）：" +
+                "自动档下必须走 AutoAspectPolicy.resolve 按视频/容器比例判定",
+            Regex("""view\.resizeMode\s*=\s*AutoAspectPolicy\.resolve\(""").containsMatchIn(body),
+        )
+    }
+
+    // ==================================================================
+    // 首帧画面自适应（FIT）不生效：Media3 setResizeMode 值未变时不 requestLayout
+    // ==================================================================
+
+    @Test
+    fun `factory设FIT后必须显式requestLayout否则首帧保持铺满裁切`() {
+        val src = productionFile("PlayerScreen.kt").readText()
+        val code = GuardSourceScan.stripNonCode(src)
+        val factory = code.substringAfter("PlayerView(ctx).apply {").substringBefore("onRelease = {")
+
+        // Media3 1.9.2 的 AspectRatioFrameLayout 默认 resizeMode=0=FIT；
+        // setResizeMode 只在"值变化"时才 requestLayout（javap 验证：if_icmpeq 跳过）。
+        // 首次 factory 设 FIT 时值与默认相同 → 不会重布局 → 若此前已按铺满完成布局，
+        // 画面就停在"铺满裁切"，视频底部的比分条被裁掉。用户点三档（FIT→ZOOM→FILL→FIT）
+        // 每次值都变、触发 requestLayout，FIT 才生效。所以 factory 里设完 resizeMode
+        // 必须显式 requestLayout()，把"值没变也要重算布局"这件事写死。
+        assertTrue(
+            "factory 里 resizeMode 设置后必须显式 requestLayout()：" +
+                "Media3 默认已是 FIT，setResizeMode(FIT) 值不变不会重布局，" +
+                "首帧会停在铺满裁切态、视频比分条被裁（用户点三档才恢复）",
+            Regex("""resizeMode\s*=\s*AutoAspectPolicy\.resolve\(""").containsMatchIn(factory) &&
+                factory.contains("requestLayout()"),
+        )
+    }
+
+    @Test
+    fun `videoSize到达时必须重设resizeMode并请求布局`() {
+        val src = productionFile("PlayerScreen.kt").readText()
+        val code = GuardSourceScan.stripNonCode(src)
+
+        // 视频宽高到达（onVideoSizeChanged）是 AspectRatioFrameLayout 真正按
+        // videoAspectRatio 计算布局的时机。此时若 resizeMode 还没正确应用，
+        // 画面仍会裁切。重设一次 resizeMode + requestLayout，保证 FIT 在
+        // "宽高已知"这个最终布局点一定生效。
+        val sizeCb = code.substringAfter("override fun onVideoSizeChanged").substringBefore("override fun onPlaybackStateChanged")
+        assertTrue(
+            "onVideoSizeChanged 里必须重设 resizeMode：宽高到达是最终布局点，" +
+                "此时不重设则首帧 FIT 仍可能未生效（比分条被裁）",
+            sizeCb.contains("resizeMode"),
+        )
+    }
+
+    @Test
+    fun `自动档必须是默认档且保留手动三档`() {
+        // 2026-11-26 用户需求：新增「自动」档并设为默认，手动三档仍可切。
+        assertEquals(
+            "AspectMode 第一档必须是 AUTO（决定胶囊循环顺序与默认值语义）",
+            "AUTO",
+            com.nbalive.app.ui.AspectMode.entries.first().name,
+        )
+        assertEquals(
+            "未知/旧偏好值必须回退到 AUTO 而不是 FIT",
+            com.nbalive.app.ui.AspectMode.AUTO,
+            com.nbalive.app.ui.AspectMode.of(null),
+        )
+        val prefs = productionFile("PlayerPrefs.kt").readText()
+        assertTrue(
+            "PlayerPrefs 的 _aspect 默认必须是 AUTO（新用户首帧就走自动适配）",
+            Regex("""_aspect\s*=\s*MutableStateFlow\(AspectMode\.AUTO\)""").containsMatchIn(
+                GuardSourceScan.stripNonCode(prefs),
+            ),
+        )
+    }
+
+    @Test
+    fun `三处resizeMode都必须走resolve且容器尺寸变化要重算`() {
+        val src = productionFile("PlayerScreen.kt").readText()
+        val code = GuardSourceScan.stripNonCode(src)
+        // factory / onVideoSizeChanged / update 三处 resizeMode 设置全部走 resolve，
+        // 缺一处则该处仍用固定 resizeMode，自动档形同虚设。
+        val resolveCalls = Regex("""AutoAspectPolicy\.resolve\(""").findAll(code).count()
+        assertTrue(
+            "PlayerScreen 里 AutoAspectPolicy.resolve 至少要出现 3 处" +
+                "（factory / onVideoSizeChanged / update），实得 $resolveCalls",
+            resolveCalls >= 3,
+        )
+        assertTrue(
+            "容器尺寸变化（旋转/折叠屏）必须有 OnLayoutChangeListener 更新 containerAspect，" +
+                "否则自动档只看首帧尺寸、转屏后不会重判",
+            code.contains("addOnLayoutChangeListener") && code.contains("containerAspect ="),
+        )
     }
 
     // ==================================================================

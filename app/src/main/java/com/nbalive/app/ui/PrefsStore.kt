@@ -75,7 +75,7 @@ interface PrefsStore {
  */
 class InMemoryPrefsStore(
     initialDarkMode: Boolean? = null,
-    initialAspect: AspectMode = AspectMode.FIT,
+    initialAspect: AspectMode = AspectMode.AUTO,
     initialProviders: Set<Provider> = SourceTogglePolicy.ALL,
     initialReplayHistory: List<ReplayHistoryItem> = emptyList(),
 ) : PrefsStore {

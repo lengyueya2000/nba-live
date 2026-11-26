@@ -11,6 +11,13 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** 画面填充模式。 */
 enum class AspectMode(val label: String) {
+    /**
+     * 自动（默认）：按视频宽高比与屏幕（容器）宽高比的接近程度决定铺满还是完整 ——
+     * 接近则 ZOOM 铺满、差异大则 FIT 留黑边保住视频里的比分条。
+     * 实际 resizeMode 由 [AutoAspectPolicy.resolve] 计算，不固定在这里。
+     */
+    AUTO("自动"),
+
     /** 保持比例完整显示（可能有黑边） */
     FIT("自适应"),
 
@@ -21,16 +28,21 @@ enum class AspectMode(val label: String) {
     FILL("拉伸铺满"),
     ;
 
+    /**
+     * 固定档的 resizeMode。**AUTO 不在此列** —— 它必须走 [AutoAspectPolicy.resolve]，
+     * 这里返回 FIT 只作为"万一有人忘了走策略"的安全兜底（完整显示、绝不裁切）。
+     */
     @get:OptIn(UnstableApi::class)
     val resizeMode: Int
         get() = when (this) {
+            AUTO -> AspectRatioFrameLayout.RESIZE_MODE_FIT
             FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
             ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
             FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
         }
 
     companion object {
-        fun of(name: String?): AspectMode = entries.firstOrNull { it.name == name } ?: FIT
+        fun of(name: String?): AspectMode = entries.firstOrNull { it.name == name } ?: AUTO
     }
 }
 
@@ -53,7 +65,7 @@ object PlayerPrefs {
 
     private var store: SharedPreferences? = null
 
-    private val _aspect = MutableStateFlow(AspectMode.FIT)
+    private val _aspect = MutableStateFlow(AspectMode.AUTO)
     val aspect: StateFlow<AspectMode> = _aspect.asStateFlow()
 
     /**
