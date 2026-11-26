@@ -121,6 +121,16 @@ internal fun groupByDay(matches: List<Match>, today: LocalDate): List<DayGroup> 
         .map { (date, list) -> DayGroup(date, list) }
 
 /**
+ * 隐藏过去日期的分组（2026-11-26 用户需求：赛事列表不展示昨天的比赛）。
+ *
+ * 用**绝对日期**比较（`date < today`），不是标签字符串 —— 跨零点/跨年稳定，
+ * 与 [groupByDay] 的 key 口径一致。无日期场次已由 [groupByDay] 归到 today，
+ * 因此不会被过滤。直播 hero 卡在调用方过滤之前独立抽取，也不受影响。
+ */
+internal fun dropPastDays(groups: List<DayGroup>, today: LocalDate): List<DayGroup> =
+    groups.filter { !it.date.isBefore(today) }
+
+/**
  * 列表页日期标签的刷新节奏（review/03-ui.md P2-8）。
  *
  * 1 分钟一跳：跨零点后最多 1 分钟内自动修正，代价是列表可见时每分钟一次

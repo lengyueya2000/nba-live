@@ -66,6 +66,7 @@ import com.nbalive.app.ui.DAY_LABEL_TICK_MS
 // `NewFeaturesTest` 有一条接线判据断言本文件里出现 `TeamNameBridge.`）。
 import com.nbalive.app.data.model.TeamNameBridge
 import com.nbalive.app.ui.dayLabel
+import com.nbalive.app.ui.dropPastDays
 import com.nbalive.app.ui.groupByDay
 import com.nbalive.app.ui.hhmm
 import com.nbalive.app.ui.leagueLabel
@@ -267,7 +268,8 @@ private fun MatchGrid(
             value = LocalDate.now(systemZone)
         }
     }
-    val groups = remember(gridMatches, today) { groupByDay(gridMatches, today) }
+    // 2026-11-26：隐藏昨天及更早的历史比赛（直播 hero 在过滤前已独立抽取）。
+    val groups = remember(gridMatches, today) { dropPastDays(groupByDay(gridMatches, today), today) }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),

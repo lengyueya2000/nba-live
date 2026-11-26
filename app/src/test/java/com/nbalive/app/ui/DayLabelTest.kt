@@ -96,6 +96,52 @@ class DayLabelTest {
         assertEquals(today, groups.single().date)
     }
 
+    @Test
+    fun `隐藏过去日期 只保留今天明天未来与无日期场次`() {
+        // 用户 2026-11-26 需求：赛事列表不要展示昨天的（及更早的历史）比赛。
+        // 直播中 hero 卡在过滤之前独立抽取，不受影响；无日期场次归 today 保留。
+        val today = LocalDate.of(2026, 11, 26)
+        val matches = listOf(
+            matchOf("old", today.minusDays(3)),
+            matchOf("yesterday", today.minusDays(1)),
+            matchOf("today", today),
+            matchOf("tomorrow", today.plusDays(1)),
+            matchOf("future", today.plusDays(10)),
+            matchOf("no-ts", null),
+        )
+        val kept = dropPastDays(groupByDay(matches, today), today)
+        assertEquals(
+            "昨天及更早必须被隐藏，今天/明天/未来/无日期保留",
+            listOf(today, today.plusDays(1), today.plusDays(10)),
+            kept.map { it.date },
+        )
+        assertEquals("无日期场次随 today 组保留", 2, kept.first { it.date == today }.matches.size)
+    }
+
+    @Test
+    fun `隐藏过去日期 当天边界之外全部清空时只剩今天`() {
+        val today = LocalDate.of(2026, 11, 26)
+        val groups = groupByDay(
+            listOf(matchOf("y", today.minusDays(1)), matchOf("t", today)),
+            today,
+        )
+        val kept = dropPastDays(groups, today)
+        assertEquals(1, kept.size)
+        assertEquals(today, kept.single().date)
+        assertEquals("t", kept.single().matches.single().id)
+    }
+
+    @Test
+    fun `列表页的 groups 必须走 dropPastDays 过滤历史`() {
+        val code = GuardSourceScan.stripNonCode(uiFile("screens/MatchListScreen.kt").readText())
+        val body = functionBody(code, "fun MatchGrid(")
+        assertTrue(
+            "MatchGrid 的 groups 必须经 dropPastDays 过滤：" +
+                "否则昨天及更早的历史比赛会重新出现在赛事列表（用户 2026-11-26 要求隐藏）",
+            Regex("""dropPastDays\s*\(\s*groupByDay\s*\(""").containsMatchIn(body),
+        )
+    }
+
     // ---------------------------------------------------------------
     // 源码守卫：P2-8 的"自动跨零点"没法用 JVM 单测观测（需要 Compose 运行时），
     // 所以用它实际依赖的两件事钉住：定时器驱动的 today、以及不再每次重组查时区。
